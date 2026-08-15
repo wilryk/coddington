@@ -1,5 +1,5 @@
 {
-  "run": "C:\\gitlab\\heliostats\\analysis_output\\public_fixture_run",
+  "run": "public_fixture_run",
   "n_heliostats": 10,
   "heliostat_ids": [
     13,

@@ -92,7 +92,7 @@
       "rays_per_trace": 20000
     },
     "storage": {
-      "root": "C:\\gitlab\\heliostats\\analysis_output\\public_fixture_run",
+      "root": "public_fixture_run",
       "raw_rays": "none"
     },
     "geometry": {
