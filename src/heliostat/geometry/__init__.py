@@ -9,6 +9,16 @@ from .secondary import (
     PyramidSecondary,
     Secondary,
 )
+from .shading import (
+    MirrorGeometry,
+    SecondaryCone,
+    SecondaryDisc,
+    build_geometries,
+    occlusion_efficiency,
+    search_radius_for,
+    shading_blocking,
+    sun_vector,
+)
 
 __all__ = [
     "heliostat_orientation",
@@ -22,4 +32,12 @@ __all__ = [
     "AxiconSecondary",
     "CassegrainSecondary",
     "PyramidSecondary",
+    "MirrorGeometry",
+    "SecondaryCone",
+    "SecondaryDisc",
+    "build_geometries",
+    "occlusion_efficiency",
+    "search_radius_for",
+    "shading_blocking",
+    "sun_vector",
 ]
