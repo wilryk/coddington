@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "heliostat"
+version = "0.1.0.dev0"
+description = "Heliostat-field simulation for concentrating solar towers: field layouts, Monte Carlo ray tracing, flux maps, shading/blocking, DNI, and annual energy"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Ryker Eads" }]
+requires-python = ">=3.10"
+keywords = ["heliostat", "csp", "solar", "ray-tracing", "concentrating-solar", "flux-map"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "scipy>=1.10",
+    "matplotlib>=3.7",
+    "tomli>=2.0; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-cov", "ruff"]
+docs = ["mkdocs-material>=9", "mkdocstrings[python]>=0.24"]
+
+[project.scripts]
+heliostat = "heliostat.cli:main"
+
+[project.urls]
+# Filled in when the GitLab project is created.
+# Homepage = "https://gitlab.com/<group>/heliostat"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/heliostat"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "NPY"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

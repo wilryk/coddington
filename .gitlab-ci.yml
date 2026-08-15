@@ -1,0 +1,46 @@
+stages: [lint, test, docs, deploy]
+
+default:
+  image: python:3.12
+  before_script:
+    - python -V
+    - pip install --upgrade pip
+
+lint:
+  stage: lint
+  script:
+    - pip install ruff
+    - ruff check src tests
+    - ruff format --check src tests
+
+.test:
+  stage: test
+  script:
+    - pip install -e .[dev]
+    - pytest --cov=heliostat --cov-report=term
+
+test:py311:
+  extends: .test
+  image: python:3.11
+
+test:py312:
+  extends: .test
+  image: python:3.12
+
+docs:
+  stage: docs
+  script:
+    - pip install -e .[docs]
+    - mkdocs build --strict
+  rules:
+    - if: $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH
+
+pages:
+  stage: deploy
+  script:
+    - pip install -e .[docs]
+    - mkdocs build --strict --site-dir public
+  artifacts:
+    paths: [public]
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
