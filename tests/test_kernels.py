@@ -141,6 +141,44 @@ class TestDeposit:
         assert abs(cov_got[0, 1] - cov_ref[0, 1]) < 100.0
         assert got.sum() == pytest.approx(1.0, rel=1e-3)
 
+    def test_all_pass_mask_matches_unmasked(self):
+        u_edges, v_edges = _grid()
+        kernel = RadialKernel.gaussian(SIGMA)
+        jac = 90_000.0 * np.eye(2)
+        plain = np.zeros((200, 200))
+        masked = np.zeros((200, 200))
+        deposit(plain, u_edges, v_edges, np.zeros(2), jac, 2.0, kernel)
+        deposit(masked, u_edges, v_edges, np.zeros(2), jac, 2.0, kernel, mask=np.ones((16, 16)))
+        assert np.allclose(masked, plain, rtol=1e-9, atol=1e-12 * plain.max())
+
+    def test_half_plane_mask_halves_mass_with_sharp_edge(self):
+        # Mask passing alpha_u > 0: for an identity-scaled map the deposited
+        # density is the half-kernel — half the mass, near-zero density on
+        # the far side, unmasked density well inside the passing side. (The
+        # smooth erf-shaped penumbra only appears after integrating over
+        # many surface points; a single sample's clip is sharp.)
+        L = 100_000.0
+        kernel = RadialKernel.gaussian(SIGMA)
+        k = 64
+        nodes = np.linspace(-kernel.support_rad, kernel.support_rad, k)
+        mask = np.repeat((nodes[None, :] > 0).astype(float), k, axis=0)
+        from heliostat.trace.kernels import mask_transmitted_fraction
+
+        assert mask_transmitted_fraction(kernel, mask) == pytest.approx(0.5, abs=0.02)
+
+        u_edges, v_edges = _grid(half_mm=2000.0, n=200)
+        out = np.zeros((200, 200))
+        ref = np.zeros((200, 200))
+        deposit(out, u_edges, v_edges, np.zeros(2), L * np.eye(2), 1.0, kernel, mask=mask)
+        deposit(ref, u_edges, v_edges, np.zeros(2), L * np.eye(2), 1.0, kernel)
+        du = u_edges[1] - u_edges[0]
+        assert out.sum() * du * du == pytest.approx(0.5, abs=0.02)
+        u_mid = 0.5 * (u_edges[:-1] + u_edges[1:])
+        far_neg = u_mid < -3.0 * L * SIGMA / 10.0  # beyond the bilinear edge width
+        deep_pos = u_mid > 0.5 * L * SIGMA
+        assert out[:, far_neg].max() < 1e-3 * ref.max()
+        assert np.allclose(out[:, deep_pos], ref[:, deep_pos], rtol=0.03)
+
     def test_singular_jacobian_raises(self):
         u_edges, v_edges = _grid(n=10)
         out = np.zeros((10, 10))

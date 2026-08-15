@@ -123,6 +123,42 @@ class RadialKernel:
         return RadialKernel(r, out)
 
 
+def _mask_lookup(mask: np.ndarray, a_u: np.ndarray, a_v: np.ndarray, support: float) -> np.ndarray:
+    """Bilinear transmission lookup on a node grid spanning [-support, +support]²."""
+    k = mask.shape[0]
+    x = np.clip((a_u / (2.0 * support) + 0.5) * (k - 1), 0.0, k - 1.0)
+    y = np.clip((a_v / (2.0 * support) + 0.5) * (k - 1), 0.0, k - 1.0)
+    x0 = np.floor(x).astype(np.intp)
+    y0 = np.floor(y).astype(np.intp)
+    x1 = np.minimum(x0 + 1, k - 1)
+    y1 = np.minimum(y0 + 1, k - 1)
+    fx = x - x0
+    fy = y - y0
+    return (
+        mask[y0, x0] * (1.0 - fx) * (1.0 - fy)
+        + mask[y0, x1] * fx * (1.0 - fy)
+        + mask[y1, x0] * (1.0 - fx) * fy
+        + mask[y1, x1] * fx * fy
+    )
+
+
+def mask_transmitted_fraction(kernel: RadialKernel, mask: np.ndarray) -> float:
+    """Fraction of the kernel's mass a transmission raster lets through.
+
+    Evaluated on the mask's own node grid, kernel-weighted — the same
+    resolution the deposit sees, so a masked deposit renormalised to
+    ``weight * fraction`` is self-consistent.
+    """
+    k = mask.shape[0]
+    s = kernel.support_rad
+    nodes = np.linspace(-s, s, k)
+    w = kernel.value(np.hypot(nodes[None, :], nodes[:, None]))
+    denom = w.sum()
+    if denom <= 0:
+        return 0.0
+    return float((w * mask).sum() / denom)
+
+
 def deposit(
     out: np.ndarray,
     u_edges: np.ndarray,
@@ -132,6 +168,7 @@ def deposit(
     weight: float,
     kernel: RadialKernel,
     hess: np.ndarray | None = None,
+    mask: np.ndarray | None = None,
 ) -> None:
     """Accumulate one sample point's mapped kernel into ``out`` in place.
 
@@ -151,6 +188,14 @@ def deposit(
         removes the leading (curvature) term of the linearisation error at
         the cost of nothing but arithmetic — the residual is third order
         in kernel width.
+    :param mask: optional ``(k, k)`` transmission raster in [0, 1] over the
+        kernel's angular support square ``[-support, +support]²`` (rows are
+        the second angular axis), bilinearly interpolated and multiplied
+        into the kernel. This is how aperture rims, receiver-window edges,
+        neighbour shadows and neighbour blocking clip the sun cone from
+        one surface point — all of them are angular clips, so one raster
+        expresses any combination, penumbra included. A masked deposit's
+        conserved mass is ``weight * mask_transmitted_fraction(...)``.
 
     The kernel is evaluated at bin centres — exact in the limit of bins
     small against the kernel footprint, which holds by orders of magnitude
@@ -197,42 +242,42 @@ def deposit(
     alpha_v = inv[1, 0] * duv_u + inv[1, 1] * duv_v
 
     if hess is None:
-        theta = np.hypot(alpha_u, alpha_v)
-        patch = weight * kernel.value(theta) / abs(det)
-        if unclipped:
-            total = patch.sum() * du * dv
-            if total > 0:
-                patch *= weight / total
-        out[j0:j1, i0:i1] += patch
-        return
+        a_u, a_v = alpha_u, alpha_v
+        denom: float | np.ndarray = abs(det)
+    else:
+        # Quadratic correction of the preimage: a -= J^-1 H[a, a] / 2, with
+        # a the linear preimage. One Newton step on the quadratic model —
+        # ample, since the correction is already second order.
+        q_u = 0.5 * (
+            hess[0, 0, 0] * alpha_u * alpha_u
+            + 2.0 * hess[0, 0, 1] * alpha_u * alpha_v
+            + hess[0, 1, 1] * alpha_v * alpha_v
+        )
+        q_v = 0.5 * (
+            hess[1, 0, 0] * alpha_u * alpha_u
+            + 2.0 * hess[1, 0, 1] * alpha_u * alpha_v
+            + hess[1, 1, 1] * alpha_v * alpha_v
+        )
+        a_u = alpha_u - (inv[0, 0] * q_u + inv[0, 1] * q_v)
+        a_v = alpha_v - (inv[1, 0] * q_u + inv[1, 1] * q_v)
 
-    # Quadratic correction of the preimage: a -= J^-1 H[a, a] / 2, with a
-    # the linear preimage. One Newton step on the quadratic model — ample,
-    # since the correction is already second order.
-    q_u = 0.5 * (
-        hess[0, 0, 0] * alpha_u * alpha_u
-        + 2.0 * hess[0, 0, 1] * alpha_u * alpha_v
-        + hess[0, 1, 1] * alpha_v * alpha_v
-    )
-    q_v = 0.5 * (
-        hess[1, 0, 0] * alpha_u * alpha_u
-        + 2.0 * hess[1, 0, 1] * alpha_u * alpha_v
-        + hess[1, 1, 1] * alpha_v * alpha_v
-    )
-    a_u = alpha_u - (inv[0, 0] * q_u + inv[0, 1] * q_v)
-    a_v = alpha_v - (inv[1, 0] * q_u + inv[1, 1] * q_v)
-    theta = np.hypot(a_u, a_v)
+        # Pointwise volume factor: det(J + H[a, .]) at the corrected preimage.
+        m00 = jac[0, 0] + hess[0, 0, 0] * a_u + hess[0, 0, 1] * a_v
+        m01 = jac[0, 1] + hess[0, 0, 1] * a_u + hess[0, 1, 1] * a_v
+        m10 = jac[1, 0] + hess[1, 0, 0] * a_u + hess[1, 0, 1] * a_v
+        m11 = jac[1, 1] + hess[1, 0, 1] * a_u + hess[1, 1, 1] * a_v
+        det_pt = np.abs(m00 * m11 - m01 * m10)
+        denom = np.maximum(det_pt, 1e-12 * abs(det))  # guard folds; kernel≈0 there
 
-    # Pointwise volume factor: det(J + H[a, .]) at the corrected preimage.
-    m00 = jac[0, 0] + hess[0, 0, 0] * a_u + hess[0, 0, 1] * a_v
-    m01 = jac[0, 1] + hess[0, 0, 1] * a_u + hess[0, 1, 1] * a_v
-    m10 = jac[1, 0] + hess[1, 0, 0] * a_u + hess[1, 0, 1] * a_v
-    m11 = jac[1, 1] + hess[1, 0, 1] * a_u + hess[1, 1, 1] * a_v
-    det_pt = np.abs(m00 * m11 - m01 * m10)
-    det_pt = np.maximum(det_pt, 1e-12 * abs(det))  # guard folds; kernel≈0 there
-    patch = weight * kernel.value(theta) / det_pt
+    vals = kernel.value(np.hypot(a_u, a_v))
+    if mask is not None:
+        vals = vals * _mask_lookup(mask, a_u, a_v, kernel.support_rad)
+    patch = weight * vals / denom
     if unclipped:
+        target = weight if mask is None else weight * mask_transmitted_fraction(kernel, mask)
         total = patch.sum() * du * dv
-        if total > 0:
-            patch *= weight / total
+        if total > 0 and target > 0:
+            patch *= target / total
+        elif target == 0:
+            return
     out[j0:j1, i0:i1] += patch
