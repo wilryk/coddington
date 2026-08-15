@@ -104,6 +104,43 @@ class TestDeposit:
         deposit(out, u_edges, v_edges, np.array([50_000.0, 0.0]), 1e5 * np.eye(2), 1.0, kernel)
         assert out.sum() == 0.0
 
+    def test_quadratic_deposit_matches_pushed_samples(self):
+        # Push many exact samples of the kernel through a known quadratic
+        # map and compare the histogram against deposit(hess=...): the
+        # second-order deposit must reproduce the warped distribution's
+        # moments where the linear deposit visibly cannot.
+        rng = np.random.default_rng(7)
+        n = 2_000_000
+        # Sample the Gaussian kernel's angular distribution exactly.
+        alpha = SIGMA * rng.standard_normal((2, n))
+        jac = np.array([[100_000.0, 0.0], [0.0, 60_000.0]])
+        hess = np.zeros((2, 2, 2))
+        hess[1, 0, 0] = 6.0e6  # bends the v coordinate quadratically in a_u
+        uv = jac @ alpha
+        uv[1] += 0.5 * hess[1, 0, 0] * alpha[0] ** 2
+
+        u_edges, v_edges = _grid(half_mm=2000.0, n=200)
+        ref, _, _ = np.histogram2d(uv[0], uv[1], bins=[u_edges, v_edges])
+        ref = ref.T / n  # probability per bin
+
+        out = np.zeros((200, 200))
+        deposit(
+            out, u_edges, v_edges, np.zeros(2), jac, 1.0, RadialKernel.gaussian(SIGMA), hess=hess
+        )
+        du = u_edges[1] - u_edges[0]
+        got = out * du * du  # probability per bin
+
+        _, mu_ref, cov_ref = _moments(ref / du / du, u_edges, v_edges)
+        _, mu_got, cov_got = _moments(out, u_edges, v_edges)
+        # The quadratic term shifts the v mean by H/2 * sigma^2.
+        assert mu_ref[1] == pytest.approx(0.5 * hess[1, 0, 0] * SIGMA**2, rel=0.05)
+        assert mu_got[1] == pytest.approx(mu_ref[1], rel=0.02)
+        assert np.allclose(np.diag(cov_got), np.diag(cov_ref), rtol=0.02)
+        # Off-diagonal is 0 by symmetry; the reference's own sampling noise
+        # is ~sigma_u*sigma_v/sqrt(n) ~ 25 mm^2, so compare absolutely.
+        assert abs(cov_got[0, 1] - cov_ref[0, 1]) < 100.0
+        assert got.sum() == pytest.approx(1.0, rel=1e-3)
+
     def test_singular_jacobian_raises(self):
         u_edges, v_edges = _grid(n=10)
         out = np.zeros((10, 10))

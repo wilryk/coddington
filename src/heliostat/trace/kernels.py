@@ -131,6 +131,7 @@ def deposit(
     jac: np.ndarray,
     weight: float,
     kernel: RadialKernel,
+    hess: np.ndarray | None = None,
 ) -> None:
     """Accumulate one sample point's mapped kernel into ``out`` in place.
 
@@ -141,12 +142,21 @@ def deposit(
     :param jac: ``(2, 2)`` Jacobian ``d(uv)/d(angle)``, mm/rad.
     :param weight: total deposited quantity (e.g. watts) for this sample.
     :param kernel: angular density to lay down.
+    :param hess: optional ``(2, 2, 2)`` Hessian ``d²(uv_i)/d(angle_j)
+        d(angle_k)``, mm/rad². When given, the deposit inverts the local
+        *quadratic* model ``uv = uv0 + J a + H[a, a]/2`` instead of the
+        linear one: the angular preimage of each bin becomes
+        ``a ≈ J⁻¹ d − J⁻¹ H[J⁻¹ d, J⁻¹ d] / 2`` and the density factor
+        ``1/|det J|`` becomes the pointwise ``1/|det(J + H[a, ·])|``. This
+        removes the leading (curvature) term of the linearisation error at
+        the cost of nothing but arithmetic — the residual is third order
+        in kernel width.
 
     The kernel is evaluated at bin centres — exact in the limit of bins
     small against the kernel footprint, which holds by orders of magnitude
     for solar images (footprints ~10^2 mm vs bins ~10^1 mm). Power that
-    the linear map carries outside the grid is simply not deposited;
-    callers difference totals to measure spillage.
+    the map carries outside the grid is simply not deposited; callers
+    difference totals to measure spillage.
     """
     det = jac[0, 0] * jac[1, 1] - jac[0, 1] * jac[1, 0]
     if det == 0.0:
@@ -155,18 +165,29 @@ def deposit(
 
     # Bounding box of the mapped support: the image of a circle of radius
     # support under jac is an ellipse whose largest reach is the largest
-    # singular value of jac times the support radius.
+    # singular value of jac times the support radius; the quadratic term
+    # can push the true image out by up to |H| support² / 2 more.
     smax = np.sqrt(np.linalg.eigvalsh(jac @ jac.T).max())
     reach = smax * kernel.support_rad
+    if hess is not None:
+        reach += 0.5 * float(np.abs(hess).max()) * kernel.support_rad**2 * 2.0
 
     du = u_edges[1] - u_edges[0]
     dv = v_edges[1] - v_edges[0]
-    i0 = max(0, int(np.floor((uv0[0] - reach - u_edges[0]) / du)))
-    i1 = min(u_edges.size - 1, int(np.ceil((uv0[0] + reach - u_edges[0]) / du)))
-    j0 = max(0, int(np.floor((uv0[1] - reach - v_edges[0]) / dv)))
-    j1 = min(v_edges.size - 1, int(np.ceil((uv0[1] + reach - v_edges[0]) / dv)))
+    i0_raw = int(np.floor((uv0[0] - reach - u_edges[0]) / du))
+    i1_raw = int(np.ceil((uv0[0] + reach - u_edges[0]) / du))
+    j0_raw = int(np.floor((uv0[1] - reach - v_edges[0]) / dv))
+    j1_raw = int(np.ceil((uv0[1] + reach - v_edges[0]) / dv))
+    i0, i1 = max(0, i0_raw), min(u_edges.size - 1, i1_raw)
+    j0, j1 = max(0, j0_raw), min(v_edges.size - 1, j1_raw)
     if i0 >= i1 or j0 >= j1:
         return  # footprint entirely off-grid: pure spillage
+    # A footprint that never touched the grid boundary must deposit exactly
+    # its weight; renormalising to that removes both the bin-centre
+    # evaluation error and (at order 2) the approximate-inverse mass error.
+    # Clipped footprints keep their raw deposit — the shortfall is genuine
+    # spillage the caller measures by differencing totals.
+    unclipped = (i0_raw, i1_raw, j0_raw, j1_raw) == (i0, i1, j0, j1)
 
     u_mid = 0.5 * (u_edges[i0 : i1 + 1][:-1] + u_edges[i0 : i1 + 1][1:])
     v_mid = 0.5 * (v_edges[j0 : j1 + 1][:-1] + v_edges[j0 : j1 + 1][1:])
@@ -174,5 +195,44 @@ def deposit(
     duv_v = v_mid[:, None] - uv0[1]
     alpha_u = inv[0, 0] * duv_u + inv[0, 1] * duv_v
     alpha_v = inv[1, 0] * duv_u + inv[1, 1] * duv_v
-    theta = np.hypot(alpha_u, alpha_v)
-    out[j0:j1, i0:i1] += weight * kernel.value(theta) / abs(det)
+
+    if hess is None:
+        theta = np.hypot(alpha_u, alpha_v)
+        patch = weight * kernel.value(theta) / abs(det)
+        if unclipped:
+            total = patch.sum() * du * dv
+            if total > 0:
+                patch *= weight / total
+        out[j0:j1, i0:i1] += patch
+        return
+
+    # Quadratic correction of the preimage: a -= J^-1 H[a, a] / 2, with a
+    # the linear preimage. One Newton step on the quadratic model — ample,
+    # since the correction is already second order.
+    q_u = 0.5 * (
+        hess[0, 0, 0] * alpha_u * alpha_u
+        + 2.0 * hess[0, 0, 1] * alpha_u * alpha_v
+        + hess[0, 1, 1] * alpha_v * alpha_v
+    )
+    q_v = 0.5 * (
+        hess[1, 0, 0] * alpha_u * alpha_u
+        + 2.0 * hess[1, 0, 1] * alpha_u * alpha_v
+        + hess[1, 1, 1] * alpha_v * alpha_v
+    )
+    a_u = alpha_u - (inv[0, 0] * q_u + inv[0, 1] * q_v)
+    a_v = alpha_v - (inv[1, 0] * q_u + inv[1, 1] * q_v)
+    theta = np.hypot(a_u, a_v)
+
+    # Pointwise volume factor: det(J + H[a, .]) at the corrected preimage.
+    m00 = jac[0, 0] + hess[0, 0, 0] * a_u + hess[0, 0, 1] * a_v
+    m01 = jac[0, 1] + hess[0, 0, 1] * a_u + hess[0, 1, 1] * a_v
+    m10 = jac[1, 0] + hess[1, 0, 0] * a_u + hess[1, 0, 1] * a_v
+    m11 = jac[1, 1] + hess[1, 0, 1] * a_u + hess[1, 1, 1] * a_v
+    det_pt = np.abs(m00 * m11 - m01 * m10)
+    det_pt = np.maximum(det_pt, 1e-12 * abs(det))  # guard folds; kernel≈0 there
+    patch = weight * kernel.value(theta) / det_pt
+    if unclipped:
+        total = patch.sum() * du * dv
+        if total > 0:
+            patch *= weight / total
+    out[j0:j1, i0:i1] += patch

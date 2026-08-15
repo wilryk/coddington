@@ -66,7 +66,11 @@ def sunshape_kernel(
         def profile(t):
             return np.exp(-((t**2 / (2.0 * sig**2)) ** SUPER_GAUSS_ORDER))
 
-        kernel = RadialKernel.from_profile(profile, support_rad=8.0 * sig)
+        # Support 4.5 sigma: the order-2 super-Gaussian falls as
+        # exp(-(theta^2/2sigma^2)^2), ~1e-45 there. A generous-looking 8
+        # sigma support would make every footprint's bounding box overlap
+        # the grid edge and disable per-kernel mass renormalisation.
+        kernel = RadialKernel.from_profile(profile, support_rad=4.5 * sig)
     elif source_model == "buie":
         limb = BUIE_LIMB_MRAD * 1e-3
 
@@ -98,6 +102,7 @@ def trace_heliostat_cone(
     grid: tuple[int, int] = (20, 12),
     flux_grid: tuple[int, int] = (128, 128),
     delta_rad: float = 2.0e-4,
+    order: int = 1,
 ) -> dict:
     """Cone-optics trace of one heliostat at one instant.
 
@@ -114,7 +119,16 @@ def trace_heliostat_cone(
     against the optics' scale of nonlinearity but large enough that
     receiver-position differences dominate roundoff — anything within an
     order of magnitude of the default works for metre-scale optics.
+
+    ``order`` selects the local model of the optical map. ``1`` (five rays
+    per sample) linearises it — the ultra-fast mode, leaving a curvature
+    residual of ~1% of peak in the flux map. ``2`` (nine rays per sample)
+    also measures the Hessian by finite differences and deposits through
+    the quadratic map, removing that leading error term for roughly twice
+    the cost — the fast-and-accurate mode.
     """
+    if order not in (1, 2):
+        raise ValueError(f"order must be 1 or 2, got {order!r}")
     # Same frame bookkeeping as the MC trace: the figure coefficients
     # arrive in a convention whose y/z flip negates c4 and c5 here.
     c4 = -c4
@@ -141,17 +155,22 @@ def trace_heliostat_cone(
     normal = n[:, None] - u[:, None] * dsdx - v[:, None] * dsdy
     normal /= np.linalg.norm(normal, axis=0)
 
-    # Five incoming directions, identical for every sample (the sun is at
-    # infinity). Stencil order: [chief, +e1, -e1, +e2, -e2].
-    offsets = np.array([[0.0, 0.0], [1.0, 0.0], [-1.0, 0.0], [0.0, 1.0], [0.0, -1.0]]) * delta_rad
+    # Incoming directions, identical for every sample (the sun is at
+    # infinity). Stencil legs: [chief, +e1, -e1, +e2, -e2] and, at order 2,
+    # the four diagonals [++, +-, -+, --] that resolve the mixed Hessian.
+    stencil = [[0.0, 0.0], [1.0, 0.0], [-1.0, 0.0], [0.0, 1.0], [0.0, -1.0]]
+    if order == 2:
+        stencil += [[1.0, 1.0], [1.0, -1.0], [-1.0, 1.0], [-1.0, -1.0]]
+    offsets = np.array(stencil) * delta_rad
+    legs = offsets.shape[0]
     dirs = -s[None, :] + offsets[:, 0, None] * e1[None, :] + offsets[:, 1, None] * e2[None, :]
     dirs /= np.linalg.norm(dirs, axis=1, keepdims=True)  # (5, 3)
 
-    # Assemble all 5M rays, stencil-major: ray index k*m + i is stencil leg
-    # k at sample i. Every leg starts at the sample point itself.
-    p_flat = np.concatenate([pts] * 5, axis=1)
-    normal5 = np.concatenate([normal] * 5, axis=1)
-    d_flat = np.repeat(dirs.T, m, axis=1)  # (3, 5M), matching stencil-major order
+    # Assemble all legs*M rays, stencil-major: ray index k*m + i is stencil
+    # leg k at sample i. Every leg starts at the sample point itself.
+    p_flat = np.concatenate([pts] * legs, axis=1)
+    normal5 = np.concatenate([normal] * legs, axis=1)
+    d_flat = np.repeat(dirs.T, m, axis=1)  # (3, legs*M), stencil-major
 
     dot = 2.0 * np.einsum("ij,ij->j", d_flat, normal5)
     d_ref = d_flat - dot * normal5
@@ -163,14 +182,14 @@ def trace_heliostat_cone(
     # Map survival back to (stencil, sample): redirect returns the filtered
     # survivor bundle plus its boolean mask over the input rays; intersect
     # filters again within the survivors.
-    alive = np.zeros(5 * m, dtype=bool)
+    alive = np.zeros(legs * m, dtype=bool)
     survivors = np.flatnonzero(on_sec)
     alive[survivors[hit_mask]] = True
-    uv = np.full((2, 5 * m), np.nan)
+    uv = np.full((2, legs * m), np.nan)
     uv[:, survivors[hit_mask]] = uv_hits
 
-    alive = alive.reshape(5, m)
-    uv = uv.reshape(2, 5, m)
+    alive = alive.reshape(legs, m)
+    uv = uv.reshape(2, legs, m)
 
     chief_ok = alive[0]
     stencil_ok = alive.all(axis=0)
@@ -185,6 +204,19 @@ def trace_heliostat_cone(
     jac[:, :, 0] = ((uv[:, 1, sel] - uv[:, 2, sel]) / (2.0 * delta_rad)).T
     jac[:, :, 1] = ((uv[:, 3, sel] - uv[:, 4, sel]) / (2.0 * delta_rad)).T
 
+    hess = None
+    if order == 2:
+        # Second differences, mm per rad^2: d2/de1^2, d2/de2^2 from the
+        # axis legs, the mixed term from the four diagonals.
+        d2 = delta_rad * delta_rad
+        hess = np.empty((n_sel, 2, 2, 2))
+        chief = uv[:, 0, sel]
+        hess[:, :, 0, 0] = ((uv[:, 1, sel] - 2.0 * chief + uv[:, 2, sel]) / d2).T
+        hess[:, :, 1, 1] = ((uv[:, 3, sel] - 2.0 * chief + uv[:, 4, sel]) / d2).T
+        mixed = (uv[:, 5, sel] - uv[:, 6, sel] - uv[:, 7, sel] + uv[:, 8, sel]) / (4.0 * d2)
+        hess[:, :, 0, 1] = mixed.T
+        hess[:, :, 1, 0] = mixed.T
+
     cos_aoi = np.abs(normal.T @ s)  # incoming is -s; |normal . s| is cos(aoi)
     weights = STANDARD_IRRADIANCE_W_MM2 * cell_area_mm2 * cos_aoi
 
@@ -197,7 +229,16 @@ def trace_heliostat_cone(
     uv0_sel = uv[:, 0, sel]
     w_sel = weights[sel]
     for i in range(n_sel):
-        deposit(out, u_edges, v_edges, uv0_sel[:, i], jac[i], w_sel[i], kernel)
+        deposit(
+            out,
+            u_edges,
+            v_edges,
+            uv0_sel[:, i],
+            jac[i],
+            w_sel[i],
+            kernel,
+            hess=None if hess is None else hess[i],
+        )
 
     bin_area_mm2 = (u_edges[1] - u_edges[0]) * (v_edges[1] - v_edges[0])
     power_w = float(out.sum() * bin_area_mm2)
