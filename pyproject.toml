@@ -46,6 +46,8 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "NPY"]
+# np.trapezoid needs numpy >= 2.0; our floor is 1.24, so np.trapz stays.
+ignore = ["NPY201"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
