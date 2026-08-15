@@ -15,19 +15,20 @@ error — is then laid down through that Jacobian by
 Because the Jacobian is *measured* through the real optical chain, every
 geometric effect the Monte Carlo trace captures — off-axis astigmatism,
 cone folding, hyperboloid magnification, receiver obliquity — is inherited
-without being modelled. The two deliberate approximations, both geometric
-and both reported in the counters:
+without being modelled.
 
-* apertures act at sample granularity: a sample whose chief ray survives
-  deposits its whole kernel, one whose chief ray is lost deposits nothing,
-  so aperture edges are resolved to the mirror-grid cell size;
-* the optical map is linearised across one kernel footprint. Where the map
-  folds (an axicon tip) the five-ray stencil straddles the fold and the
-  sample is flagged ``unresolved`` rather than silently mis-deposited.
+Edges — secondary rims, receiver-window borders, neighbour shadows and
+neighbour blocking — are handled in angle space, where they actually
+live: every sample's transmission is *measured* on a ``mask_nodes``² node
+grid spanning the kernel support (one vectorised bundle for the whole
+mirror), and partially-clipped kernels deposit through the resulting
+raster, penumbra included. Samples whose kernel centre is itself lost at
+a rim deposit their surviving mass directly at the passing nodes'
+landing points instead of being dropped.
 
-A 20 x 12 grid (240 samples, 1200 deterministic rays) reproduces the
-smooth flux structure that ~10^5 Monte Carlo rays estimate; error falls
-with grid density, not with luck.
+A 20 x 12 grid (240 samples) reproduces the smooth flux structure that
+~10^5 Monte Carlo rays estimate; error falls with grid and node density,
+not with luck.
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ import numpy as np
 
 from ..geometry.receiver import Receiver
 from ..geometry.secondary import Secondary
+from ..geometry.shading import _blocked_mask
 from .kernels import RadialKernel, deposit
 from .mc import (
     MIRROR_HALF_X_MM,
@@ -103,6 +105,9 @@ def trace_heliostat_cone(
     flux_grid: tuple[int, int] = (128, 128),
     delta_rad: float = 2.0e-4,
     order: int = 1,
+    occluders: list | None = None,
+    shadow_body=None,
+    mask_nodes: int = 16,
 ) -> dict:
     """Cone-optics trace of one heliostat at one instant.
 
@@ -126,6 +131,21 @@ def trace_heliostat_cone(
     also measures the Hessian by finite differences and deposits through
     the quadratic map, removing that leading error term for roughly twice
     the cost — the fast-and-accurate mode.
+
+    Edges and occlusion. A sample whose kernel straddles any boundary —
+    secondary rim, receiver-window edge, a neighbour's shadow on the
+    incoming side, a neighbour blocking the outgoing beam — gets a
+    ``mask_nodes``² transmission raster in angle space, built by testing
+    that many deterministic node rays from the same surface point
+    (mini-trace through secondary and receiver; ray-vs-rectangle tests
+    against ``occluders``; ``shadow_body.occludes`` for an opaque
+    secondary body). The kernel is deposited through the raster, so edges
+    are resolved with true penumbra rather than at sample granularity.
+    ``occluders`` is this heliostat's neighbour list as
+    :class:`~heliostat.geometry.shading.MirrorGeometry` rectangles; leave
+    it ``None`` for store-bound sweeps, where the store contract applies
+    occlusion as read-time scalars instead. Counter invariant:
+    ``valid + masked + blocked + node_fallback + unresolved == samples``.
     """
     if order not in (1, 2):
         raise ValueError(f"order must be 1 or 2, got {order!r}")
@@ -192,53 +212,144 @@ def trace_heliostat_cone(
     uv = uv.reshape(2, legs, m)
 
     chief_ok = alive[0]
-    stencil_ok = alive.all(axis=0)
-    counters["blocked"] = int((~chief_ok).sum())
-    counters["unresolved"] = int((chief_ok & ~stencil_ok).sum())
-    counters["valid"] = int(stencil_ok.sum())
+    full_stencil = alive.all(axis=0)
 
-    # Central-difference Jacobian, mm per rad, per valid sample.
-    sel = stencil_ok
-    n_sel = int(sel.sum())
-    jac = np.empty((n_sel, 2, 2))
-    jac[:, :, 0] = ((uv[:, 1, sel] - uv[:, 2, sel]) / (2.0 * delta_rad)).T
-    jac[:, :, 1] = ((uv[:, 3, sel] - uv[:, 4, sel]) / (2.0 * delta_rad)).T
+    # Jacobian per sample, mm per rad: central differences where both
+    # partners of an axis survived, one-sided where only one did. A sample
+    # deposits when its chief ray and at least one partner per axis exist.
+    jac_all = np.full((m, 2, 2), np.nan)
+    can_jac = chief_ok.copy()
+    for axis, (leg_p, leg_m) in enumerate([(1, 2), (3, 4)]):
+        both = alive[leg_p] & alive[leg_m]
+        pos = alive[leg_p] & ~alive[leg_m] & chief_ok
+        neg = alive[leg_m] & ~alive[leg_p] & chief_ok
+        col = np.full((2, m), np.nan)
+        col[:, both] = (uv[:, leg_p, both] - uv[:, leg_m, both]) / (2.0 * delta_rad)
+        col[:, pos] = (uv[:, leg_p, pos] - uv[:, 0, pos]) / delta_rad
+        col[:, neg] = (uv[:, 0, neg] - uv[:, leg_m, neg]) / delta_rad
+        jac_all[:, :, axis] = col.T
+        can_jac &= alive[leg_p] | alive[leg_m]
 
-    hess = None
+    hess_all = None
     if order == 2:
-        # Second differences, mm per rad^2: d2/de1^2, d2/de2^2 from the
-        # axis legs, the mixed term from the four diagonals.
+        # Second differences where the full stencil survived; a partial
+        # stencil falls back to the linear deposit for that sample.
         d2 = delta_rad * delta_rad
-        hess = np.empty((n_sel, 2, 2, 2))
-        chief = uv[:, 0, sel]
-        hess[:, :, 0, 0] = ((uv[:, 1, sel] - 2.0 * chief + uv[:, 2, sel]) / d2).T
-        hess[:, :, 1, 1] = ((uv[:, 3, sel] - 2.0 * chief + uv[:, 4, sel]) / d2).T
-        mixed = (uv[:, 5, sel] - uv[:, 6, sel] - uv[:, 7, sel] + uv[:, 8, sel]) / (4.0 * d2)
-        hess[:, :, 0, 1] = mixed.T
-        hess[:, :, 1, 0] = mixed.T
+        hess_all = np.full((m, 2, 2, 2), np.nan)
+        f = full_stencil
+        chief = uv[:, 0]
+        hess_all[f, :, 0, 0] = ((uv[:, 1, f] - 2.0 * chief[:, f] + uv[:, 2, f]) / d2).T
+        hess_all[f, :, 1, 1] = ((uv[:, 3, f] - 2.0 * chief[:, f] + uv[:, 4, f]) / d2).T
+        mixed = (uv[:, 5, f] - uv[:, 6, f] - uv[:, 7, f] + uv[:, 8, f]) / (4.0 * d2)
+        hess_all[f, :, 0, 1] = mixed.T
+        hess_all[f, :, 1, 0] = mixed.T
 
+    # --- angular transmission, measured on a node grid for EVERY sample --
+    # The stencil spans only ~delta_rad and cannot detect a boundary lying
+    # elsewhere inside the kernel's ~10 mrad support, so transmission is
+    # not detected — it is measured: mask_nodes² node rays per sample, one
+    # vectorised bundle for the whole mirror, through every clip the sun
+    # cone can meet (neighbour shadow on the way in; neighbour blocking,
+    # secondary aperture and receiver window on the way out).
+    support = kernel.support_rad
+    occluders = occluders or []
+    k = mask_nodes
+    kk = k * k
+    axis_nodes = np.linspace(-support, support, k)
+    au, av = np.meshgrid(axis_nodes, axis_nodes)  # rows = second angular axis
+    w_nodes = kernel.value(np.hypot(au, av).ravel())  # (k²,) kernel weight per node
+    w_sum = w_nodes.sum()
+    d_in_nodes = -s[:, None] + au.ravel()[None, :] * e1[:, None] + av.ravel()[None, :] * e2[:, None]
+    d_in_nodes /= np.linalg.norm(d_in_nodes, axis=0, keepdims=True)  # (3, k²)
+
+    node_ok = np.ones((m, kk), dtype=bool)
+    pts_t = pts.T
+    if occluders or shadow_body is not None:
+        for j in range(kk):
+            toward_sun_j = -d_in_nodes[:, j]
+            if occluders:
+                node_ok[:, j] &= ~_blocked_mask(pts_t, toward_sun_j, occluders)
+            if shadow_body is not None:
+                node_ok[:, j] &= ~shadow_body.occludes(pts_t, toward_sun_j)
+
+    # Reflect every node direction at every sample's normal and push the
+    # whole bundle through the optical chain at once. Sample-major layout:
+    # ray index i*k² + j is node j of sample i.
+    dots = normal.T @ d_in_nodes  # (m, k²)
+    d_out_nodes = d_in_nodes[:, None, :] - 2.0 * dots[None, :, :] * normal[:, :, None]
+    d_out_flat = d_out_nodes.reshape(3, m * kk)
+    p_nodes = np.repeat(pts, kk, axis=1)  # (3, m*k²)
+    if occluders:
+        blocked_out = _blocked_mask(p_nodes.T, d_out_flat.T, occluders).reshape(m, kk)
+        node_ok &= ~blocked_out
+    pre_n, d_n, on_n = secondary.redirect(p_nodes, d_out_flat.copy(), {})
+    hit_n, uv_n = receiver.intersect(pre_n, d_n)
+    pass_out = np.zeros(m * kk, dtype=bool)
+    uv_nodes = np.full((2, m * kk), np.nan)
+    surv = np.flatnonzero(on_n)[hit_n]
+    (u0, u1), (v0, v1) = receiver.uv_extent()
+    in_ext = (uv_n[0] >= u0) & (uv_n[0] <= u1) & (uv_n[1] >= v0) & (uv_n[1] <= v1)
+    pass_out[surv[in_ext]] = True
+    uv_nodes[:, surv] = uv_n
+    node_ok &= pass_out.reshape(m, kk)
+    uv_nodes = uv_nodes.reshape(2, m, kk)
+
+    frac = (node_ok @ w_nodes) / w_sum  # kernel-weighted transmitted fraction
+
+    # --- classify and deposit --------------------------------------------
     cos_aoi = np.abs(normal.T @ s)  # incoming is -s; |normal . s| is cos(aoi)
     weights = STANDARD_IRRADIANCE_W_MM2 * cell_area_mm2 * cos_aoi
 
-    (u0, u1), (v0, v1) = receiver.uv_extent()
     n_u, n_v = flux_grid
     u_edges = np.linspace(u0, u1, n_u + 1)
     v_edges = np.linspace(v0, v1, n_v + 1)
     out = np.zeros((n_v, n_u))
+    bin_area_mm2 = (u_edges[1] - u_edges[0]) * (v_edges[1] - v_edges[0])
 
-    uv0_sel = uv[:, 0, sel]
-    w_sel = weights[sel]
-    for i in range(n_sel):
-        deposit(
-            out,
-            u_edges,
-            v_edges,
-            uv0_sel[:, i],
-            jac[i],
-            w_sel[i],
-            kernel,
-            hess=None if hess is None else hess[i],
-        )
+    n_valid = n_masked = n_blocked = n_node_fallback = 0
+    for idx in range(m):
+        if frac[idx] < 1.0e-6:
+            n_blocked += 1
+            continue
+        if chief_ok[idx] and can_jac[idx]:
+            full_pass = frac[idx] > 1.0 - 1.0e-9
+            hess_i = None
+            if hess_all is not None and full_stencil[idx]:
+                hess_i = hess_all[idx]
+            deposit(
+                out,
+                u_edges,
+                v_edges,
+                uv[:, 0, idx],
+                jac_all[idx],
+                float(weights[idx]),
+                kernel,
+                hess=hess_i,
+                mask=None if full_pass else node_ok[idx].astype(float).reshape(k, k),
+            )
+            if full_pass:
+                n_valid += 1
+            else:
+                n_masked += 1
+        else:
+            # The chief ray (or a whole stencil axis) is lost — usually a
+            # rim-straddling sample whose kernel centre misses the aperture
+            # while part of its sun cone still passes. Deposit that passing
+            # mass directly at the surviving nodes' landing points,
+            # kernel-weighted. Locally granular, but these slivers carry
+            # little power and would otherwise be dropped entirely.
+            ok_j = node_ok[idx]
+            share = weights[idx] * w_nodes[ok_j] / w_sum / bin_area_mm2
+            iu = np.clip(((uv_nodes[0, idx, ok_j] - u0) // (u_edges[1] - u_edges[0])), 0, n_u - 1)
+            iv = np.clip(((uv_nodes[1, idx, ok_j] - v0) // (v_edges[1] - v_edges[0])), 0, n_v - 1)
+            np.add.at(out, (iv.astype(np.intp), iu.astype(np.intp)), share)
+            n_node_fallback += 1
+
+    counters["valid"] = n_valid
+    counters["masked"] = n_masked
+    counters["blocked"] = n_blocked
+    counters["node_fallback"] = n_node_fallback
+    counters["unresolved"] = 0  # retained for counter-invariant compatibility
 
     bin_area_mm2 = (u_edges[1] - u_edges[0]) * (v_edges[1] - v_edges[0])
     power_w = float(out.sum() * bin_area_mm2)
@@ -249,6 +360,6 @@ def trace_heliostat_cone(
         "power_w": power_w,
         "incident_power_w": float(weights.sum()),
         "counters": counters,
-        "chief_uv": uv0_sel,
-        "jacobians": jac,
+        "chief_uv": uv[:, 0],
+        "jacobians": jac_all,
     }

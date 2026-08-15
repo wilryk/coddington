@@ -44,9 +44,11 @@ class TraceMode:
             raise ValueError(f"backend must be 'cone' or 'mc', got {self.backend!r}")
 
 
-ULTRA_FAST = TraceMode("ultra_fast", backend="cone", cone_kwargs={"order": 1, "grid": (20, 12)})
+ULTRA_FAST = TraceMode(
+    "ultra_fast", backend="cone", cone_kwargs={"order": 1, "grid": (20, 12), "mask_nodes": 16}
+)
 FAST_ACCURATE = TraceMode(
-    "fast_accurate", backend="cone", cone_kwargs={"order": 2, "grid": (20, 12)}
+    "fast_accurate", backend="cone", cone_kwargs={"order": 2, "grid": (20, 12), "mask_nodes": 16}
 )
 MONTE_CARLO = TraceMode("monte_carlo", backend="mc", n_rays=120_000)
 

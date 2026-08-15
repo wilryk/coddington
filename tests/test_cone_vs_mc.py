@@ -200,7 +200,8 @@ def test_cone_matches_fixture(config, heliostat_id, step_key):
 
     # --- counters sanity: the loss chain must be exhaustive over samples.
     c = cone["counters"]
-    assert c["valid"] + c["blocked"] + c["unresolved"] == c["samples"], (
+    parts = c["valid"] + c["masked"] + c["blocked"] + c["node_fallback"] + c["unresolved"]
+    assert parts == c["samples"], (
         f"{config} h{heliostat_id} {step_key}: counters {c} do not sum to samples"
     )
 
