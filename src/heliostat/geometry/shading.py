@@ -389,6 +389,295 @@ def occlusion_efficiency(
     return eta
 
 
+def _corners(geom: MirrorGeometry) -> np.ndarray:
+    """World-space corners of a mirror rectangle, ``(4, 3)``.
+
+    Same corner order :func:`corner_shadow` uses (CCW in the mirror's own
+    ``u``/``v`` frame): ``(-1,-1), (1,-1), (1,1), (-1,1)``.
+    """
+    return np.array(
+        [
+            geom.centre + su * geom.half_width * geom.u + sv * geom.half_height * geom.v
+            for su, sv in ((-1, -1), (1, -1), (1, 1), (-1, 1))
+        ]
+    )
+
+
+def shadow_quad_uv(
+    occ: MirrorGeometry, mirror: MirrorGeometry, to_sun: np.ndarray
+) -> np.ndarray | None:
+    """Parallel-project ``occ``'s four corners along ``to_sun`` onto ``mirror``'s plane.
+
+    Returns their ``(u, v)`` coordinates in ``mirror``'s own frame, ``(4, 2)``,
+    or ``None`` when the occluder cannot shade this mirror at all.
+
+    For an occluder corner ``Q``, the landing point on the mirror plane is
+    the point ``P = Q - t * to_sun`` that satisfies the mirror's plane
+    equation, i.e. ``t`` solves ``((Q - t*to_sun) - mirror.centre) . n = 0``:
+
+        t = ((Q - mirror.centre) . n) / (to_sun . n)
+
+    This is exactly the same ``t`` :func:`_blocked_mask` computes testing a
+    mirror point's ray *toward* the sun against the occluder's own plane
+    (the two formulations are algebraic rearrangements of the same
+    intersection) -- ``t > 0`` means the occluder sits between the mirror
+    and the sun, the physically shading case; ``t <= 0`` means the occluder
+    is behind the mirror relative to the sun and casts no shadow on it here.
+
+    The function is exact and returns a quad only when **every** corner has
+    ``t > 0``. A corner that straddles the plane (some corners ahead, some
+    behind -- possible for a large or steeply-tilted occluder near grazing
+    sun angles) makes the affine quad meaningless as a single convex shape,
+    so this returns ``None`` and the caller is expected to fall back to
+    per-point tests against that one occluder instead.
+    """
+    d = np.asarray(to_sun, dtype=float)
+    d = d / np.linalg.norm(d)
+    denom = float(d @ mirror.normal)
+    if abs(denom) < 1e-12:  # sun ray parallel to the mirror plane
+        return None
+    corners = _corners(occ)
+    t = ((corners - mirror.centre) @ mirror.normal) / denom
+    if not np.all(t > 1e-9):
+        return None
+    landing = corners - t[:, None] * d
+    rel = landing - mirror.centre
+    return np.column_stack([rel @ mirror.u, rel @ mirror.v])
+
+
+def block_quad_uv(
+    occ: MirrorGeometry, mirror: MirrorGeometry, aim_point_mm: np.ndarray
+) -> np.ndarray | None:
+    """Central-project ``occ``'s four corners from ``aim_point_mm`` onto ``mirror``'s plane.
+
+    Returns ``(4, 2)`` ``(u, v)`` coordinates in ``mirror``'s own frame, or
+    ``None``. A mirror point ``P`` is blocked iff the segment ``P -> aim``
+    crosses the occluder, which holds iff ``P`` lies inside this projected
+    quad -- the point-source (finite aim distance) analogue of
+    :func:`shadow_quad_uv`'s parallel (infinite sun distance) projection.
+
+    For occluder corner ``Q``, let ``e = normalize(Q - aim)`` (the direction
+    a beam travels passing through ``Q`` on its way from the aim point). The
+    mirror-plane landing point continues *past* ``Q``, away from the aim,
+    along ``e``: ``P = Q + t*e`` with
+
+        t = ((mirror.centre - Q) . n) / (e . n)
+
+    ``t > 0`` means the mirror is farther from the aim than ``Q`` along this
+    line -- i.e. ``Q`` (the occluder corner) sits between the aim and the
+    mirror, which is the physically blocking case. ``t <= 0`` covers both
+    degenerate configurations at once: an occluder on the far side of the
+    mirror from the aim, and an occluder beyond the aim point itself (order
+    mirror -> aim -> occluder along the line) -- both fail this same test,
+    so no separate check is needed for the "beyond the aim point" case.
+
+    Same straddling caveat as :func:`shadow_quad_uv`: any corner with
+    ``t <= 0`` invalidates the whole quad and the caller should fall back to
+    point tests for that occluder.
+    """
+    aim = np.asarray(aim_point_mm, dtype=float)
+    corners = _corners(occ)
+    e = corners - aim[None, :]
+    lengths = np.linalg.norm(e, axis=1)
+    if np.any(lengths < 1e-9):  # a corner coincides with the aim point
+        return None
+    e_hat = e / lengths[:, None]
+    denom = e_hat @ mirror.normal
+    if np.any(np.abs(denom) < 1e-12):
+        return None
+    t = ((mirror.centre - corners) @ mirror.normal) / denom
+    if not np.all(t > 1e-9):
+        return None
+    landing = corners + t[:, None] * e_hat
+    rel = landing - mirror.centre
+    return np.column_stack([rel @ mirror.u, rel @ mirror.v])
+
+
+def _sutherland_hodgman(poly: np.ndarray, half_width: float, half_height: float) -> np.ndarray:
+    """Clip a convex polygon to the axis-aligned rectangle ``[-hw,hw]x[-hh,hh]``.
+
+    Classic Sutherland-Hodgman, clipping against the rectangle's four
+    half-planes in turn. Exact for a convex subject polygon against a convex
+    clip region (both hold here: the clip region is a rectangle, and the
+    projected occluder quads from :func:`shadow_quad_uv`/:func:`block_quad_uv`
+    are convex because the ``t > 0`` guard rules out the sign flip that would
+    fold the projection). Returns ``(K, 2)`` for the clipped polygon, ``K``
+    between 0 (no overlap) and 8 (a quad can pick up at most one extra vertex
+    per rectangle edge).
+    """
+
+    def clip(points: np.ndarray, inside, intersect) -> np.ndarray:
+        if len(points) == 0:
+            return points
+        out = []
+        n = len(points)
+        for i in range(n):
+            cur, prev = points[i], points[i - 1]
+            cur_in, prev_in = inside(cur), inside(prev)
+            if cur_in:
+                if not prev_in:
+                    out.append(intersect(prev, cur))
+                out.append(cur)
+            elif prev_in:
+                out.append(intersect(prev, cur))
+        return np.array(out) if out else np.empty((0, 2))
+
+    def x_edge(x0: float, keep_ge: bool):
+        inside = (lambda p: p[0] >= x0) if keep_ge else (lambda p: p[0] <= x0)
+
+        def intersect(a, b):
+            t = (x0 - a[0]) / (b[0] - a[0])
+            return np.array([x0, a[1] + t * (b[1] - a[1])])
+
+        return inside, intersect
+
+    def y_edge(y0: float, keep_ge: bool):
+        inside = (lambda p: p[1] >= y0) if keep_ge else (lambda p: p[1] <= y0)
+
+        def intersect(a, b):
+            t = (y0 - a[1]) / (b[1] - a[1])
+            return np.array([a[0] + t * (b[0] - a[0]), y0])
+
+        return inside, intersect
+
+    pts = np.asarray(poly, dtype=float)
+    for inside, intersect in (
+        x_edge(-half_width, True),
+        x_edge(half_width, False),
+        y_edge(-half_height, True),
+        y_edge(half_height, False),
+    ):
+        pts = clip(pts, inside, intersect)
+        if len(pts) == 0:
+            break
+    return pts
+
+
+def _polygon_area(poly: np.ndarray) -> float:
+    """Shoelace area of a simple polygon, ``(K, 2)`` -> scalar."""
+    if len(poly) < 3:
+        return 0.0
+    x, y = poly[:, 0], poly[:, 1]
+    return float(0.5 * abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
+
+
+def _points_in_polygon(px: np.ndarray, py: np.ndarray, poly: np.ndarray) -> np.ndarray:
+    """Point-in-polygon test (PNPOLY crossing-number), vectorised over points.
+
+    ``poly`` is ``(K, 2)``, taken as a closed simple polygon in vertex order
+    (not pre-closed -- the wraparound edge ``poly[-1] -> poly[0]`` is
+    included automatically). Ties on an edge are resolved arbitrarily, which
+    is immaterial here: callers only use this on raster cell centres, a
+    measure-zero set to land exactly on a boundary.
+    """
+    if len(poly) < 3:
+        return np.zeros(len(px), dtype=bool)
+    inside = np.zeros(len(px), dtype=bool)
+    xs, ys = poly[:, 0], poly[:, 1]
+    n = len(poly)
+    j = n - 1
+    for i in range(n):
+        xi, yi, xj, yj = xs[i], ys[i], xs[j], ys[j]
+        dy = yj - yi
+        with np.errstate(divide="ignore", invalid="ignore"):
+            x_int = np.where(
+                dy != 0, (xj - xi) * (py - yi) / np.where(dy == 0, 1.0, dy) + xi, np.inf
+            )
+        cond = ((yi > py) != (yj > py)) & (px < x_int)
+        inside ^= cond
+        j = i
+    return inside
+
+
+def polygon_occlusion(
+    geometries: list[MirrorGeometry],
+    aim_points_mm: np.ndarray,
+    solar_az_deg: float,
+    solar_el_deg: float,
+    neighbours: list[np.ndarray],
+    secondary: "SecondaryCone | SecondaryDisc | None" = None,
+    raster: tuple[int, int] = (100, 60),
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Exact polygon-projection shading/blocking, same call shape as :func:`occlusion_efficiency`.
+
+    Where :func:`shading_blocking`/:func:`occlusion_efficiency` test a fixed
+    sample grid of *points* against each occluder's plane, this projects each
+    occluder's *rectangle* exactly (:func:`shadow_quad_uv` for shading,
+    :func:`block_quad_uv` for blocking), clips it against the mirror
+    aperture with :func:`_sutherland_hodgman` (exact, no sampling error), and
+    only then rasterises the clipped polygons' union on a
+    ``raster`` grid of cell centres to combine multiple occluders and read
+    off an area fraction. The projection and clip are exact; the raster step
+    has the same kind of quantisation error as ``nu``/``nv`` in the
+    point-sampling functions, just decoupled from the geometry error, so a
+    given ``raster`` resolution is far more accurate than the same-sized
+    point grid (see ``tests/test_polygon_shading.py``).
+
+    Any occluder whose quad comes back ``None`` (the corner-straddling case
+    documented on :func:`shadow_quad_uv`/:func:`block_quad_uv`) falls back to
+    a direct point test of *that one occluder* on the raster grid via
+    :func:`_blocked_mask`, unioned in with the rest exactly like a resolved
+    quad would be.
+
+    Returns ``(eta_shade, eta_block, eta_secondary, eta_union)`` -- the same
+    four quantities :func:`shading_blocking` and :func:`occlusion_efficiency`
+    report between them, from one pass per heliostat.
+    """
+    n = len(geometries)
+    if solar_el_deg <= 0.0:
+        return np.zeros(n), np.zeros(n), np.ones(n), np.zeros(n)
+
+    to_sun = sun_vector(solar_az_deg, solar_el_deg)
+    aim_points_mm = np.asarray(aim_points_mm, dtype=float)
+    n_u, n_v = raster
+
+    su = (np.arange(n_u) + 0.5) / n_u * 2.0 - 1.0
+    sv = (np.arange(n_v) + 0.5) / n_v * 2.0 - 1.0
+
+    eta_shade = np.ones(n)
+    eta_block = np.ones(n)
+    eta_secondary = np.ones(n)
+    eta_union = np.ones(n)
+
+    for i, mirror in enumerate(geometries):
+        nbrs = [geometries[j] for j in neighbours[i]]
+
+        a, b = np.meshgrid(su * mirror.half_width, sv * mirror.half_height, indexing="ij")
+        local_u, local_v = a.ravel(), b.ravel()
+        world_pts = mirror.centre + local_u[:, None] * mirror.u + local_v[:, None] * mirror.v
+
+        shaded = np.zeros(local_u.size, dtype=bool)
+        blocked = np.zeros(local_u.size, dtype=bool)
+
+        for occ in nbrs:
+            quad = shadow_quad_uv(occ, mirror, to_sun)
+            if quad is None:
+                shaded |= _blocked_mask(world_pts, to_sun, [occ])
+            else:
+                clipped = _sutherland_hodgman(quad, mirror.half_width, mirror.half_height)
+                if len(clipped) >= 3:
+                    shaded |= _points_in_polygon(local_u, local_v, clipped)
+
+            bquad = block_quad_uv(occ, mirror, aim_points_mm[i])
+            if bquad is None:
+                blocked |= _blocked_mask(world_pts, aim_points_mm[i] - world_pts, [occ])
+            else:
+                clipped_b = _sutherland_hodgman(bquad, mirror.half_width, mirror.half_height)
+                if len(clipped_b) >= 3:
+                    blocked |= _points_in_polygon(local_u, local_v, clipped_b)
+
+        sec_mask = np.zeros(local_u.size, dtype=bool)
+        if secondary is not None:
+            sec_mask = secondary.occludes(world_pts, to_sun)
+            eta_secondary[i] = float(1.0 - sec_mask.mean())
+
+        eta_shade[i] = float(1.0 - (shaded | sec_mask).mean())
+        eta_block[i] = float(1.0 - blocked.mean()) if nbrs else 1.0
+        eta_union[i] = float(1.0 - (shaded | blocked | sec_mask).mean())
+
+    return eta_shade, eta_block, eta_secondary, eta_union
+
+
 def corner_shadow(geom: MirrorGeometry, direction: np.ndarray, ground_z: float = 0.0) -> np.ndarray:
     """The mirror's four corners projected along ``direction`` onto the ground.
 
