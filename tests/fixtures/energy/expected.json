@@ -1,0 +1,46 @@
+{
+  "run": "C:\\gitlab\\heliostats\\analysis_output\\public_fixture_run",
+  "n_heliostats": 10,
+  "heliostat_ids": [
+    13,
+    32,
+    536,
+    575,
+    582,
+    592,
+    600,
+    615,
+    625,
+    639
+  ],
+  "dates": [
+    "2026-03-20",
+    "2026-06-21",
+    "2026-12-21"
+  ],
+  "annual_energy_kwh": {
+    "constant_1000_w_m2": 364427.7214205148,
+    "pvgis_tmy_table": 157477.0070225013
+  },
+  "annual_energy_mwh": {
+    "constant_1000_w_m2": 364.4277214205148,
+    "pvgis_tmy_table": 157.47700702250128
+  },
+  "dni_settings": {
+    "constant": {
+      "mode": "constant",
+      "value_w_m2": 1000.0
+    },
+    "table": {
+      "mode": "table",
+      "table_file": "dni_pvgis.csv",
+      "describe": "TableDNI(366 days from dni_pvgis.csv) aligned -46 min (data -40.5 deg -> site -52 deg)",
+      "data_longitude": -40.5,
+      "site_longitude": -52.0,
+      "solar_time_aligned": true
+    }
+  },
+  "mirror_area_m2": 150.0,
+  "traced_timesteps": 40,
+  "traced_declinations": 15
+}

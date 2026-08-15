@@ -1,0 +1,107 @@
+{
+  "created": "2026-08-15T09:27:55",
+  "quantisation_scale_mm": 0.061037018951994385,
+  "receiver_window_mm": 2000.0,
+  "grid_size": 128,
+  "rays_per_heliostat": 20000,
+  "source_power_w": 38484.5,
+  "throughput": 0.81,
+  "secondary": "axicon",
+  "flat_mirrors": false,
+  "site": {
+    "latitude": -10.0,
+    "longitude": -52.0,
+    "timezone": -3
+  },
+  "geometry": {
+    "secondary_height_mm": 27000.0,
+    "receiver_offset_mm": -20000.0,
+    "axicon_angle_deg": 20.0,
+    "axicon_aperture_radius_mm": 14000.0,
+    "focus_height_mm": null,
+    "secondary_rim_height_mm": null
+  },
+  "raw_rays": "none",
+  "n_heliostats": 10,
+  "heliostat_ids": [
+    13,
+    32,
+    536,
+    575,
+    582,
+    592,
+    600,
+    615,
+    625,
+    639
+  ],
+  "timesteps": [
+    "20260320_0642",
+    "20260320_0741",
+    "20260320_0840",
+    "20260320_0939",
+    "20260320_1038",
+    "20260320_1136",
+    "20260320_1235",
+    "20260320_1334",
+    "20260320_1433",
+    "20260320_1532",
+    "20260320_1631",
+    "20260320_1730",
+    "20260320_1829",
+    "20260621_0654",
+    "20260621_0750",
+    "20260621_0846",
+    "20260621_0942",
+    "20260621_1038",
+    "20260621_1134",
+    "20260621_1230",
+    "20260621_1326",
+    "20260621_1422",
+    "20260621_1518",
+    "20260621_1614",
+    "20260621_1710",
+    "20260621_1806",
+    "20261221_0615",
+    "20261221_0712",
+    "20261221_0809",
+    "20261221_0906",
+    "20261221_1003",
+    "20261221_1100",
+    "20261221_1158",
+    "20261221_1255",
+    "20261221_1352",
+    "20261221_1449",
+    "20261221_1546",
+    "20261221_1643",
+    "20261221_1740",
+    "20261221_1837"
+  ],
+  "dates": [
+    "2026-03-20",
+    "2026-06-21",
+    "2026-12-21"
+  ],
+  "workers": 1,
+  "occluders": false,
+  "traced_secondary": false,
+  "occlusion_form": "union",
+  "overrides": {
+    "trace": {
+      "rays_per_heliostat": 20000,
+      "rays_per_trace": 20000
+    },
+    "storage": {
+      "root": "C:\\gitlab\\heliostats\\analysis_output\\public_fixture_run",
+      "raw_rays": "none"
+    },
+    "geometry": {
+      "axicon_aperture_radius_mm": 14000.0
+    }
+  },
+  "trace_backend": "pytrace",
+  "source_model": "super_gauss",
+  "seed_scheme": "default_rng(SeedSequence((base_seed, int(timestep_key), heliostat_id)))",
+  "base_seed": 20260811,
+  "numpy_version": "2.2.6"
+}
