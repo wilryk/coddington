@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from ..geometry.heliostat import zernike_sag_and_slopes as _zernike_sag_and_slopes
 from ..geometry.receiver import Receiver
 from ..geometry.secondary import Secondary
 from .samplers import SuperGaussSampler
@@ -36,9 +37,6 @@ SOURCE_POWER_W = 38484.5  # = 1000 W/m^2 * pi * 3.5^2 m^2
 # Mirror aperture half-sizes (rect, mm): 5 m wide along u, 3 m tall along v.
 MIRROR_HALF_X_MM = 2500.0
 MIRROR_HALF_Y_MM = 1500.0
-
-_SQRT3 = np.sqrt(3.0)
-_SQRT6 = np.sqrt(6.0)
 
 _DEFAULT_SAMPLER: SuperGaussSampler | None = None
 
@@ -82,18 +80,6 @@ def _mirror_frame(rot_az_deg: float, rot_el_deg: float):
     return n, u, v
 
 
-def _zernike_sag_and_slopes(x, y, c3, c4, c5):
-    """ANSI Z3..Z5 sag and its partial derivatives, normrad = 1 (x, y in mm)."""
-    sag = (
-        c3 * _SQRT6 * 2.0 * x * y
-        + c4 * _SQRT3 * (2.0 * x * x + 2.0 * y * y - 1.0)
-        + c5 * _SQRT6 * (x * x - y * y)
-    )
-    dsdx = c3 * _SQRT6 * 2.0 * y + c4 * _SQRT3 * 4.0 * x + c5 * _SQRT6 * 2.0 * x
-    dsdy = c3 * _SQRT6 * 2.0 * x + c4 * _SQRT3 * 4.0 * y - c5 * _SQRT6 * 2.0 * y
-    return sag, dsdx, dsdy
-
-
 def design_facet_frames(design, helio: np.ndarray, n: np.ndarray, u: np.ndarray, v: np.ndarray):
     """World-frame geometry per facet: ``(facet, normal, fu, fv, centre)``.
 
@@ -134,8 +120,8 @@ def trace_heliostat(
     n_rays: int,
     rng: np.random.Generator,
     sampler: SuperGaussSampler | None = None,
-    source_disk_radius_mm: float = SOURCE_DISK_RADIUS_MM,
-    source_power_w: float = SOURCE_POWER_W,
+    source_disk_radius_mm: "float | str" = SOURCE_DISK_RADIUS_MM,
+    source_power_w: float | None = SOURCE_POWER_W,
     return_paths: bool = False,
     return_secondary_hits: bool = False,
     design: "HeliostatDesign | None" = None,
@@ -155,6 +141,12 @@ def trace_heliostat(
     ``source_disk_radius_mm`` and ``source_power_w`` default to the values
     every stored trace was generated with; passing different ones changes
     the emitting disk and the reported ``watts_per_ray``, nothing else.
+    ``source_disk_radius_mm="auto"`` sizes the disk to the mirror it
+    serves — 1.15 x the design's bbox half-diagonal (or the legacy
+    rectangle's) — and recomputes ``source_power_w`` accordingly; an
+    explicit opt-in so no stored-run convention shifts, but the right
+    choice for small or large custom designs, where the fixed 3.5 m disk
+    wastes rays or clips corners.
 
     ``design`` switches the mirror model. ``None`` (default) is the
     original single 5 x 3 m rectangle whose figure is the ``c3``/``c4``/
@@ -171,6 +163,17 @@ def trace_heliostat(
     """
     if sampler is None:
         sampler = _default_sampler()
+
+    if isinstance(source_disk_radius_mm, str):
+        if source_disk_radius_mm != "auto":
+            raise ValueError(f"source_disk_radius_mm must be a number or 'auto'")
+        half_diag = (
+            design.half_diagonal_mm
+            if design is not None
+            else float(np.hypot(MIRROR_HALF_X_MM, MIRROR_HALF_Y_MM))
+        )
+        source_disk_radius_mm = 1.15 * half_diag
+        source_power_w = 1000.0 * np.pi * (source_disk_radius_mm / 1000.0) ** 2
 
     # heliostat_shape (../geometry/heliostat.py) computes the figure in a
     # frame whose y and z axes are the mirror's own; the Zernike sag

@@ -96,3 +96,23 @@ def heliostat_shape(rot_astig_deg, rad_s, rad_t):
     c4 = 0.125 * (curv_t + curv_s)
     c5 = 0.25 * (curv_t - curv_s) * np.cos(2 * rot_astig)
     return c0, c3, c4, c5
+
+
+_SQRT3 = np.sqrt(3.0)
+_SQRT6 = np.sqrt(6.0)
+
+
+def zernike_sag_and_slopes(x, y, c3, c4, c5):
+    """ANSI Z3..Z5 sag and its partial derivatives, normrad = 1 (x, y in mm).
+
+    Lives here (a numpy-only module) so both tracer backends and the design
+    layer share one pinned polynomial without import cycles.
+    """
+    sag = (
+        c3 * _SQRT6 * 2.0 * x * y
+        + c4 * _SQRT3 * (2.0 * x * x + 2.0 * y * y - 1.0)
+        + c5 * _SQRT6 * (x * x - y * y)
+    )
+    dsdx = c3 * _SQRT6 * 2.0 * y + c4 * _SQRT3 * 4.0 * x + c5 * _SQRT6 * 2.0 * x
+    dsdy = c3 * _SQRT6 * 2.0 * x + c4 * _SQRT3 * 4.0 * y - c5 * _SQRT6 * 2.0 * y
+    return sag, dsdx, dsdy
