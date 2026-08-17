@@ -16,11 +16,16 @@ Convention pins that are not free to change
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 
 from ..geometry.receiver import Receiver
 from ..geometry.secondary import Secondary
 from .samplers import SuperGaussSampler
+
+if TYPE_CHECKING:
+    from ..geometry.design import HeliostatDesign
 
 # Source geometry: a 3500 mm-radius disk, 30 m from each heliostat along the
 # sun vector, emitting toward the mirror. Fixed for every run traced so far.
@@ -89,6 +94,31 @@ def _zernike_sag_and_slopes(x, y, c3, c4, c5):
     return sag, dsdx, dsdy
 
 
+def design_facet_frames(design, helio: np.ndarray, n: np.ndarray, u: np.ndarray, v: np.ndarray):
+    """World-frame geometry per facet: ``(facet, normal, fu, fv, centre)``.
+
+    ``fu`` is the heliostat's ``u`` axis projected into the canted facet's
+    plane, ``fv`` completes the right-handed frame — for an uncanted facet
+    they are exactly ``(u, v)``, matching where the facet's region and
+    surface were authored. Facet centres sit on the heliostat plane at
+    their 2-D offsets; the cant tilts the facet about its own centre.
+    """
+    frames = []
+    for facet in design.facets:
+        if facet.cant_normal is None:
+            nf, fu, fv = n, u, v
+        else:
+            cn = facet.cant_normal
+            nf = cn[0] * u + cn[1] * v + cn[2] * n
+            nf = nf / np.linalg.norm(nf)
+            fu = u - (u @ nf) * nf
+            fu = fu / np.linalg.norm(fu)
+            fv = np.cross(nf, fu)
+        centre = helio + u * facet.offset_mm[0] + v * facet.offset_mm[1]
+        frames.append((facet, nf, fu, fv, centre))
+    return frames
+
+
 def trace_heliostat(
     x_mm: float,
     y_mm: float,
@@ -108,6 +138,7 @@ def trace_heliostat(
     source_power_w: float = SOURCE_POWER_W,
     return_paths: bool = False,
     return_secondary_hits: bool = False,
+    design: "HeliostatDesign | None" = None,
 ) -> dict:
     """Trace one heliostat at one instant; return receiver hits and loss counts.
 
@@ -124,6 +155,19 @@ def trace_heliostat(
     ``source_disk_radius_mm`` and ``source_power_w`` default to the values
     every stored trace was generated with; passing different ones changes
     the emitting disk and the reported ``watts_per_ray``, nothing else.
+
+    ``design`` switches the mirror model. ``None`` (default) is the
+    original single 5 x 3 m rectangle whose figure is the ``c3``/``c4``/
+    ``c5`` terms — that code path is untouched and bit-reproducible
+    against the golden fixtures. A :class:`HeliostatDesign` replaces the
+    mirror with its facet list: each ray takes the nearest positive facet
+    intersection (Newton on that facet's own surface, membership by its
+    aperture sketch, reflection off its canted local normal). With a
+    design, ``c3``/``c4``/``c5`` are ignored — figures live on the
+    design's surfaces, in the design's own frame convention with no
+    hidden sign flips (the legacy path negates c4/c5 internally for its
+    inherited frame; a design equivalent to legacy ``(c3, c4, c5)``
+    therefore carries ``ZernikeAstig(c3, -c4, -c5)``).
     """
     if sampler is None:
         sampler = _default_sampler()
@@ -164,31 +208,77 @@ def trace_heliostat(
 
     # --- primary mirror -----------------------------------------------
     n, u, v = _mirror_frame(rot_az_deg, rot_el_deg)
-    dn = d.T @ n  # (N,)
-    du, dv = d.T @ u, d.T @ v
-    t = ((helio - p.T) @ n) / dn
-    # One Newton correction for the sag, then a final evaluation: the
-    # figure is millimetres over a 3 m half-aperture, so a second
-    # correction is sub-micron -- far below receiver storage quantisation.
-    hit = p + d * t
-    rel = hit.T - helio
-    lx, ly = rel @ u, rel @ v
-    sag, dsdx, dsdy = _zernike_sag_and_slopes(lx, ly, c3, c4, c5)
-    t -= (rel @ n - sag) / (dn - dsdx * du - dsdy * dv)
-    hit = p + d * t
-    rel = hit.T - helio
-    lx, ly = rel @ u, rel @ v
-    ok = (np.abs(lx) <= MIRROR_HALF_X_MM) & (np.abs(ly) <= MIRROR_HALF_Y_MM) & (t > 0)
-    counters["hit_mirror"] = int(ok.sum())
-    hit, d, lx, ly = hit[:, ok], d[:, ok], lx[ok], ly[ok]
+    if design is None:
+        dn = d.T @ n  # (N,)
+        du, dv = d.T @ u, d.T @ v
+        t = ((helio - p.T) @ n) / dn
+        # One Newton correction for the sag, then a final evaluation: the
+        # figure is millimetres over a 3 m half-aperture, so a second
+        # correction is sub-micron -- far below receiver storage quantisation.
+        hit = p + d * t
+        rel = hit.T - helio
+        lx, ly = rel @ u, rel @ v
+        sag, dsdx, dsdy = _zernike_sag_and_slopes(lx, ly, c3, c4, c5)
+        t -= (rel @ n - sag) / (dn - dsdx * du - dsdy * dv)
+        hit = p + d * t
+        rel = hit.T - helio
+        lx, ly = rel @ u, rel @ v
+        ok = (np.abs(lx) <= MIRROR_HALF_X_MM) & (np.abs(ly) <= MIRROR_HALF_Y_MM) & (t > 0)
+        counters["hit_mirror"] = int(ok.sum())
+        hit, d, lx, ly = hit[:, ok], d[:, ok], lx[ok], ly[ok]
 
-    _, dsdx, dsdy = _zernike_sag_and_slopes(lx, ly, c3, c4, c5)
-    normal = n[:, None] - u[:, None] * dsdx - v[:, None] * dsdy
-    normal /= np.linalg.norm(normal, axis=0)
-    # In-place reflection: d -= 2 (d.n) n, no fresh (3, M) temporaries.
-    dot = np.einsum("ij,ij->j", d, normal)
-    dot *= 2.0
-    d -= dot * normal
+        _, dsdx, dsdy = _zernike_sag_and_slopes(lx, ly, c3, c4, c5)
+        normal = n[:, None] - u[:, None] * dsdx - v[:, None] * dsdy
+        normal /= np.linalg.norm(normal, axis=0)
+        # In-place reflection: d -= 2 (d.n) n, no fresh (3, M) temporaries.
+        dot = np.einsum("ij,ij->j", d, normal)
+        dot *= 2.0
+        d -= dot * normal
+    else:
+        frames = design_facet_frames(design, helio, n, u, v)
+        n_in = d.shape[1]
+        t_all = np.full((len(frames), n_in), np.inf)
+        lu_all = np.zeros((len(frames), n_in))
+        lv_all = np.zeros((len(frames), n_in))
+        for k, (facet, nf, fu, fv, centre) in enumerate(frames):
+            dn = d.T @ nf
+            du, dv = d.T @ fu, d.T @ fv
+            with np.errstate(divide="ignore", invalid="ignore"):
+                t = ((centre - p.T) @ nf) / dn
+            hit = p + d * t
+            rel = hit.T - centre
+            lu, lv = rel @ fu, rel @ fv
+            sag, dsu, dsv = facet.surface.sag_and_slopes(lu, lv)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                t = t - (rel @ nf - sag) / (dn - dsu * du - dsv * dv)
+            hit = p + d * t
+            rel = hit.T - centre
+            lu, lv = rel @ fu, rel @ fv
+            valid = facet.region.contains(lu, lv) & (t > 0) & np.isfinite(t)
+            t_all[k] = np.where(valid, t, np.inf)
+            lu_all[k], lv_all[k] = lu, lv
+        # Nearest positive facet intersection wins (overlapping canted
+        # facets near a hub genuinely differ in range).
+        best = np.argmin(t_all, axis=0)
+        ray_idx = np.arange(n_in)
+        t_sel = t_all[best, ray_idx]
+        ok = np.isfinite(t_sel)
+        counters["hit_mirror"] = int(ok.sum())
+        hit = p + d * t_sel
+        hit, d = hit[:, ok], d[:, ok]
+        best = best[ok]
+        normal = np.empty_like(d)
+        for k, (facet, nf, fu, fv, centre) in enumerate(frames):
+            grp = best == k
+            if not np.any(grp):
+                continue
+            _, dsu, dsv = facet.surface.sag_and_slopes(lu_all[k][ok][grp], lv_all[k][ok][grp])
+            nrm = nf[:, None] - fu[:, None] * dsu - fv[:, None] * dsv
+            nrm /= np.linalg.norm(nrm, axis=0)
+            normal[:, grp] = nrm
+        dot = np.einsum("ij,ij->j", d, normal)
+        dot *= 2.0
+        d -= dot * normal
 
     # --- secondary -------------------------------------------------------
     pre, d, on_sec = secondary.redirect(hit, d, counters)

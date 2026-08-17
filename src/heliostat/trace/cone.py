@@ -45,6 +45,7 @@ from .mc import (
     _mirror_frame,
     _sun_vector,
     _zernike_sag_and_slopes,
+    design_facet_frames,
 )
 from .samplers import BUIE_LIMB_MRAD, SUPER_GAUSS_ORDER, SUPER_GAUSS_SIGMA_RAD
 
@@ -108,6 +109,7 @@ def trace_heliostat_cone(
     occluders: list | None = None,
     shadow_body=None,
     mask_nodes: int = 16,
+    design=None,
 ) -> dict:
     """Cone-optics trace of one heliostat at one instant.
 
@@ -162,18 +164,86 @@ def trace_heliostat_cone(
 
     n, u, v = _mirror_frame(rot_az_deg, rot_el_deg)
 
-    # Mirror-surface sample grid: cell centres, equal areas.
+    # Mirror-surface sample grid: cell centres, area-weighted.
     n_x, n_y = grid
-    gx = (np.arange(n_x) + 0.5) / n_x * 2.0 * MIRROR_HALF_X_MM - MIRROR_HALF_X_MM
-    gy = (np.arange(n_y) + 0.5) / n_y * 2.0 * MIRROR_HALF_Y_MM - MIRROR_HALF_Y_MM
-    lx, ly = (a.ravel() for a in np.meshgrid(gx, gy))
-    m = lx.size
-    cell_area_mm2 = (2.0 * MIRROR_HALF_X_MM / n_x) * (2.0 * MIRROR_HALF_Y_MM / n_y)
+    if design is None:
+        gx = (np.arange(n_x) + 0.5) / n_x * 2.0 * MIRROR_HALF_X_MM - MIRROR_HALF_X_MM
+        gy = (np.arange(n_y) + 0.5) / n_y * 2.0 * MIRROR_HALF_Y_MM - MIRROR_HALF_Y_MM
+        lx, ly = (a.ravel() for a in np.meshgrid(gx, gy))
+        m = lx.size
+        cell_area_mm2 = (2.0 * MIRROR_HALF_X_MM / n_x) * (2.0 * MIRROR_HALF_Y_MM / n_y)
+        area_w = np.full(m, cell_area_mm2)
 
-    sag, dsdx, dsdy = _zernike_sag_and_slopes(lx, ly, c3, c4, c5)
-    pts = helio[:, None] + u[:, None] * lx + v[:, None] * ly + n[:, None] * sag  # (3, M)
-    normal = n[:, None] - u[:, None] * dsdx - v[:, None] * dsdy
-    normal /= np.linalg.norm(normal, axis=0)
+        sag, dsdx, dsdy = _zernike_sag_and_slopes(lx, ly, c3, c4, c5)
+        pts = helio[:, None] + u[:, None] * lx + v[:, None] * ly + n[:, None] * sag  # (3, M)
+        normal = n[:, None] - u[:, None] * dsdx - v[:, None] * dsdy
+        normal /= np.linalg.norm(normal, axis=0)
+    else:
+        # Per-facet cell grids at a uniform cell size derived from the
+        # design's bbox, cells kept with their membership fraction
+        # (4x4 sub-sampled) so sketch boundaries carry fractional area
+        # instead of stair-stepping.
+        du0, du1, dv0, dv1 = design.bbox
+        cell_w = (du1 - du0) / n_x
+        cell_h = (dv1 - dv0) / n_y
+        pts_list, nrm_list, area_list = [], [], []
+        sub = (np.arange(4) + 0.5) / 4.0 - 0.5  # coarse cell-relative sub-offsets
+        sub_u, sub_v = (a.ravel() for a in np.meshgrid(sub, sub))
+        fine = (np.arange(16) + 0.5) / 16.0 - 0.5  # refinement for boundary cells
+        fine_u, fine_v = (a.ravel() for a in np.meshgrid(fine, fine))
+        frames_list = design_facet_frames(design, helio, n, u, v)
+        for k_idx, (facet, nf, fu, fv, centre) in enumerate(frames_list):
+            b0, b1, c0, c1 = facet.region.bbox()
+            k_u = max(1, int(np.ceil((b1 - b0) / cell_w)))
+            k_v = max(1, int(np.ceil((c1 - c0) / cell_h)))
+            cu = b0 + (np.arange(k_u) + 0.5) * (b1 - b0) / k_u
+            cv = c0 + (np.arange(k_v) + 0.5) * (c1 - c0) / k_v
+            lu, lv = (a.ravel() for a in np.meshgrid(cu, cv))
+            fw = (b1 - b0) / k_u
+            fh = (c1 - c0) / k_v
+            sub_lu = lu[:, None] + sub_u[None, :] * fw
+            sub_lv = lv[:, None] + sub_v[None, :] * fh
+            member = facet.region.contains(sub_lu, sub_lv)
+            # Overlapping facets (petal bases at a small hub, say) must not
+            # deposit the same mirror area twice: each patch of the
+            # heliostat plane belongs to the FIRST facet covering it,
+            # matching the MC path's nearest-intersection rule for the
+            # near-coplanar overlaps a sane design can contain.
+            ou, ov = facet.offset_mm
+            for prev, *_ in frames_list[:k_idx]:
+                member &= ~prev.region.contains(
+                    sub_lu + (ou - prev.offset_mm[0]), sub_lv + (ov - prev.offset_mm[1])
+                )
+            frac = member.mean(axis=1)
+            # Boundary cells (partial at the coarse screen) get a 16x16
+            # refinement: thin sketches make most kept cells boundary
+            # cells, and the coarse fraction over-counts curved edges by
+            # ~0.5% of total area — enough to show up against MC.
+            partial = (frac > 0.0) & (frac < 1.0)
+            if np.any(partial):
+                p_lu = lu[partial, None] + fine_u[None, :] * fw
+                p_lv = lv[partial, None] + fine_v[None, :] * fh
+                fmem = facet.region.contains(p_lu, p_lv)
+                for prev, *_ in frames_list[:k_idx]:
+                    fmem &= ~prev.region.contains(
+                        p_lu + (ou - prev.offset_mm[0]), p_lv + (ov - prev.offset_mm[1])
+                    )
+                frac[partial] = fmem.mean(axis=1)
+            keep = frac > 0.0
+            lu, lv, frac = lu[keep], lv[keep], frac[keep]
+            if lu.size == 0:
+                continue
+            sag, dsu, dsv = facet.surface.sag_and_slopes(lu, lv)
+            pts_list.append(
+                centre[:, None] + fu[:, None] * lu + fv[:, None] * lv + nf[:, None] * sag
+            )
+            nrm = nf[:, None] - fu[:, None] * dsu - fv[:, None] * dsv
+            nrm_list.append(nrm / np.linalg.norm(nrm, axis=0))
+            area_list.append(frac * fw * fh)
+        pts = np.concatenate(pts_list, axis=1)
+        normal = np.concatenate(nrm_list, axis=1)
+        area_w = np.concatenate(area_list)
+        m = pts.shape[1]
 
     # Incoming directions, identical for every sample (the sun is at
     # infinity). Stencil legs: [chief, +e1, -e1, +e2, -e2] and, at order 2,
@@ -298,7 +368,7 @@ def trace_heliostat_cone(
 
     # --- classify and deposit --------------------------------------------
     cos_aoi = np.abs(normal.T @ s)  # incoming is -s; |normal . s| is cos(aoi)
-    weights = STANDARD_IRRADIANCE_W_MM2 * cell_area_mm2 * cos_aoi
+    weights = STANDARD_IRRADIANCE_W_MM2 * area_w * cos_aoi
 
     n_u, n_v = flux_grid
     u_edges = np.linspace(u0, u1, n_u + 1)
