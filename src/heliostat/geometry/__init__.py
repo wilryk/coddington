@@ -1,5 +1,38 @@
 """Geometric building blocks: heliostats, receivers, secondary optics."""
 
+from .aperture import (
+    Annulus,
+    CircularArray,
+    Difference,
+    Disc,
+    Ellipse,
+    Intersection,
+    Polygon,
+    Rect,
+    Region,
+    Rotate,
+    Translate,
+    Union,
+    circular_array,
+    disc,
+    petal,
+    rect,
+    region_from_dict,
+    regular_polygon,
+)
+from .design import (
+    Facet,
+    Flat,
+    HeliostatDesign,
+    Spherical,
+    Surface,
+    ZernikeAstig,
+    cant_on_axis,
+    flower,
+    grid_facets,
+    rect_heliostat,
+    surface_from_dict,
+)
 from .heliostat import heliostat_orientation, heliostat_shape
 from .receiver import CylinderReceiver, FlatWindowReceiver, FrustumReceiver, Receiver
 from .secondary import (
@@ -21,17 +54,52 @@ from .shading import (
 )
 
 __all__ = [
+    # aperture: 2-D sketches
+    "Region",
+    "Rect",
+    "Disc",
+    "Ellipse",
+    "Annulus",
+    "Polygon",
+    "Translate",
+    "Rotate",
+    "Union",
+    "Intersection",
+    "Difference",
+    "CircularArray",
+    "rect",
+    "disc",
+    "petal",
+    "circular_array",
+    "regular_polygon",
+    "region_from_dict",
+    # design: the physics layer over sketches
+    "Surface",
+    "Flat",
+    "Spherical",
+    "ZernikeAstig",
+    "surface_from_dict",
+    "Facet",
+    "HeliostatDesign",
+    "cant_on_axis",
+    "rect_heliostat",
+    "grid_facets",
+    "flower",
+    # heliostat pointing/figure
     "heliostat_orientation",
     "heliostat_shape",
+    # receivers
     "Receiver",
     "FlatWindowReceiver",
     "CylinderReceiver",
     "FrustumReceiver",
+    # secondaries
     "Secondary",
     "NoSecondary",
     "AxiconSecondary",
     "CassegrainSecondary",
     "PyramidSecondary",
+    # shading/blocking
     "MirrorGeometry",
     "SecondaryCone",
     "SecondaryDisc",

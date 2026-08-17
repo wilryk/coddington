@@ -278,7 +278,9 @@ class Rotate(Region):
         a = np.deg2rad(self.angle_deg)
         c, s = np.cos(a), np.sin(a)
         corners = np.array([[u0, v0], [u0, v1], [u1, v0], [u1, v1]])
-        rot = corners @ np.array([[c, s], [-s, c]]).T
+        # FORWARD rotation of the child's corners (contains() applies the
+        # inverse to points; the box must go the other way).
+        rot = corners @ np.array([[c, -s], [s, c]]).T
         return (
             float(rot[:, 0].min()),
             float(rot[:, 0].max()),
