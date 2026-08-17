@@ -13,13 +13,22 @@ from __future__ import annotations
 
 import numpy as np
 
+from .store import scale_factor
 
-def scale_factor(cfg, rays_emitted: int, dni_w_m2: float = 1000.0) -> float:
-    """Watts per landed ray, including reflectivity and DNI.
-
-    Multiply a bin count by this and divide by bin area to get W/m^2.
-    """
-    return cfg.source.watts_per_ray(rays_emitted) * cfg.optics.throughput * (dni_w_m2 / 1000.0)
+__all__ = [
+    "scale_factor",
+    "bin_centres",
+    "bin_radius",
+    "radial_mask",
+    "radial_masks",
+    "aperture_metrics",
+    "encircled_energy",
+    "encircled_energy_rays",
+    "encircled_energy_radii",
+    "spot_metrics",
+    "map_metrics",
+    "rank_heliostats",
+]
 
 
 def bin_centres(cfg, grid_size: int | None = None) -> np.ndarray:
