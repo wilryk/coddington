@@ -40,6 +40,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .aperture import Polygon, Region
+
 _Z = np.array([0.0, 0.0, 1.0])
 
 
@@ -83,7 +85,21 @@ def sun_vector(solar_az_deg: float, solar_el_deg: float) -> np.ndarray:
 
 @dataclass
 class MirrorGeometry:
-    """One heliostat's rectangle in world coordinates."""
+    """One heliostat's rectangle (or, with ``region`` set, arbitrary silhouette)
+    in world coordinates.
+
+    ``region``, when set, is an :class:`~heliostat.geometry.aperture.Region`
+    in this mirror's own local ``(u, v)`` mm frame (origin at ``centre``) that
+    stands in for the rectangle bounds test everywhere occlusion asks "is
+    this local point on the mirror/occluder": :meth:`contains_local`,
+    :meth:`sample_points`, and the polygon-projection path in
+    :func:`shadow_quad_uv`/:func:`block_quad_uv`/:func:`polygon_occlusion`.
+    ``half_width``/``half_height`` stay in force alongside it as the
+    rectangular *envelope* -- they size the raster/clip window and neighbour
+    search radius, not the material itself. Default ``None`` reproduces
+    today's rectangle-only behaviour exactly; see :meth:`from_design` for the
+    usual way to build a shaped occluder.
+    """
 
     centre: np.ndarray
     normal: np.ndarray
@@ -91,6 +107,7 @@ class MirrorGeometry:
     v: np.ndarray
     half_width: float
     half_height: float
+    region: Region | None = None
 
     @classmethod
     def build(cls, x_mm, y_mm, rot_az_deg, rot_el_deg, half_width, half_height, z_mm: float = 0.0):
@@ -105,12 +122,84 @@ class MirrorGeometry:
             half_height=float(half_height),
         )
 
+    @classmethod
+    def from_design(
+        cls,
+        x_mm,
+        y_mm,
+        rot_az_deg,
+        rot_el_deg,
+        design,
+        silhouette_vertices: int = 72,
+        z_mm: float = 0.0,
+    ):
+        """A shaped occluder/mirror: ``region`` is ``design``'s outer-perimeter
+        silhouette (see :meth:`heliostat.geometry.design.HeliostatDesign.silhouette`
+        -- the owner's filled-outline ruling: an occluder shades/blocks with its
+        whole panel outline, gaps and all).
+
+        ``half_width``/``half_height`` are the *envelope* of ``design.bbox``
+        (``max(|u0|, |u1|)`` / ``max(|v0|, |v1|)`` rather than
+        ``(u1-u0)/2``/``(v1-v0)/2``): a conservative bound around the design's
+        own centre so the rectangular raster/clip window in
+        :func:`polygon_occlusion` and the neighbour-search radius never clip
+        off part of an off-centre silhouette, even though every design this
+        module ships is centred at its own origin and the two forms agree
+        exactly for those.
+        """
+        n = normal_from_angles(rot_az_deg, rot_el_deg)
+        u, v = mirror_basis(n)
+        u0, u1, v0, v1 = design.bbox
+        return cls(
+            centre=np.array([float(x_mm), float(y_mm), float(z_mm)]),
+            normal=n,
+            u=u,
+            v=v,
+            half_width=float(max(abs(u0), abs(u1))),
+            half_height=float(max(abs(v0), abs(v1))),
+            region=design.silhouette(silhouette_vertices),
+        )
+
+    def contains_local(self, lu, lv) -> np.ndarray:
+        """Whether local ``(u, v)`` mm coordinates lie on this mirror/occluder.
+
+        ``region.contains`` when :attr:`region` is set, else the rectangle
+        bounds test -- for ``region=None`` this is the exact same expression
+        :func:`_blocked_mask` computed inline before this method existed, so
+        it reproduces prior results bit-for-bit.
+        """
+        if self.region is not None:
+            return self.region.contains(lu, lv)
+        return (np.abs(lu) <= self.half_width) & (np.abs(lv) <= self.half_height)
+
     def sample_points(self, nu: int = 25, nv: int = 15) -> np.ndarray:
-        """Grid of points across the aperture, cell centres. Shape (nu*nv, 3)."""
-        su = (np.arange(nu) + 0.5) / nu * 2.0 - 1.0
-        sv = (np.arange(nv) + 0.5) / nv * 2.0 - 1.0
-        a, b = np.meshgrid(su * self.half_width, sv * self.half_height, indexing="ij")
-        return self.centre + a.reshape(-1, 1) * self.u + b.reshape(-1, 1) * self.v
+        """Grid of points across the aperture, cell centres. Shape (N, 3).
+
+        With no ``region`` this is the full ``nu``x``nv`` rectangle grid, ``N
+        == nu*nv``, unchanged from before ``region`` existed. With a
+        ``region`` set, the grid instead covers the region's own bbox and is
+        filtered by :meth:`contains_local`, so ``N <= nu*nv`` and every
+        surviving point actually lies on the silhouette -- callers that
+        average a boolean mask over these points (:func:`occlusion_efficiency`,
+        :func:`shading_blocking`) then get a fraction of the *silhouette*
+        area, not the bounding rectangle, consistent with the filled-outline
+        occluder ruling: for the shading question, the material is the
+        silhouette.
+        """
+        if self.region is None:
+            su = (np.arange(nu) + 0.5) / nu * 2.0 - 1.0
+            sv = (np.arange(nv) + 0.5) / nv * 2.0 - 1.0
+            a, b = np.meshgrid(su * self.half_width, sv * self.half_height, indexing="ij")
+            return self.centre + a.reshape(-1, 1) * self.u + b.reshape(-1, 1) * self.v
+
+        u0, u1, v0, v1 = self.region.bbox()
+        su = (np.arange(nu) + 0.5) / nu
+        sv = (np.arange(nv) + 0.5) / nv
+        a, b = np.meshgrid(u0 + su * (u1 - u0), v0 + sv * (v1 - v0), indexing="ij")
+        lu, lv = a.ravel(), b.ravel()
+        inside = self.contains_local(lu, lv)
+        lu, lv = lu[inside], lv[inside]
+        return self.centre + lu[:, None] * self.u + lv[:, None] * self.v
 
 
 @dataclass
@@ -279,7 +368,7 @@ def _blocked_mask(
         step = d[ahead] if per_point else d
         hit = points[ahead] + t[ahead, None] * step
         rel = hit - occ.centre
-        inside = (np.abs(rel @ occ.u) <= occ.half_width) & (np.abs(rel @ occ.v) <= occ.half_height)
+        inside = occ.contains_local(rel @ occ.u, rel @ occ.v)
         idx = np.flatnonzero(ahead)[inside]
         blocked[idx] = True
         if blocked.all():
@@ -403,13 +492,38 @@ def _corners(geom: MirrorGeometry) -> np.ndarray:
     )
 
 
+def _occluder_verts(geom: MirrorGeometry) -> np.ndarray:
+    """World-space vertices of an occluder's silhouette, ``(K, 3)``.
+
+    A :class:`~heliostat.geometry.aperture.Polygon` region (built via
+    :meth:`MirrorGeometry.from_design`) projects exactly as its own N-gon --
+    :func:`_sutherland_hodgman`/:func:`_points_in_polygon` place no
+    requirement on the subject polygon beyond "simple", so a concave flower
+    silhouette clips and rasterises correctly, not merely its convex hull.
+    Anything else (no region, or a region that is not a ``Polygon`` --
+    ``Disc``/``Union``/etc. set directly rather than through
+    ``from_design``) falls back to the 4 rectangle corners: exact for the
+    rectangle case, and a conservative bounding-envelope approximation for a
+    hand-built non-Polygon region, since only ``Polygon`` carries an
+    explicit vertex list to project.
+    """
+    if isinstance(geom.region, Polygon):
+        verts = geom.region.vertices_mm
+        return geom.centre + verts[:, 0:1] * geom.u + verts[:, 1:2] * geom.v
+    return _corners(geom)
+
+
 def shadow_quad_uv(
     occ: MirrorGeometry, mirror: MirrorGeometry, to_sun: np.ndarray
 ) -> np.ndarray | None:
-    """Parallel-project ``occ``'s four corners along ``to_sun`` onto ``mirror``'s plane.
+    """Parallel-project ``occ``'s silhouette along ``to_sun`` onto ``mirror``'s plane.
 
-    Returns their ``(u, v)`` coordinates in ``mirror``'s own frame, ``(4, 2)``,
-    or ``None`` when the occluder cannot shade this mirror at all.
+    Returns the projected vertices' ``(u, v)`` coordinates in ``mirror``'s own
+    frame, ``(K, 2)`` -- ``K == 4`` for a plain rectangle occluder, or the
+    vertex count of ``occ.region`` when it carries a
+    :class:`~heliostat.geometry.aperture.Polygon` silhouette (see
+    :func:`_occluder_verts`) -- or ``None`` when the occluder cannot shade
+    this mirror at all.
 
     For an occluder corner ``Q``, the landing point on the mirror plane is
     the point ``P = Q - t * to_sun`` that satisfies the mirror's plane
@@ -436,7 +550,7 @@ def shadow_quad_uv(
     denom = float(d @ mirror.normal)
     if abs(denom) < 1e-12:  # sun ray parallel to the mirror plane
         return None
-    corners = _corners(occ)
+    corners = _occluder_verts(occ)
     t = ((corners - mirror.centre) @ mirror.normal) / denom
     if not np.all(t > 1e-9):
         return None
@@ -448,13 +562,14 @@ def shadow_quad_uv(
 def block_quad_uv(
     occ: MirrorGeometry, mirror: MirrorGeometry, aim_point_mm: np.ndarray
 ) -> np.ndarray | None:
-    """Central-project ``occ``'s four corners from ``aim_point_mm`` onto ``mirror``'s plane.
+    """Central-project ``occ``'s silhouette from ``aim_point_mm`` onto ``mirror``'s plane.
 
-    Returns ``(4, 2)`` ``(u, v)`` coordinates in ``mirror``'s own frame, or
-    ``None``. A mirror point ``P`` is blocked iff the segment ``P -> aim``
-    crosses the occluder, which holds iff ``P`` lies inside this projected
-    quad -- the point-source (finite aim distance) analogue of
-    :func:`shadow_quad_uv`'s parallel (infinite sun distance) projection.
+    Returns ``(K, 2)`` ``(u, v)`` coordinates in ``mirror``'s own frame (see
+    :func:`shadow_quad_uv` for what ``K`` is), or ``None``. A mirror point
+    ``P`` is blocked iff the segment ``P -> aim`` crosses the occluder, which
+    holds iff ``P`` lies inside this projected polygon -- the point-source
+    (finite aim distance) analogue of :func:`shadow_quad_uv`'s parallel
+    (infinite sun distance) projection.
 
     For occluder corner ``Q``, let ``e = normalize(Q - aim)`` (the direction
     a beam travels passing through ``Q`` on its way from the aim point). The
@@ -476,7 +591,7 @@ def block_quad_uv(
     point tests for that occluder.
     """
     aim = np.asarray(aim_point_mm, dtype=float)
-    corners = _corners(occ)
+    corners = _occluder_verts(occ)
     e = corners - aim[None, :]
     lengths = np.linalg.norm(e, axis=1)
     if np.any(lengths < 1e-9):  # a corner coincides with the aim point
@@ -494,16 +609,20 @@ def block_quad_uv(
 
 
 def _sutherland_hodgman(poly: np.ndarray, half_width: float, half_height: float) -> np.ndarray:
-    """Clip a convex polygon to the axis-aligned rectangle ``[-hw,hw]x[-hh,hh]``.
+    """Clip a simple polygon to the axis-aligned rectangle ``[-hw,hw]x[-hh,hh]``.
 
     Classic Sutherland-Hodgman, clipping against the rectangle's four
-    half-planes in turn. Exact for a convex subject polygon against a convex
-    clip region (both hold here: the clip region is a rectangle, and the
-    projected occluder quads from :func:`shadow_quad_uv`/:func:`block_quad_uv`
-    are convex because the ``t > 0`` guard rules out the sign flip that would
-    fold the projection). Returns ``(K, 2)`` for the clipped polygon, ``K``
-    between 0 (no overlap) and 8 (a quad can pick up at most one extra vertex
-    per rectangle edge).
+    half-planes in turn. Exact for *any* simple subject polygon against a
+    convex clip region -- the clip region here is always the mirror's
+    rectangle envelope. The subject is either a plain rectangle occluder's
+    4-corner quad (convex, and the ``t > 0`` guard in
+    :func:`shadow_quad_uv`/:func:`block_quad_uv` additionally rules out the
+    sign flip that would fold the projection) or, for a
+    :meth:`MirrorGeometry.from_design` occluder, its projected silhouette
+    polygon -- which need not be convex (a flower's petals, say); the
+    algorithm does not require it. Returns ``(K, 2)`` for the clipped
+    polygon: ``K`` is 0 for no overlap, up to ``N + 4`` for an ``N``-vertex
+    subject (at most one extra vertex introduced per rectangle edge).
     """
 
     def clip(points: np.ndarray, inside, intersect) -> np.ndarray:
@@ -619,6 +738,18 @@ def polygon_occlusion(
     :func:`_blocked_mask`, unioned in with the rest exactly like a resolved
     quad would be.
 
+    When the *target* mirror itself carries a ``region`` (built via
+    :meth:`MirrorGeometry.from_design`), the raster grid still spans its
+    rectangular envelope (``half_width``/``half_height``) but each cell is
+    additionally tested with :meth:`MirrorGeometry.contains_local`, and every
+    eta fraction is reported over that filtered cell count rather than the
+    full raster -- the same "fraction of the silhouette, not the bounding
+    rectangle" convention :meth:`MirrorGeometry.sample_points` uses. For a
+    region-less (plain rectangle) target every raster cell is inside the
+    envelope by construction, so this reduces exactly to the previous
+    ``.mean()`` over the whole grid -- unchanged results for every existing
+    caller.
+
     Returns ``(eta_shade, eta_block, eta_secondary, eta_union)`` -- the same
     four quantities :func:`shading_blocking` and :func:`occlusion_efficiency`
     report between them, from one pass per heliostat.
@@ -646,6 +777,18 @@ def polygon_occlusion(
         local_u, local_v = a.ravel(), b.ravel()
         world_pts = mirror.centre + local_u[:, None] * mirror.u + local_v[:, None] * mirror.v
 
+        # For a plain rectangle target this is all-True (every raster cell
+        # is strictly inside the envelope by construction), so the `& mask`
+        # below is a no-op and `denom` equals the full cell count -- the
+        # region-aware path below is then bit-for-bit the old `.mean()`.
+        mirror_mask = mirror.contains_local(local_u, local_v)
+        denom = float(mirror_mask.sum())
+
+        def _eta(mask: np.ndarray, _mirror_mask=mirror_mask, _denom=denom) -> float:
+            if _denom == 0.0:  # degenerate: no raster cell landed on the silhouette
+                return 1.0
+            return float(1.0 - (mask & _mirror_mask).sum() / _denom)
+
         shaded = np.zeros(local_u.size, dtype=bool)
         blocked = np.zeros(local_u.size, dtype=bool)
 
@@ -669,11 +812,11 @@ def polygon_occlusion(
         sec_mask = np.zeros(local_u.size, dtype=bool)
         if secondary is not None:
             sec_mask = secondary.occludes(world_pts, to_sun)
-            eta_secondary[i] = float(1.0 - sec_mask.mean())
+            eta_secondary[i] = _eta(sec_mask)
 
-        eta_shade[i] = float(1.0 - (shaded | sec_mask).mean())
-        eta_block[i] = float(1.0 - blocked.mean()) if nbrs else 1.0
-        eta_union[i] = float(1.0 - (shaded | blocked | sec_mask).mean())
+        eta_shade[i] = _eta(shaded | sec_mask)
+        eta_block[i] = _eta(blocked) if nbrs else 1.0
+        eta_union[i] = _eta(shaded | blocked | sec_mask)
 
     return eta_shade, eta_block, eta_secondary, eta_union
 
