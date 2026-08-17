@@ -166,7 +166,7 @@ def trace_heliostat(
 
     if isinstance(source_disk_radius_mm, str):
         if source_disk_radius_mm != "auto":
-            raise ValueError(f"source_disk_radius_mm must be a number or 'auto'")
+            raise ValueError("source_disk_radius_mm must be a number or 'auto'")
         half_diag = (
             design.half_diagonal_mm
             if design is not None

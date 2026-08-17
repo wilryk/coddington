@@ -41,8 +41,8 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-from .heliostat import zernike_sag_and_slopes as _zernike_sag_and_slopes
 from .aperture import Disc, Polygon, Rect, Region, circular_array, petal, region_from_dict
+from .heliostat import zernike_sag_and_slopes as _zernike_sag_and_slopes
 
 # ---------------------------------------------------------------------------
 # surfaces
