@@ -29,6 +29,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-cov", "ruff"]
 docs = ["mkdocs-material>=9", "mkdocstrings[python]>=0.24"]
+web = ["fastapi>=0.110", "uvicorn>=0.27"]
 
 [project.scripts]
 heliostat = "heliostat.cli:main"

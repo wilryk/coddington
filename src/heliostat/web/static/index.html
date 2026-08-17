@@ -1,0 +1,645 @@
+<title>heliostat</title>
+<style>
+  :root {
+    --accent: #45739e;
+    --accent-dark: #345a80;
+    --silhouette: #d97b29;
+    --border: #d8dee5;
+    --bg: #f7f8fa;
+    --panel: #ffffff;
+    --text: #1f2933;
+    --muted: #64748b;
+    --error-bg: #fdeceb;
+    --error-border: #e0554a;
+    --error-text: #8a2c22;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+      sans-serif;
+    font-size: 14px;
+  }
+
+  header {
+    padding: 14px 24px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+
+  header h1 {
+    font-size: 18px;
+    margin: 0;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+
+  header .tag {
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  #error-strip {
+    display: none;
+    margin: 12px 24px 0 24px;
+    padding: 10px 14px;
+    border: 1px solid var(--error-border);
+    background: var(--error-bg);
+    color: var(--error-text);
+    border-radius: 6px;
+    font-size: 13px;
+  }
+
+  #error-strip.visible { display: block; }
+
+  main {
+    display: grid;
+    grid-template-columns: minmax(320px, 1fr) minmax(420px, 1.4fr);
+    gap: 18px;
+    padding: 18px 24px 24px 24px;
+    align-items: start;
+  }
+
+  @media (max-width: 900px) {
+    main { grid-template-columns: 1fr; }
+  }
+
+  section.panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+  }
+
+  section.panel h2 {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    margin: 0 0 12px 0;
+    font-weight: 600;
+  }
+
+  .field-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+
+  .field-row label {
+    flex: 0 0 150px;
+    color: var(--muted);
+    font-size: 12.5px;
+  }
+
+  .field-row input[type="number"],
+  .field-row input[type="text"],
+  .field-row select {
+    flex: 1 1 auto;
+    padding: 5px 8px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: #fff;
+    color: var(--text);
+    font-size: 13px;
+  }
+
+  .field-row input[type="range"] { flex: 1 1 auto; accent-color: var(--accent); }
+
+  .field-row .readout {
+    flex: 0 0 56px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    color: var(--text);
+  }
+
+  .type-tabs, .mode-tabs {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+  }
+
+  .type-tabs button, .mode-tabs button {
+    flex: 1 1 auto;
+    padding: 7px 10px;
+    border: 1px solid var(--border);
+    background: #fff;
+    color: var(--text);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12.5px;
+  }
+
+  .type-tabs button.active, .mode-tabs button.active {
+    background: var(--accent);
+    border-color: var(--accent-dark);
+    color: #fff;
+  }
+
+  .mode-tabs { flex-direction: column; }
+  .mode-tabs button {
+    text-align: left;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .mode-tabs button .desc {
+    font-size: 11px;
+    font-weight: 400;
+    opacity: 0.85;
+  }
+
+  fieldset {
+    border: none;
+    padding: 0;
+    margin: 0;
+  }
+
+  .preview-frame, .flux-frame {
+    margin-top: 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: #fff;
+    min-height: 220px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+
+  .preview-frame img, .flux-frame img {
+    max-width: 100%;
+    display: block;
+  }
+
+  .placeholder {
+    color: var(--muted);
+    font-size: 12.5px;
+    padding: 24px;
+    text-align: center;
+  }
+
+  .divider {
+    height: 1px;
+    background: var(--border);
+    margin: 16px 0;
+  }
+
+  button.primary {
+    width: 100%;
+    padding: 10px;
+    background: var(--accent);
+    border: 1px solid var(--accent-dark);
+    color: #fff;
+    border-radius: 7px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  button.primary:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+
+  table.metrics {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 12px;
+    font-size: 13px;
+  }
+
+  table.metrics td {
+    padding: 4px 2px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  table.metrics td.k { color: var(--muted); width: 45%; }
+  table.metrics td.v { text-align: right; font-variant-numeric: tabular-nums; }
+
+  .counters {
+    margin-top: 10px;
+    font-family: "SF Mono", Consolas, "Courier New", monospace;
+    font-size: 11.5px;
+    color: var(--muted);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .legend-note {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 6px;
+  }
+
+  .legend-note .swatch {
+    display: inline-block;
+    width: 14px;
+    border-top: 2px dashed var(--silhouette);
+    margin-right: 4px;
+    vertical-align: middle;
+  }
+
+  footer {
+    padding: 14px 24px 26px 24px;
+    color: var(--muted);
+    font-size: 11.5px;
+    text-align: center;
+  }
+</style>
+
+<header>
+  <h1>heliostat</h1>
+  <span class="tag">design &middot; trace &middot; flux map</span>
+</header>
+
+<div id="error-strip"></div>
+
+<main>
+  <section class="panel" id="design-panel">
+    <h2>Design</h2>
+    <div class="type-tabs" id="type-tabs">
+      <button data-type="rect" class="active">Rectangle</button>
+      <button data-type="grid">Grid</button>
+      <button data-type="flower">Flower</button>
+    </div>
+
+    <fieldset id="fields-rect">
+      <div class="field-row">
+        <label for="rect-width">Width (mm)</label>
+        <input type="number" id="rect-width" value="5000" step="50" min="1" />
+      </div>
+      <div class="field-row">
+        <label for="rect-height">Height (mm)</label>
+        <input type="number" id="rect-height" value="3000" step="50" min="1" />
+      </div>
+    </fieldset>
+
+    <fieldset id="fields-grid" hidden>
+      <div class="field-row">
+        <label for="grid-nu">Facets across (u)</label>
+        <input type="number" id="grid-nu" value="3" min="1" step="1" />
+      </div>
+      <div class="field-row">
+        <label for="grid-nv">Facets across (v)</label>
+        <input type="number" id="grid-nv" value="2" min="1" step="1" />
+      </div>
+      <div class="field-row">
+        <label for="grid-fw">Facet width (mm)</label>
+        <input type="number" id="grid-fw" value="1600" min="1" step="10" />
+      </div>
+      <div class="field-row">
+        <label for="grid-fh">Facet height (mm)</label>
+        <input type="number" id="grid-fh" value="1400" min="1" step="10" />
+      </div>
+      <div class="field-row">
+        <label for="grid-gap">Gap (mm)</label>
+        <input type="number" id="grid-gap" value="20" min="0" step="5" />
+      </div>
+      <div class="field-row">
+        <label for="grid-cant">Cant focal (mm, blank=flat)</label>
+        <input type="number" id="grid-cant" placeholder="flat" min="1" step="100" />
+      </div>
+    </fieldset>
+
+    <fieldset id="fields-flower" hidden>
+      <div class="field-row">
+        <label for="flower-n">Petals</label>
+        <input type="number" id="flower-n" value="5" min="1" step="1" />
+      </div>
+      <div class="field-row">
+        <label for="flower-len">Petal length (mm)</label>
+        <input type="number" id="flower-len" value="2000" min="1" step="10" />
+      </div>
+      <div class="field-row">
+        <label for="flower-width">Petal width (mm)</label>
+        <input type="number" id="flower-width" value="900" min="1" step="10" />
+      </div>
+      <div class="field-row">
+        <label for="flower-hub">Hub radius (mm)</label>
+        <input type="number" id="flower-hub" value="200" min="0" step="10" />
+      </div>
+      <div class="field-row">
+        <label for="flower-cant">Cant focal (mm, blank=flat)</label>
+        <input type="number" id="flower-cant" placeholder="flat" min="1" step="100" />
+      </div>
+    </fieldset>
+
+    <div class="preview-frame" id="preview-frame">
+      <div class="placeholder">preview loading&hellip;</div>
+    </div>
+    <div class="legend-note">
+      <span class="swatch"></span>dashed outline = shading silhouette (not reflective)
+    </div>
+  </section>
+
+  <section class="panel" id="trace-panel">
+    <h2>Trace</h2>
+
+    <div class="field-row">
+      <label for="optics">Optics</label>
+      <select id="optics">
+        <option value="prime_focus">Prime focus</option>
+        <option value="axicon">Axicon (beam-down)</option>
+        <option value="cassegrain">Cassegrain (beam-down)</option>
+      </select>
+    </div>
+
+    <div class="mode-tabs" id="mode-tabs">
+      <button data-mode="ultra_fast" class="active">
+        Ultra fast
+        <span class="desc">Cone optics, linearised stencil — fastest, ~1% map residual.</span>
+      </button>
+      <button data-mode="fast_accurate">
+        Fast accurate
+        <span class="desc">Cone optics, quadratic stencil — resolves ultra fast's leading error, ~2x cost.</span>
+      </button>
+      <button data-mode="monte_carlo">
+        Monte Carlo
+        <span class="desc">Reference trace, 120k rays — noise falls as 1/&radic;rays.</span>
+      </button>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="field-row">
+      <label for="sun-az">Sun azimuth</label>
+      <input type="range" id="sun-az" min="0" max="360" step="1" value="180" />
+      <span class="readout" id="sun-az-readout">180&deg;</span>
+    </div>
+    <div class="field-row">
+      <label for="sun-el">Sun elevation</label>
+      <input type="range" id="sun-el" min="0.5" max="90" step="0.5" value="45" />
+      <span class="readout" id="sun-el-readout">45&deg;</span>
+    </div>
+    <div class="field-row">
+      <label for="helio-x">Heliostat x (mm)</label>
+      <input type="number" id="helio-x" value="0" step="1000" />
+    </div>
+    <div class="field-row">
+      <label for="helio-y">Heliostat y (mm)</label>
+      <input type="number" id="helio-y" value="-89609" step="1000" />
+    </div>
+
+    <button class="primary" id="trace-btn">Trace</button>
+
+    <div class="flux-frame" id="flux-frame">
+      <div class="placeholder">run a trace to see the flux map</div>
+    </div>
+
+    <table class="metrics" id="metrics-table" hidden>
+      <tbody>
+        <tr><td class="k">Power</td><td class="v" id="m-power">&mdash;</td></tr>
+        <tr><td class="k">Incident power</td><td class="v" id="m-incident">&mdash;</td></tr>
+        <tr><td class="k">RMS spot radius</td><td class="v" id="m-rms">&mdash;</td></tr>
+        <tr><td class="k">Centroid (u, v)</td><td class="v" id="m-centroid">&mdash;</td></tr>
+        <tr><td class="k">Elapsed</td><td class="v" id="m-elapsed">&mdash;</td></tr>
+      </tbody>
+    </table>
+    <div class="counters" id="counters" hidden></div>
+  </section>
+</main>
+
+<footer>demo aiming; field-scale tracing lands with the sweep engine.</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  const errorStrip = document.getElementById("error-strip");
+
+  function showError(msg) {
+    errorStrip.textContent = msg;
+    errorStrip.classList.add("visible");
+  }
+
+  function clearError() {
+    errorStrip.classList.remove("visible");
+    errorStrip.textContent = "";
+  }
+
+  async function parseErrorDetail(resp) {
+    try {
+      const body = await resp.json();
+      const detail = body.detail;
+      if (typeof detail === "string") return detail;
+      if (Array.isArray(detail)) {
+        return detail
+          .map((d) => `${(d.loc || []).join(".")}: ${d.msg}`)
+          .join("; ");
+      }
+      return JSON.stringify(body);
+    } catch (e) {
+      return `HTTP ${resp.status}`;
+    }
+  }
+
+  // -- design state -------------------------------------------------------
+
+  let designType = "rect";
+
+  const typeTabs = document.getElementById("type-tabs");
+  const fieldsets = {
+    rect: document.getElementById("fields-rect"),
+    grid: document.getElementById("fields-grid"),
+    flower: document.getElementById("fields-flower"),
+  };
+
+  typeTabs.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-type]");
+    if (!btn) return;
+    designType = btn.dataset.type;
+    for (const b of typeTabs.querySelectorAll("button")) {
+      b.classList.toggle("active", b === btn);
+    }
+    for (const [k, el] of Object.entries(fieldsets)) {
+      el.hidden = k !== designType;
+    }
+    schedulePreview();
+  });
+
+  function numOrNull(id) {
+    const el = document.getElementById(id);
+    if (el.value === "" || el.value === null) return null;
+    const v = parseFloat(el.value);
+    return Number.isFinite(v) ? v : null;
+  }
+
+  function currentDesign() {
+    if (designType === "rect") {
+      return {
+        type: "rect",
+        width_mm: numOrNull("rect-width"),
+        height_mm: numOrNull("rect-height"),
+      };
+    }
+    if (designType === "grid") {
+      const design = {
+        type: "grid",
+        n_u: numOrNull("grid-nu"),
+        n_v: numOrNull("grid-nv"),
+        facet_w_mm: numOrNull("grid-fw"),
+        facet_h_mm: numOrNull("grid-fh"),
+        gap_mm: numOrNull("grid-gap") ?? 0,
+      };
+      const cant = numOrNull("grid-cant");
+      if (cant !== null) design.cant_focal_mm = cant;
+      return design;
+    }
+    const design = {
+      type: "flower",
+      n_petals: numOrNull("flower-n"),
+      petal_length_mm: numOrNull("flower-len"),
+      petal_width_mm: numOrNull("flower-width"),
+      hub_radius_mm: numOrNull("flower-hub") ?? 0,
+    };
+    const cant = numOrNull("flower-cant");
+    if (cant !== null) design.cant_focal_mm = cant;
+    return design;
+  }
+
+  // -- design preview (debounced) -----------------------------------------
+
+  const previewFrame = document.getElementById("preview-frame");
+  let previewTimer = null;
+  let previewObjectUrl = null;
+
+  function schedulePreview() {
+    if (previewTimer) clearTimeout(previewTimer);
+    previewTimer = setTimeout(runPreview, 400);
+  }
+
+  async function runPreview() {
+    clearError();
+    try {
+      const resp = await fetch("/api/design/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ design: currentDesign() }),
+      });
+      if (!resp.ok) {
+        showError("Preview failed: " + (await parseErrorDetail(resp)));
+        return;
+      }
+      const blob = await resp.blob();
+      if (previewObjectUrl) URL.revokeObjectURL(previewObjectUrl);
+      previewObjectUrl = URL.createObjectURL(blob);
+      previewFrame.innerHTML = "";
+      const img = document.createElement("img");
+      img.src = previewObjectUrl;
+      img.alt = "heliostat design preview";
+      previewFrame.appendChild(img);
+    } catch (err) {
+      showError("Preview request failed: " + err.message);
+    }
+  }
+
+  for (const id of [
+    "rect-width", "rect-height",
+    "grid-nu", "grid-nv", "grid-fw", "grid-fh", "grid-gap", "grid-cant",
+    "flower-n", "flower-len", "flower-width", "flower-hub", "flower-cant",
+  ]) {
+    document.getElementById(id).addEventListener("input", schedulePreview);
+  }
+
+  // -- trace panel state ----------------------------------------------------
+
+  let mode = "ultra_fast";
+  const modeTabs = document.getElementById("mode-tabs");
+  modeTabs.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-mode]");
+    if (!btn) return;
+    mode = btn.dataset.mode;
+    for (const b of modeTabs.querySelectorAll("button")) {
+      b.classList.toggle("active", b === btn);
+    }
+  });
+
+  const sunAz = document.getElementById("sun-az");
+  const sunEl = document.getElementById("sun-el");
+  const sunAzReadout = document.getElementById("sun-az-readout");
+  const sunElReadout = document.getElementById("sun-el-readout");
+  sunAz.addEventListener("input", () => (sunAzReadout.textContent = sunAz.value + "°"));
+  sunEl.addEventListener("input", () => (sunElReadout.textContent = sunEl.value + "°"));
+
+  const traceBtn = document.getElementById("trace-btn");
+  const fluxFrame = document.getElementById("flux-frame");
+  const metricsTable = document.getElementById("metrics-table");
+  const countersEl = document.getElementById("counters");
+
+  function fmt(x, digits) {
+    if (x === null || x === undefined) return "—";
+    return Number(x).toLocaleString(undefined, {
+      maximumFractionDigits: digits === undefined ? 1 : digits,
+    });
+  }
+
+  traceBtn.addEventListener("click", async () => {
+    clearError();
+    traceBtn.disabled = true;
+    traceBtn.textContent = "Tracing…";
+    try {
+      const payload = {
+        design: currentDesign(),
+        mode: mode,
+        optics: document.getElementById("optics").value,
+        solar_az_deg: parseFloat(sunAz.value),
+        solar_el_deg: parseFloat(sunEl.value),
+        heliostat_x_mm: numOrNull("helio-x") ?? 0,
+        heliostat_y_mm: numOrNull("helio-y") ?? -89609,
+      };
+      const resp = await fetch("/api/trace", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) {
+        showError("Trace failed: " + (await parseErrorDetail(resp)));
+        return;
+      }
+      const data = await resp.json();
+
+      fluxFrame.innerHTML = "";
+      const img = document.createElement("img");
+      img.src = "data:image/png;base64," + data.flux_png;
+      img.alt = "flux map";
+      fluxFrame.appendChild(img);
+
+      document.getElementById("m-power").textContent = fmt(data.power_w, 0) + " W";
+      document.getElementById("m-incident").textContent =
+        data.incident_power_w === null ? "—" : fmt(data.incident_power_w, 0) + " W";
+      document.getElementById("m-rms").textContent = fmt(data.rms_radius_mm, 1) + " mm";
+      document.getElementById("m-centroid").textContent =
+        "(" + fmt(data.centroid_mm[0], 1) + ", " + fmt(data.centroid_mm[1], 1) + ") mm";
+      document.getElementById("m-elapsed").textContent = fmt(data.elapsed_ms, 1) + " ms";
+      metricsTable.hidden = false;
+
+      const lines = Object.entries(data.counters).map(([k, v]) => `${k}: ${v}`);
+      countersEl.textContent = lines.join("\n");
+      countersEl.hidden = false;
+    } catch (err) {
+      showError("Trace request failed: " + err.message);
+    } finally {
+      traceBtn.disabled = false;
+      traceBtn.textContent = "Trace";
+    }
+  });
+
+  // initial preview
+  runPreview();
+})();
+</script>
