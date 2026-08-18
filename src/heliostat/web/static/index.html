@@ -16,6 +16,11 @@
 
   * { box-sizing: border-box; }
 
+  /* The UA's [hidden] rule loses to any author `display` declaration, and
+     several toggled elements here (the flux frame, the scene canvas and its
+     controls) carry one -- so state the intent explicitly. */
+  [hidden] { display: none !important; }
+
   body {
     margin: 0;
     background: var(--bg);
@@ -121,14 +126,16 @@
     color: var(--text);
   }
 
-  .type-tabs, .mode-tabs {
+  .type-tabs, .mode-tabs, .view-tabs {
     display: flex;
     gap: 6px;
     margin-bottom: 14px;
     flex-wrap: wrap;
   }
 
-  .type-tabs button, .mode-tabs button {
+  .view-tabs { margin: 14px 0 0 0; }
+
+  .type-tabs button, .mode-tabs button, .view-tabs button {
     flex: 1 1 auto;
     padding: 7px 10px;
     border: 1px solid var(--border);
@@ -139,7 +146,7 @@
     font-size: 12.5px;
   }
 
-  .type-tabs button.active, .mode-tabs button.active {
+  .type-tabs button.active, .mode-tabs button.active, .view-tabs button.active {
     background: var(--accent);
     border-color: var(--accent-dark);
     color: #fff;
@@ -179,6 +186,53 @@
   .preview-frame img, .flux-frame img {
     max-width: 100%;
     display: block;
+  }
+
+  .scene-frame {
+    margin-top: 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: #fff;
+    min-height: 220px;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .scene-frame canvas {
+    display: block;
+    width: 100%;
+    height: 460px;
+    cursor: grab;
+    touch-action: none;
+  }
+
+  .scene-frame canvas:active { cursor: grabbing; }
+
+  .scene-controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 8px;
+    font-size: 11.5px;
+    color: var(--muted);
+    flex-wrap: wrap;
+  }
+
+  .scene-controls label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    cursor: pointer;
+  }
+
+  .scene-controls button {
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    background: #fff;
+    color: var(--text);
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 11.5px;
   }
 
   .placeholder {
@@ -264,7 +318,7 @@
 
 <header>
   <h1>heliostat</h1>
-  <span class="tag">design &middot; trace &middot; flux map</span>
+  <span class="tag">design &middot; trace &middot; flux map &middot; 3D scene</span>
 </header>
 
 <div id="error-strip"></div>
@@ -399,8 +453,23 @@
 
     <button class="primary" id="trace-btn">Trace</button>
 
+    <div class="view-tabs" id="view-tabs">
+      <button data-view="flux" class="active">Flux map</button>
+      <button data-view="scene">3D scene</button>
+    </div>
+
     <div class="flux-frame" id="flux-frame">
       <div class="placeholder">run a trace to see the flux map</div>
+    </div>
+
+    <div class="scene-frame" id="scene-frame" hidden>
+      <div class="placeholder" id="scene-placeholder">run a trace to see the 3D scene</div>
+      <canvas id="scene-canvas" hidden></canvas>
+    </div>
+    <div class="scene-controls" id="scene-controls" hidden>
+      <label><input type="checkbox" id="scene-rays" checked /> ray paths</label>
+      <button type="button" id="scene-reset">Reset view</button>
+      <span id="scene-caption"></span>
     </div>
 
     <table class="metrics" id="metrics-table" hidden>
@@ -579,6 +648,481 @@
   sunAz.addEventListener("input", () => (sunAzReadout.textContent = sunAz.value + "°"));
   sunEl.addEventListener("input", () => (sunElReadout.textContent = sunEl.value + "°"));
 
+  // -- 3D scene view --------------------------------------------------------
+  //
+  // A hand-rolled renderer on a plain 2D canvas: perspective projection,
+  // painter's algorithm, no libraries (this file stays one self-contained
+  // document). The scene /api/trace hands back is small -- a few hundred
+  // quads once the secondary is revolved, plus at most 200 ray polylines --
+  // so re-sorting every face by camera depth on each frame costs a couple of
+  // milliseconds and buys correct occlusion without a depth buffer.
+  //
+  // All scene coordinates are world millimetres in the tracer's frame:
+  // x east, y north, z up, heliostat pivot at z = 0, tower axis at x = y = 0.
+
+  const FOV_Y = Math.PI / 4;      // vertical field of view
+  const NEAR_MM = 100;            // near plane; segments clip to it, faces drop
+  const PITCH_LIMIT = 1.45;       // ~83 deg: keeps the world-up cross product sane
+  const GRID_STEP_MM = 10000;     // ground grid spacing: 10 m
+  const AZ_SEGMENTS = 24;         // azimuthal segments of the revolved secondary
+
+  const COL = {
+    sky0: "#f4f7fb",
+    sky1: "#dbe4ee",
+    grid: "rgba(110,130,150,0.30)",
+    gridAxis: "rgba(110,130,150,0.60)",
+    mast: "#7b8794",
+    facetFront: "rgba(196,218,238,0.96)",
+    facetBack: "rgba(118,138,158,0.92)",
+    facetEdge: "#33455c",
+    secFill: "rgba(126,158,196,0.30)",
+    secEdge: "rgba(52,90,128,0.55)",
+    recvFill: "rgba(217,123,41,0.55)",
+    recvEdge: "#a8551a",
+    ray: "rgba(255,146,54,0.26)",
+    sun: "#f0b429",
+  };
+
+  const sceneCanvas = document.getElementById("scene-canvas");
+  const sceneFrame = document.getElementById("scene-frame");
+  const scenePlaceholder = document.getElementById("scene-placeholder");
+  const sceneControls = document.getElementById("scene-controls");
+  const sceneCaption = document.getElementById("scene-caption");
+  const sceneRaysToggle = document.getElementById("scene-rays");
+
+  // Latest scene payload plus the cached extent we size the sun arrow and
+  // ground grid from (recomputed once per trace, not per frame).
+  const sceneState = { data: null, extent: null, view: "flux" };
+
+  // Orbit camera. It deliberately persists across traces -- you set up a
+  // viewpoint once and then watch the geometry change under it. Only the
+  // first scene and "Reset view" refit.
+  const cam = { target: [0, 0, 0], distance: 200000, yaw: -0.35, pitch: 0.28, fitted: false };
+
+  // -- small vector helpers -------------------------------------------------
+
+  function v3sub(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
+  function v3add(a, b) { return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]; }
+  function v3scale(a, s) { return [a[0] * s, a[1] * s, a[2] * s]; }
+  function v3dot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+  function v3cross(a, b) {
+    return [
+      a[1] * b[2] - a[2] * b[1],
+      a[2] * b[0] - a[0] * b[2],
+      a[0] * b[1] - a[1] * b[0],
+    ];
+  }
+  function v3norm(a) {
+    const n = Math.hypot(a[0], a[1], a[2]) || 1;
+    return [a[0] / n, a[1] / n, a[2] / n];
+  }
+
+  // -- camera ---------------------------------------------------------------
+
+  function cameraBasis() {
+    const cp = Math.cos(cam.pitch);
+    const eye = [
+      cam.target[0] + cam.distance * cp * Math.cos(cam.yaw),
+      cam.target[1] + cam.distance * cp * Math.sin(cam.yaw),
+      cam.target[2] + cam.distance * Math.sin(cam.pitch),
+    ];
+    const fwd = v3norm(v3sub(cam.target, eye));
+    const right = v3norm(v3cross(fwd, [0, 0, 1]));
+    return { eye: eye, fwd: fwd, right: right, up: v3cross(right, fwd) };
+  }
+
+  // World point -> camera space [right, up, depth].
+  function toView(p, basis) {
+    const r = v3sub(p, basis.eye);
+    return [v3dot(r, basis.right), v3dot(r, basis.up), v3dot(r, basis.fwd)];
+  }
+
+  // Camera space -> pixels. vp[2] must already be past the near plane.
+  function project(vp, vw) {
+    return [vw.w / 2 + (vp[0] * vw.f) / vp[2], vw.h / 2 - (vp[1] * vw.f) / vp[2]];
+  }
+
+  // Clip one camera-space segment against the near plane; null if it is
+  // entirely behind the camera.
+  function clipNear(a, b) {
+    if (a[2] >= NEAR_MM && b[2] >= NEAR_MM) return [a, b];
+    if (a[2] < NEAR_MM && b[2] < NEAR_MM) return null;
+    const t = (NEAR_MM - a[2]) / (b[2] - a[2]);
+    const mid = [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]), NEAR_MM];
+    return a[2] < NEAR_MM ? [mid, b] : [a, mid];
+  }
+
+  // -- primitives -----------------------------------------------------------
+
+  function strokePath(ctx, pts, basis, vw, style, width) {
+    ctx.strokeStyle = style;
+    ctx.lineWidth = width;
+    ctx.beginPath();
+    for (let i = 0; i + 1 < pts.length; i++) {
+      const seg = clipNear(toView(pts[i], basis), toView(pts[i + 1], basis));
+      if (!seg) continue;
+      const p0 = project(seg[0], vw);
+      const p1 = project(seg[1], vw);
+      ctx.moveTo(p0[0], p0[1]);
+      ctx.lineTo(p1[0], p1[1]);
+    }
+    ctx.stroke();
+  }
+
+  // Queue one filled polygon for the painter's pass. A face with any vertex
+  // behind the near plane is dropped rather than clipped: the camera orbits
+  // outside the scene, so this only bites if you zoom right inside a surface.
+  function addFace(items, pts, basis, vw, fill, stroke) {
+    const view = [];
+    let depth = 0;
+    for (const p of pts) {
+      const vp = toView(p, basis);
+      if (vp[2] <= NEAR_MM) return;
+      view.push(project(vp, vw));
+      depth += vp[2];
+    }
+    items.push({ pts: view, depth: depth / pts.length, fill: fill, stroke: stroke });
+  }
+
+  function drawFaces(ctx, items) {
+    items.sort((a, b) => b.depth - a.depth);   // far first
+    for (const it of items) {
+      ctx.beginPath();
+      ctx.moveTo(it.pts[0][0], it.pts[0][1]);
+      for (let i = 1; i < it.pts.length; i++) ctx.lineTo(it.pts[i][0], it.pts[i][1]);
+      ctx.closePath();
+      if (it.fill) { ctx.fillStyle = it.fill; ctx.fill(); }
+      if (it.stroke) { ctx.strokeStyle = it.stroke; ctx.lineWidth = 1; ctx.stroke(); }
+    }
+  }
+
+  // Newell normal: robust for the slightly non-planar polygons a sampled
+  // outline produces, and it needs no assumption about vertex count.
+  function faceNormal(pts) {
+    let nx = 0, ny = 0, nz = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i];
+      const b = pts[(i + 1) % pts.length];
+      nx += (a[1] - b[1]) * (a[2] + b[2]);
+      ny += (a[2] - b[2]) * (a[0] + b[0]);
+      nz += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    return v3norm([nx, ny, nz]);
+  }
+
+  function centroid(pts) {
+    let c = [0, 0, 0];
+    for (const p of pts) c = v3add(c, p);
+    return v3scale(c, 1 / pts.length);
+  }
+
+  // -- scene extent ---------------------------------------------------------
+
+  // Bounding box of the built structure (mirror + tower + receiver), used to
+  // fit the camera, size the ground grid and scale the sun arrow.
+  function sceneExtent(scene) {
+    const lo = [Infinity, Infinity, Infinity];
+    const hi = [-Infinity, -Infinity, -Infinity];
+    const add = (p) => {
+      for (let i = 0; i < 3; i++) {
+        if (p[i] < lo[i]) lo[i] = p[i];
+        if (p[i] > hi[i]) hi[i] = p[i];
+      }
+    };
+    add([0, 0, 0]);                                   // tower base
+    for (const poly of scene.heliostat) for (const p of poly) add(p);
+    if (scene.receiver) {
+      const r = scene.receiver;
+      add([-r.half_u_mm, -r.half_v_mm, r.z_mm]);
+      add([r.half_u_mm, r.half_v_mm, r.z_mm]);
+    }
+    if (scene.secondary) {
+      for (const rz of scene.secondary.profile) {
+        add([-rz[0], -rz[0], rz[1]]);
+        add([rz[0], rz[0], rz[1]]);
+      }
+    }
+    const centre = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2];
+    const radius = 0.5 * Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]);
+    return { lo: lo, hi: hi, centre: centre, radius: Math.max(radius, 1000) };
+  }
+
+  function fitCamera() {
+    const ext = sceneState.extent;
+    if (!ext) return;
+    cam.target = ext.centre.slice();
+    cam.distance = (ext.radius / Math.tan(FOV_Y / 2)) * 1.35;
+    cam.yaw = -0.35;    // camera east-south-east of the field: the tower and
+    cam.pitch = 0.28;   // the heliostat separate instead of overlapping
+    cam.fitted = true;
+  }
+
+  // -- scene elements -------------------------------------------------------
+
+  function drawGround(ctx, basis, vw) {
+    const ext = sceneState.extent;
+    const pad = 2 * GRID_STEP_MM;
+    const snap = (x, dir) => dir * Math.ceil((Math.abs(x) + pad) / GRID_STEP_MM) * GRID_STEP_MM;
+    const x0 = snap(ext.lo[0], -1), x1 = snap(ext.hi[0], 1);
+    const y0 = snap(ext.lo[1], -1), y1 = snap(ext.hi[1], 1);
+    for (let x = x0; x <= x1 + 1; x += GRID_STEP_MM) {
+      strokePath(ctx, [[x, y0, 0], [x, y1, 0]], basis, vw,
+        x === 0 ? COL.gridAxis : COL.grid, 1);
+    }
+    for (let y = y0; y <= y1 + 1; y += GRID_STEP_MM) {
+      strokePath(ctx, [[x0, y, 0], [x1, y, 0]], basis, vw,
+        y === 0 ? COL.gridAxis : COL.grid, 1);
+    }
+  }
+
+  function towerTopMm(scene) {
+    let top = 0;
+    if (scene.receiver) top = Math.max(top, scene.receiver.z_mm);
+    if (scene.secondary) {
+      for (const rz of scene.secondary.profile) top = Math.max(top, rz[1]);
+    }
+    return top;
+  }
+
+  function drawMast(ctx, scene, basis, vw) {
+    strokePath(ctx, [[0, 0, 0], [0, 0, towerTopMm(scene)]], basis, vw, COL.mast, 2);
+  }
+
+  // The secondary is a surface of revolution: revolve its (r, z) profile
+  // about the tower axis into a band mesh, one quad per profile segment per
+  // azimuth. Semi-transparent so rays landing on its far side stay visible.
+  function addSecondary(items, scene, basis, vw) {
+    const prof = scene.secondary.profile;
+    const ring = (r, a) => [r * Math.cos(a), r * Math.sin(a), 0];
+    for (let i = 0; i + 1 < prof.length; i++) {
+      const r0 = prof[i][0], z0 = prof[i][1];
+      const r1 = prof[i + 1][0], z1 = prof[i + 1][1];
+      for (let j = 0; j < AZ_SEGMENTS; j++) {
+        const a0 = (2 * Math.PI * j) / AZ_SEGMENTS;
+        const a1 = (2 * Math.PI * (j + 1)) / AZ_SEGMENTS;
+        const p = [ring(r0, a0), ring(r1, a0), ring(r1, a1), ring(r0, a1)];
+        p[0][2] = z0; p[1][2] = z1; p[2][2] = z1; p[3][2] = z0;
+        addFace(items, p, basis, vw, COL.secFill, null);
+      }
+    }
+  }
+
+  // Silhouette lines over the revolved band: the outer rim circle and a few
+  // meridians, so the shape reads as a solid rather than a haze.
+  function drawSecondaryLines(ctx, scene, basis, vw) {
+    const prof = scene.secondary.profile;
+    const rim = prof[prof.length - 1];
+    const circle = [];
+    for (let j = 0; j <= 64; j++) {
+      const a = (2 * Math.PI * j) / 64;
+      circle.push([rim[0] * Math.cos(a), rim[0] * Math.sin(a), rim[1]]);
+    }
+    strokePath(ctx, circle, basis, vw, COL.secEdge, 1.4);
+    for (let j = 0; j < 8; j++) {
+      const a = (2 * Math.PI * j) / 8;
+      const meridian = prof.map((rz) => [rz[0] * Math.cos(a), rz[0] * Math.sin(a), rz[1]]);
+      strokePath(ctx, meridian, basis, vw, COL.secEdge, 0.8);
+    }
+  }
+
+  function addReceiver(items, scene, basis, vw) {
+    const r = scene.receiver;
+    const quad = [
+      [-r.half_u_mm, -r.half_v_mm, r.z_mm],
+      [r.half_u_mm, -r.half_v_mm, r.z_mm],
+      [r.half_u_mm, r.half_v_mm, r.z_mm],
+      [-r.half_u_mm, r.half_v_mm, r.z_mm],
+    ];
+    addFace(items, quad, basis, vw, COL.recvFill, COL.recvEdge);
+  }
+
+  // Which way the window faces: "up" absorbs light arriving from above (the
+  // beam-down ground receiver), "down" from below (prime focus on the tower).
+  function drawReceiverNormal(ctx, scene, basis, vw) {
+    const r = scene.receiver;
+    const sign = r.facing === "up" ? 1 : -1;
+    const len = 0.6 * Math.min(r.half_u_mm, r.half_v_mm);
+    strokePath(ctx, [[0, 0, r.z_mm], [0, 0, r.z_mm + sign * len]], basis, vw, COL.recvEdge, 1.6);
+  }
+
+  function addHeliostat(items, scene, basis, vw) {
+    for (const poly of scene.heliostat) {
+      const nrm = faceNormal(poly);
+      const toEye = v3norm(v3sub(basis.eye, centroid(poly)));
+      const facingCamera = v3dot(nrm, toEye) > 0;
+      addFace(items, poly, basis, vw,
+        facingCamera ? COL.facetFront : COL.facetBack, COL.facetEdge);
+    }
+  }
+
+  // Real traced paths: source disk -> mirror -> secondary -> receiver. Drawn
+  // after the solid faces and translucent, so overlapping rays accumulate
+  // into brightness the way a beam does.
+  function drawRays(ctx, scene, basis, vw) {
+    ctx.save();
+    ctx.lineWidth = 1;
+    for (const ray of scene.rays) strokePath(ctx, ray, basis, vw, COL.ray, 1);
+    ctx.restore();
+  }
+
+  // Sun: an arrow arriving along -sun from beyond the mirror, with a disc
+  // glyph at its far end. Not to scale -- a direction indicator.
+  function drawSun(ctx, scene, basis, vw) {
+    if (!scene.heliostat.length) return;
+    const target = centroid(scene.heliostat.map((poly) => centroid(poly)));
+    const len = 0.55 * sceneState.extent.radius;
+    const start = v3add(target, v3scale(scene.sun, len));
+    strokePath(ctx, [start, target], basis, vw, COL.sun, 2);
+
+    const a = toView(start, basis);
+    const b = toView(target, basis);
+    if (a[2] <= NEAR_MM || b[2] <= NEAR_MM) return;
+    const pa = project(a, vw);
+    const pb = project(b, vw);
+    const dx = pb[0] - pa[0], dy = pb[1] - pa[1];
+    const norm = Math.hypot(dx, dy) || 1;
+    const ux = dx / norm, uy = dy / norm;
+    ctx.strokeStyle = COL.sun;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (const s of [1, -1]) {
+      ctx.moveTo(pb[0], pb[1]);
+      ctx.lineTo(pb[0] - 12 * ux - s * 6 * uy, pb[1] - 12 * uy + s * 6 * ux);
+    }
+    ctx.stroke();
+    ctx.fillStyle = COL.sun;
+    ctx.beginPath();
+    ctx.arc(pa[0], pa[1], 7, 0, 2 * Math.PI);
+    ctx.fill();
+  }
+
+  // -- the frame ------------------------------------------------------------
+
+  function renderScene() {
+    const scene = sceneState.data;
+    if (!scene || sceneCanvas.hidden) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const w = sceneCanvas.clientWidth;
+    const h = sceneCanvas.clientHeight;
+    if (!w || !h) return;
+    sceneCanvas.width = Math.round(w * dpr);
+    sceneCanvas.height = Math.round(h * dpr);
+
+    const ctx = sceneCanvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const sky = ctx.createLinearGradient(0, 0, 0, h);
+    sky.addColorStop(0, COL.sky0);
+    sky.addColorStop(1, COL.sky1);
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, w, h);
+
+    const vw = { w: w, h: h, f: (0.5 * h) / Math.tan(FOV_Y / 2) };
+    const basis = cameraBasis();
+
+    drawGround(ctx, basis, vw);
+    drawMast(ctx, scene, basis, vw);
+
+    const items = [];
+    if (scene.secondary) addSecondary(items, scene, basis, vw);
+    if (scene.receiver) addReceiver(items, scene, basis, vw);
+    addHeliostat(items, scene, basis, vw);
+    drawFaces(ctx, items);
+
+    if (scene.secondary) drawSecondaryLines(ctx, scene, basis, vw);
+    if (scene.receiver) drawReceiverNormal(ctx, scene, basis, vw);
+    if (sceneRaysToggle.checked) drawRays(ctx, scene, basis, vw);
+    drawSun(ctx, scene, basis, vw);
+  }
+
+  // Called once per trace response.
+  function setScene(scene) {
+    sceneState.data = scene || null;
+    if (!scene) return;
+    sceneState.extent = sceneExtent(scene);
+    if (!cam.fitted) fitCamera();
+    scenePlaceholder.hidden = true;
+    sceneCanvas.hidden = false;
+    sceneControls.hidden = sceneState.view !== "scene";
+    sceneCaption.textContent =
+      scene.rays.length === 0
+        ? "no rays reached the receiver"
+        : scene.rays_source === "mc_sample"
+          ? "ray bundle: Monte Carlo sample (" + scene.rays.length +
+            " paths; cone optics carries no rays of its own)"
+          : "ray bundle: " + scene.rays.length + " traced paths";
+    renderScene();
+  }
+
+  // -- view toggle + canvas interaction ------------------------------------
+
+  const fluxFrameEl = document.getElementById("flux-frame");
+  const viewTabs = document.getElementById("view-tabs");
+  viewTabs.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-view]");
+    if (!btn) return;
+    sceneState.view = btn.dataset.view;
+    for (const b of viewTabs.querySelectorAll("button")) {
+      b.classList.toggle("active", b === btn);
+    }
+    const showScene = sceneState.view === "scene";
+    fluxFrameEl.hidden = showScene;
+    sceneFrame.hidden = !showScene;
+    sceneControls.hidden = !showScene || !sceneState.data;
+    if (showScene) renderScene();
+  });
+
+  sceneRaysToggle.addEventListener("change", renderScene);
+  document.getElementById("scene-reset").addEventListener("click", () => {
+    fitCamera();
+    renderScene();
+  });
+
+  // Left drag orbits, right drag (or shift-drag) pans, wheel zooms. Pitch is
+  // clamped short of vertical so the world-up cross product never degenerates.
+  let drag = null;
+  sceneCanvas.addEventListener("mousedown", (e) => {
+    drag = { x: e.clientX, y: e.clientY, pan: e.button === 2 || e.shiftKey };
+    e.preventDefault();
+  });
+  sceneCanvas.addEventListener("contextmenu", (e) => e.preventDefault());
+  window.addEventListener("mouseup", () => (drag = null));
+  window.addEventListener("mousemove", (e) => {
+    if (!drag) return;
+    const dx = e.clientX - drag.x;
+    const dy = e.clientY - drag.y;
+    drag.x = e.clientX;
+    drag.y = e.clientY;
+    if (drag.pan) {
+      // One pixel of drag moves the target by one pixel's worth of world
+      // distance at the target plane, so panning tracks the cursor.
+      const perPixel =
+        (2 * cam.distance * Math.tan(FOV_Y / 2)) / (sceneCanvas.clientHeight || 1);
+      const basis = cameraBasis();
+      cam.target = v3add(
+        cam.target,
+        v3add(v3scale(basis.right, -dx * perPixel), v3scale(basis.up, dy * perPixel))
+      );
+    } else {
+      cam.yaw -= dx * 0.006;
+      cam.pitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, cam.pitch + dy * 0.006));
+    }
+    renderScene();
+  });
+  sceneCanvas.addEventListener(
+    "wheel",
+    (e) => {
+      e.preventDefault();
+      const ext = sceneState.extent;
+      const far = ext ? 40 * ext.radius : 1e9;
+      const near = ext ? 0.05 * ext.radius : 1;
+      cam.distance = Math.min(far, Math.max(near, cam.distance * Math.exp(e.deltaY * 0.0012)));
+      renderScene();
+    },
+    { passive: false }
+  );
+  window.addEventListener("resize", renderScene);
+
   const traceBtn = document.getElementById("trace-btn");
   const fluxFrame = document.getElementById("flux-frame");
   const metricsTable = document.getElementById("metrics-table");
@@ -635,6 +1179,9 @@
       const lines = Object.entries(data.counters).map(([k, v]) => `${k}: ${v}`);
       countersEl.textContent = lines.join("\n");
       countersEl.hidden = false;
+
+      // The 3D view redraws from the same response; the camera survives.
+      setScene(data.scene);
     } catch (err) {
       showError("Trace request failed: " + err.message);
     } finally {

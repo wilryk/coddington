@@ -8,7 +8,9 @@ stay importable/testable without it.
 from __future__ import annotations
 
 import base64
+import math
 
+import numpy as np
 import pytest
 
 pytest.importorskip("fastapi")
@@ -16,7 +18,10 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from heliostat import __version__  # noqa: E402
-from heliostat.web.app import create_app  # noqa: E402
+from heliostat.geometry.design import _petal_at_angle, flower, grid_facets  # noqa: E402
+from heliostat.trace.mc import MIRROR_HALF_X_MM, MIRROR_HALF_Y_MM  # noqa: E402
+from heliostat.web.app import _geometry_for, create_app  # noqa: E402
+from heliostat.web.scene import MAX_SCENE_RAYS, radial_outline  # noqa: E402
 
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
@@ -161,3 +166,184 @@ def test_bad_design_type_is_422(client):
 def test_bad_design_type_trace_is_422(client):
     resp = client.post("/api/trace", json=_trace_payload({"type": "hexagon", "radius_mm": 100}))
     assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# 3-D scene (heliostat.web.scene)
+#
+# Facet counts per design, as the builders actually build them: rect is the
+# one-facet parity anchor; grid_facets is n_u * n_v; flower() makes ONE FACET
+# PER PETAL and no hub facet at all -- hub_radius_mm pushes the petals
+# outward along their own axes rather than adding a disc in the middle.
+
+SCENE_DESIGNS = {
+    "rect": (RECT_DESIGN, 1),
+    "grid": (GRID_DESIGN, GRID_DESIGN["n_u"] * GRID_DESIGN["n_v"]),
+    "flower": (FLOWER_DESIGN, FLOWER_DESIGN["n_petals"]),
+}
+
+# Every facet outline vertex must sit within the design's own bbox
+# half-diagonal of the pivot. The slack covers sag (sub-mm) and the tiny
+# out-of-plane excursion of a canted facet's corners.
+HALF_DIAGONAL_SLACK_MM = 100.0
+
+
+def _half_diagonal_mm(design):
+    """The traced mirror's bbox half-diagonal for one request payload.
+
+    The default 5000x3000 rectangle traces through the tracer's legacy
+    single-mirror path, whose aperture is the MIRROR_HALF_* constants rather
+    than a design; everything else is the design builders' own footprint,
+    which does not depend on the figure or cant the endpoint resolves.
+    """
+    if design["type"] == "rect":
+        return math.hypot(MIRROR_HALF_X_MM, MIRROR_HALF_Y_MM)
+    if design["type"] == "grid":
+        return grid_facets(
+            n_u=design["n_u"],
+            n_v=design["n_v"],
+            facet_w_mm=design["facet_w_mm"],
+            facet_h_mm=design["facet_h_mm"],
+            gap_mm=design["gap_mm"],
+        ).half_diagonal_mm
+    return flower(
+        n_petals=design["n_petals"],
+        petal_length_mm=design["petal_length_mm"],
+        petal_width_mm=design["petal_width_mm"],
+        hub_radius_mm=design["hub_radius_mm"],
+    ).half_diagonal_mm
+
+
+@pytest.mark.parametrize("design_key", sorted(SCENE_DESIGNS))
+@pytest.mark.parametrize("optics", ["prime_focus", "axicon", "cassegrain"])
+def test_scene_is_well_formed(client, design_key, optics):
+    design, n_facets = SCENE_DESIGNS[design_key]
+    resp = client.post("/api/trace", json=_trace_payload(design, optics=optics))
+    assert resp.status_code == 200
+    scene = resp.json()["scene"]
+
+    # -- heliostat: one closed polygon per facet, all finite, all inside the
+    # design's own footprint about the pivot.
+    assert len(scene["heliostat"]) == n_facets
+    limit = _half_diagonal_mm(design) + HALF_DIAGONAL_SLACK_MM
+    helio_xy = np.array([0.0, -89609.0, 0.0])  # _trace_payload's default position
+    for poly in scene["heliostat"]:
+        assert len(poly) >= 3
+        pts = np.asarray(poly, dtype=float)
+        assert pts.shape[1] == 3
+        assert np.isfinite(pts).all()
+        assert np.linalg.norm(pts - helio_xy, axis=1).max() <= limit
+
+    # -- secondary: null only for prime focus; a monotonic radial profile
+    # spanning 0 -> the real surface's aperture radius otherwise.
+    secondary, receiver = _geometry_for(optics)
+    if optics == "prime_focus":
+        assert scene["secondary"] is None
+    else:
+        assert scene["secondary"]["kind"] == optics
+        profile = np.asarray(scene["secondary"]["profile"], dtype=float)
+        assert profile.shape[1] == 2
+        assert np.isfinite(profile).all()
+        assert profile[0, 0] == 0.0
+        assert profile[-1, 0] == pytest.approx(secondary.aperture_radius_mm)
+        assert np.all(np.diff(profile[:, 0]) > 0)
+
+    # -- receiver: the fixture window, verbatim.
+    assert scene["receiver"] == {
+        "z_mm": receiver.z_mm,
+        "half_u_mm": receiver.half_u_mm,
+        "half_v_mm": receiver.half_v_mm,
+        "facing": receiver.facing,
+    }
+
+    # -- sun: a unit vector, above the horizon at the requested elevation.
+    sun = np.asarray(scene["sun"], dtype=float)
+    assert sun.shape == (3,)
+    assert np.linalg.norm(sun) == pytest.approx(1.0, abs=1e-5)
+    assert sun[2] == pytest.approx(math.sin(math.radians(45.0)), abs=1e-5)
+
+
+@pytest.mark.parametrize("design_key", sorted(SCENE_DESIGNS))
+@pytest.mark.parametrize("optics", ["prime_focus", "axicon", "cassegrain"])
+def test_scene_rays_land_on_the_receiver(client, design_key, optics):
+    """Each ray is a real 4-vertex path whose ends are where they must be:
+    the last vertex on the receiver plane inside the window, the second
+    (the mirror hit) inside the mirror's own footprint."""
+    design, _ = SCENE_DESIGNS[design_key]
+    resp = client.post("/api/trace", json=_trace_payload(design, optics=optics))
+    scene = resp.json()["scene"]
+    _, receiver = _geometry_for(optics)
+
+    rays = np.asarray(scene["rays"], dtype=float)
+    assert 0 < len(scene["rays"]) <= MAX_SCENE_RAYS
+    assert rays.shape[1:] == (4, 3)
+    assert np.isfinite(rays).all()
+
+    # Rounding to 0.1 mm can nudge a hit a hair past the window edge.
+    tol = 0.1
+    assert np.abs(rays[:, 3, 2] - receiver.z_mm).max() <= 1e-6
+    assert np.abs(rays[:, 3, 0]).max() <= receiver.half_u_mm + tol
+    assert np.abs(rays[:, 3, 1]).max() <= receiver.half_v_mm + tol
+
+    limit = _half_diagonal_mm(design) + HALF_DIAGONAL_SLACK_MM
+    helio = np.array([0.0, -89609.0, 0.0])
+    assert np.linalg.norm(rays[:, 1, :] - helio, axis=1).max() <= limit
+
+
+def test_scene_rays_source_labels_the_backend(client):
+    """Monte Carlo reports its own traced paths; the cone backends carry no
+    rays at all, so the scene runs a small side trace and says so."""
+    mc = client.post("/api/trace", json=_trace_payload(RECT_DESIGN, mode="monte_carlo")).json()
+    assert mc["scene"]["rays_source"] == "trace"
+    for mode in ("ultra_fast", "fast_accurate"):
+        cone = client.post("/api/trace", json=_trace_payload(RECT_DESIGN, mode=mode)).json()
+        assert cone["scene"]["rays_source"] == "mc_sample"
+
+
+def test_prime_focus_rays_have_no_secondary_bounce(client):
+    """With no secondary the middle two path vertices coincide -- the ray
+    goes mirror -> receiver, and the scene still sends all four points."""
+    scene = client.post("/api/trace", json=_trace_payload(RECT_DESIGN)).json()["scene"]
+    rays = np.asarray(scene["rays"], dtype=float)
+    assert np.abs(rays[:, 1, :] - rays[:, 2, :]).max() == 0.0
+
+
+@pytest.mark.parametrize("mode", ["ultra_fast", "monte_carlo"])
+def test_scene_is_deterministic_and_does_not_disturb_the_trace(client, mode):
+    """Two identical requests agree ray for ray -- and the numbers the trace
+    reports are untouched by the scene being built alongside them."""
+    payload = _trace_payload(FLOWER_DESIGN, mode=mode, optics="axicon")
+    first = client.post("/api/trace", json=payload).json()
+    second = client.post("/api/trace", json=payload).json()
+
+    assert first["scene"]["rays"] == second["scene"]["rays"]
+    assert first["scene"]["heliostat"] == second["scene"]["heliostat"]
+    assert first["power_w"] == second["power_w"]
+    assert first["counters"] == second["counters"]
+    assert first["rms_radius_mm"] == second["rms_radius_mm"]
+    assert first["centroid_mm"] == second["centroid_mm"]
+
+
+def test_radial_outline_traces_a_petal_boundary():
+    """The outline sampler returns points that are inside the region (the
+    bisection keeps the interior bracket) and reach its bbox extents."""
+    region = _petal_at_angle(2000.0, 900.0, 0.0)
+    pts = radial_outline(region, n_directions=48)
+    assert pts.shape == (48, 2)
+    assert np.isfinite(pts).all()
+    assert region.contains(pts[:, 0], pts[:, 1]).all()
+
+    # ...and that they reach the shape's true extents. Not the region's
+    # bbox(): a lens built as two overlapping discs reports the intersection
+    # of the discs' boxes, which is far looser than the petal (v from -336
+    # for a petal that starts at 0). The honest reference is the membership
+    # mask itself, rasterised finely.
+    u0, u1, v0, v1 = region.bbox()
+    n = 600
+    uu, vv = np.meshgrid(np.linspace(u0, u1, n), np.linspace(v0, v1, n))
+    mask = np.asarray(region.contains(uu, vv), dtype=bool)
+    cell = max((u1 - u0) / n, (v1 - v0) / n)
+    assert pts[:, 0].min() <= uu[mask].min() + 2 * cell
+    assert pts[:, 0].max() >= uu[mask].max() - 2 * cell
+    assert pts[:, 1].min() <= vv[mask].min() + 2 * cell
+    assert pts[:, 1].max() >= vv[mask].max() - 2 * cell

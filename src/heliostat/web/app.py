@@ -4,6 +4,12 @@ The first slice: design a heliostat, pick sun position, optics layout and
 fidelity mode, trace it, see the flux map. Everything here is a thin HTTP
 skin over the existing library -- no new physics, no new geometry.
 
+Every trace response also carries a ``scene`` object -- facet outlines,
+secondary profile, receiver window, sun vector and real ray paths -- for
+the browser's 3-D view. It is built by :mod:`heliostat.web.scene` from the
+same values the trace was given and is strictly additive: nothing in it
+feeds back into the reported metrics or flux map.
+
 Optical-configuration geometry (secondary + receiver per ``optics``) is
 copied from ``tests/test_mc_parity.py::_geometry_for`` rather than imported
 from the test suite (tests are not a stable import surface). Keep the two
@@ -54,6 +60,7 @@ from heliostat.geometry.secondary import AxiconSecondary, CassegrainSecondary, N
 from heliostat.trace.cone import sunshape_kernel, trace_heliostat_cone
 from heliostat.trace.mc import trace_heliostat
 from heliostat.trace.modes import MODES
+from heliostat.web.scene import build_scene
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -466,9 +473,11 @@ def create_app():
                 mode.n_rays,
                 rng,
                 source_disk_radius_mm="auto",
+                return_paths=True,
                 design=design,
             )
             elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            traced_paths = result["paths"]
             xy = result["xy"]
             counters = result["counters"]
             watts_per_ray = result["watts_per_ray"]
@@ -508,6 +517,7 @@ def create_app():
                 **cone_kwargs,
             )
             elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            traced_paths = None  # cone optics carries no rays; the scene samples its own
             flux = result["flux"]
             u_edges, v_edges = result["u_edges"], result["v_edges"]
             power_w = result["power_w"]
@@ -516,6 +526,26 @@ def create_app():
             rms_mm, centroid = _cone_metrics(flux, u_edges, v_edges)
 
         png_bytes = _render_flux_png(flux, u_edges, v_edges, body.mode, elapsed_ms)
+
+        # The 3-D view's geometry, built from exactly the values the trace
+        # above was given (see heliostat.web.scene). Strictly additive: it
+        # reads the trace, never feeds it, so every other field of this
+        # response is what it was before the scene existed.
+        scene = build_scene(
+            design,
+            body.heliostat_x_mm,
+            body.heliostat_y_mm,
+            rot_az_deg,
+            rot_el_deg,
+            sol.c3,
+            sol.c4,
+            sol.c5,
+            body.solar_az_deg,
+            body.solar_el_deg,
+            secondary,
+            receiver,
+            paths=traced_paths,
+        )
 
         # Standard JSON has no NaN token (JS's JSON.parse rejects it, even
         # though Python's json.dumps happily emits one) -- a landed=0 trace
@@ -535,6 +565,7 @@ def create_app():
                 "flux_png": base64.b64encode(png_bytes).decode("ascii"),
                 "aim_point_mm": [aim_x_mm, aim_y_mm, aim_z_mm],
                 "slant_range_m": slant_range_mm / 1000.0,
+                "scene": scene,
             }
         )
 
