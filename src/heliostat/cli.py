@@ -2,14 +2,17 @@
 
 Subcommands (``layout``, ``trace``, ``figures``, ``energy``, ``fetch-dni``,
 ``info``) are added as their modules are ported; ``serve`` (the local web
-GUI) is the first one in. Until the rest land, a bare ``heliostat`` with no
-subcommand is still the stub it always was: print help and exit 0.
+GUI) and ``trace`` (the sweep driver) are in. Until the rest land, a bare
+``heliostat`` with no subcommand is still the stub it always was: print help
+and exit 0.
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import math
+import time
 
 from heliostat import __version__
 
@@ -63,6 +66,47 @@ def _layout_fermat(args: argparse.Namespace) -> int:
     print(
         f"{len(field)} heliostats, r {r_min:.1f}-{r_max:.1f} m, "
         f"land coverage {coverage * 100:.2f}% (assumed {args.mirror_width_m:.1f} m square mirrors)"
+    )
+    return 0
+
+
+def _parse_date(value: str) -> _dt.date:
+    return _dt.datetime.strptime(value, "%Y-%m-%d").date()
+
+
+def _trace(args: argparse.Namespace) -> int:
+    from heliostat.field import load_field
+    from heliostat.sweep import DEFAULT_SITE, run_sweep
+
+    field = load_field(
+        args.field, mirror_width_mm=args.mirror_width_mm, mirror_height_mm=args.mirror_height_mm
+    )
+    dates = [_parse_date(d) for d in args.date]
+    lat = DEFAULT_SITE[0] if args.lat is None else args.lat
+    lon = DEFAULT_SITE[1] if args.lon is None else args.lon
+    tz = DEFAULT_SITE[2] if args.tz is None else args.tz
+
+    t_start = time.perf_counter()
+    store = run_sweep(
+        field,
+        dates,
+        mode=args.mode,
+        optics=args.optics,
+        site=(lat, lon, tz),
+        out_dir=args.output,
+        workers=args.workers,
+        n_rays=args.rays,
+        base_seed=args.base_seed,
+        hour_step=args.hour_step,
+        sunrise_margin_min=args.sunrise_margin_min,
+        progress=print,
+    )
+    elapsed = time.perf_counter() - t_start
+    n_steps = len(store.timestep_keys())
+    heliostat_steps = n_steps * len(field)
+    print(
+        f"done in {elapsed:.1f}s, {heliostat_steps} heliostat-steps "
+        f"({n_steps} timesteps x {len(field)} heliostats), store at {store.root}"
     )
     return 0
 
@@ -184,10 +228,67 @@ def main(argv: list[str] | None = None) -> int:
     )
     fermat_parser.add_argument("-o", "--output", required=True, help="output CSV path.")
 
+    trace_parser = subparsers.add_parser(
+        "trace", help="Trace a heliostat field across one or more days and write a stored run."
+    )
+    trace_parser.add_argument("--field", required=True, help="heliostat position CSV/XLSX.")
+    trace_parser.add_argument(
+        "--date",
+        action="append",
+        required=True,
+        metavar="YYYY-MM-DD",
+        help="trace date; repeat for multiple dates.",
+    )
+    trace_parser.add_argument(
+        "--mode",
+        choices=("ultra_fast", "fast_accurate", "monte_carlo"),
+        default="ultra_fast",
+        help="fidelity mode (default ultra_fast).",
+    )
+    trace_parser.add_argument(
+        "--optics",
+        choices=("prime_focus", "axicon", "cassegrain"),
+        default="prime_focus",
+        help="standard optical configuration (default prime_focus).",
+    )
+    trace_parser.add_argument("--lat", type=float, default=None, help="site latitude, deg.")
+    trace_parser.add_argument("--lon", type=float, default=None, help="site longitude, deg.")
+    trace_parser.add_argument("--tz", type=float, default=None, help="site timezone offset, hours.")
+    trace_parser.add_argument(
+        "--workers", type=int, default=None, help="worker processes (default: cpu count)."
+    )
+    trace_parser.add_argument(
+        "--rays", type=int, default=None, help="rays per heliostat (monte_carlo mode only)."
+    )
+    trace_parser.add_argument(
+        "--mirror-width-mm", type=float, default=5000.0, help="mirror width, mm (default 5000)."
+    )
+    trace_parser.add_argument(
+        "--mirror-height-mm", type=float, default=3000.0, help="mirror height, mm (default 3000)."
+    )
+    trace_parser.add_argument(
+        "--hour-step",
+        type=float,
+        default=1.0,
+        help="max hour spacing between timesteps (default 1.0).",
+    )
+    trace_parser.add_argument(
+        "--sunrise-margin-min",
+        type=float,
+        default=10.0,
+        help="minutes trimmed off sunrise/sunset (default 10).",
+    )
+    trace_parser.add_argument(
+        "--base-seed", type=int, default=20260811, help="Monte Carlo base seed (default 20260811)."
+    )
+    trace_parser.add_argument("-o", "--output", required=True, help="output run directory.")
+
     args = parser.parse_args(argv)
 
     if args.command == "serve":
         return _serve(args.host, args.port, open_browser=not args.no_open)
+    if args.command == "trace":
+        return _trace(args)
     if args.command == "layout":
         if args.kind == "fermat":
             return _layout_fermat(args)
