@@ -311,9 +311,10 @@
         <input type="number" id="grid-gap" value="20" min="0" step="5" />
       </div>
       <div class="field-row">
-        <label for="grid-cant">Cant focal (mm, blank=flat)</label>
-        <input type="number" id="grid-cant" placeholder="flat" min="1" step="100" />
+        <label for="grid-cant">Cant focal (mm, blank=auto)</label>
+        <input type="number" id="grid-cant" placeholder="auto-focus" min="0" step="100" />
       </div>
+      <div class="legend-note">blank = auto-focus at slant range; 0 = flat</div>
     </fieldset>
 
     <fieldset id="fields-flower" hidden>
@@ -334,9 +335,10 @@
         <input type="number" id="flower-hub" value="200" min="0" step="10" />
       </div>
       <div class="field-row">
-        <label for="flower-cant">Cant focal (mm, blank=flat)</label>
-        <input type="number" id="flower-cant" placeholder="flat" min="1" step="100" />
+        <label for="flower-cant">Cant focal (mm, blank=auto)</label>
+        <input type="number" id="flower-cant" placeholder="auto-focus" min="0" step="100" />
       </div>
+      <div class="legend-note">blank = auto-focus at slant range; 0 = flat</div>
     </fieldset>
 
     <div class="preview-frame" id="preview-frame">
@@ -407,6 +409,7 @@
         <tr><td class="k">Incident power</td><td class="v" id="m-incident">&mdash;</td></tr>
         <tr><td class="k">RMS spot radius</td><td class="v" id="m-rms">&mdash;</td></tr>
         <tr><td class="k">Centroid (u, v)</td><td class="v" id="m-centroid">&mdash;</td></tr>
+        <tr><td class="k">Slant range</td><td class="v" id="m-slant">&mdash;</td></tr>
         <tr><td class="k">Elapsed</td><td class="v" id="m-elapsed">&mdash;</td></tr>
       </tbody>
     </table>
@@ -414,7 +417,7 @@
   </section>
 </main>
 
-<footer>demo aiming; field-scale tracing lands with the sweep engine.</footer>
+<footer>aiming and focusing per the validated pointing solves; field-scale tracing lands with the sweep engine.</footer>
 
 <script>
 (function () {
@@ -625,6 +628,7 @@
       document.getElementById("m-rms").textContent = fmt(data.rms_radius_mm, 1) + " mm";
       document.getElementById("m-centroid").textContent =
         "(" + fmt(data.centroid_mm[0], 1) + ", " + fmt(data.centroid_mm[1], 1) + ") mm";
+      document.getElementById("m-slant").textContent = fmt(data.slant_range_m, 1) + " m";
       document.getElementById("m-elapsed").textContent = fmt(data.elapsed_ms, 1) + " ms";
       metricsTable.hidden = false;
 

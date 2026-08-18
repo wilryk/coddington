@@ -9,12 +9,16 @@ copied from ``tests/test_mc_parity.py::_geometry_for`` rather than imported
 from the test suite (tests are not a stable import surface). Keep the two
 in step if that fixture geometry ever changes.
 
-Pointing uses :func:`heliostat.geometry.heliostat.heliostat_orientation`
-aimed at a fixed point per ``optics``: the shared focus at ``(0, 0, 35335)``
-for ``prime_focus``, and ``(0, 0, 27000)`` -- the secondary's approximate
-apex/vertex height -- for ``axicon``/``cassegrain``. Field sweeps solve a
-proper per-heliostat aim strategy (spillage, canting, tracking); this demo
-slice does not, which is why the UI footnotes it as "demo aiming".
+Pointing AND figure come from :mod:`heliostat.geometry.aiming`'s per-layout
+solves (:func:`~heliostat.geometry.aiming.solve_prime_focus`,
+:func:`~heliostat.geometry.aiming.solve_axicon`,
+:func:`~heliostat.geometry.aiming.solve_cassegrain`), evaluated at the
+requested sun position and heliostat position -- the same aiming and
+focusing solves that reproduce the golden fixtures' pointing/figure
+columns to machine precision (``tests/test_aiming.py``). The layout
+constants passed to each solve (focus heights, axicon geometry) match
+``_geometry_for``'s optics below exactly, since this module traces against
+the identical fixture secondaries/receivers.
 """
 
 from __future__ import annotations
@@ -35,14 +39,16 @@ except ImportError as exc:  # pragma: no cover - exercised only without the extr
     raise ImportError("heliostat.web needs the 'web' extra: pip install heliostat[web]") from exc
 
 from heliostat import __version__
+from heliostat.geometry.aiming import Solution, solve_axicon, solve_cassegrain, solve_prime_focus
 from heliostat.geometry.design import (
+    Flat,
     HeliostatDesign,
     Spherical,
+    ZernikeAstig,
     flower,
     grid_facets,
     rect_heliostat,
 )
-from heliostat.geometry.heliostat import heliostat_orientation
 from heliostat.geometry.receiver import FlatWindowReceiver
 from heliostat.geometry.secondary import AxiconSecondary, CassegrainSecondary, NoSecondary
 from heliostat.trace.cone import sunshape_kernel, trace_heliostat_cone
@@ -54,15 +60,39 @@ STATIC_DIR = Path(__file__).parent / "static"
 WINDOW_MM = 2000.0
 FLUX_GRID = 128
 
-# Aim points for pointing solves, per the owner's demo-slice ruling: exact
-# shared focus for prime_focus, the secondary's approximate apex/vertex
-# height (a serviceable stand-in, not a solved aim strategy) for the two
-# beam-down layouts.
-AIM_POINTS = {
-    "prime_focus": (0.0, 0.0, 35335.0),
-    "axicon": (0.0, 0.0, 27000.0),
-    "cassegrain": (0.0, 0.0, 27000.0),
-}
+# Layout constants for the aiming solves, matching _geometry_for's optics
+# below exactly -- see tests/test_aiming.py's module docstring for where
+# each of these numbers comes from (the private repo's config.toml
+# [geometry] defaults plus each layout's own focus_height_mm override).
+PRIME_FOCUS_HEIGHT_MM = 35335.0
+CASSEGRAIN_FOCUS_HEIGHT_MM = 34892.4  # F1; independent of the physical
+# receiver height, which sits behind the hyperboloid relay (see
+# solve_cassegrain's docstring) -- _geometry_for's CassegrainSecondary
+# below is the identical fixture secondary this height was solved against.
+AXICON_APEX_HEIGHT_MM = 27000.0
+AXICON_HALF_ANGLE_DEG = 20.0
+AXICON_RECEIVER_Z_MM = 7000.0
+
+
+def _solve_for(
+    optics: str, x_mm: float, y_mm: float, solar_az_deg: float, solar_el_deg: float
+) -> Solution:
+    """Dispatch to this heliostat's pointing + figure solve for ``optics``."""
+    if optics == "prime_focus":
+        return solve_prime_focus(x_mm, y_mm, solar_az_deg, solar_el_deg, PRIME_FOCUS_HEIGHT_MM)
+    if optics == "axicon":
+        return solve_axicon(
+            x_mm,
+            y_mm,
+            solar_az_deg,
+            solar_el_deg,
+            AXICON_APEX_HEIGHT_MM,
+            AXICON_HALF_ANGLE_DEG,
+            AXICON_RECEIVER_Z_MM,
+        )
+    if optics == "cassegrain":
+        return solve_cassegrain(x_mm, y_mm, solar_az_deg, solar_el_deg, CASSEGRAIN_FOCUS_HEIGHT_MM)
+    raise ValueError(f"unknown optics {optics!r}")  # pragma: no cover - Literal restricts this
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +112,10 @@ class GridParams(BaseModel):
     facet_w_mm: float = Field(gt=0)
     facet_h_mm: float = Field(gt=0)
     gap_mm: float = Field(default=0.0, ge=0)
-    cant_focal_mm: float | None = Field(default=None, gt=0)
+    # Blank/absent (None) auto-focuses at the trace's own slant range;
+    # explicit 0 opts back into flat -- see _resolved_cant_focal_mm. Must
+    # accept 0 for that to be expressible, hence ge=0 rather than gt=0.
+    cant_focal_mm: float | None = Field(default=None, ge=0)
 
 
 class FlowerParams(BaseModel):
@@ -91,7 +124,7 @@ class FlowerParams(BaseModel):
     petal_length_mm: float = Field(gt=0)
     petal_width_mm: float = Field(gt=0)
     hub_radius_mm: float = Field(default=0.0, ge=0)
-    cant_focal_mm: float | None = Field(default=None, gt=0)
+    cant_focal_mm: float | None = Field(default=None, ge=0)
 
 
 DesignParams = Annotated[Union[RectParams, GridParams, FlowerParams], Field(discriminator="type")]
@@ -125,16 +158,46 @@ class TraceRequest(BaseModel):
 # design construction
 
 
-def _build_design(params: RectParams | GridParams | FlowerParams) -> HeliostatDesign:
+def _resolved_cant_focal_mm(explicit: float | None, auto_focal_mm: float | None) -> float | None:
+    """Turn a request's ``cant_focal_mm`` into the number (or ``None``, for
+    flat) the grid/flower builders want.
+
+    Blank/absent (``None``) auto-focuses at ``auto_focal_mm`` when the
+    caller has one -- the trace endpoint computes it from this heliostat's
+    solved slant range, so a default trace produces a concentrated spot
+    instead of the flat design's mirror-shaped wash. The design-preview
+    endpoint has no sun position and so no slant range; it calls this with
+    ``auto_focal_mm=None``, so a blank field still previews flat. Explicit
+    ``0`` always means flat, whichever endpoint calls this -- the one way
+    a caller can opt back out of auto-focus.
+    """
+    if explicit is None:
+        return auto_focal_mm
+    if explicit == 0.0:
+        return None
+    return explicit
+
+
+def _build_design(
+    params: RectParams | GridParams | FlowerParams, auto_focal_mm: float | None = None
+) -> HeliostatDesign:
     """Turn a validated param model into a :class:`HeliostatDesign`.
 
     Builder-level ``ValueError``s (a flower's petal width too wide for its
     length, say) are left to propagate; the endpoint maps them to a 422.
+
+    Rectangle figures are not this function's business -- a rectangle's
+    figure depends on a solve (sun position), which this function does not
+    take; see the trace endpoint's own rect handling, which calls
+    :func:`rect_heliostat` directly. This function's rect branch is a plain
+    flat sketch, used only for ``/api/design/preview`` (preview draws
+    footprint only, never figure).
     """
     if isinstance(params, RectParams):
         return rect_heliostat(width_mm=params.width_mm, height_mm=params.height_mm)
     if isinstance(params, GridParams):
-        surface = Spherical("slant") if params.cant_focal_mm is not None else None
+        cant = _resolved_cant_focal_mm(params.cant_focal_mm, auto_focal_mm)
+        surface = Spherical("slant") if cant is not None else None
         return grid_facets(
             n_u=params.n_u,
             n_v=params.n_v,
@@ -142,16 +205,44 @@ def _build_design(params: RectParams | GridParams | FlowerParams) -> HeliostatDe
             facet_h_mm=params.facet_h_mm,
             gap_mm=params.gap_mm,
             surface=surface,
-            cant_focal_mm=params.cant_focal_mm,
+            cant_focal_mm=cant,
         )
-    surface = Spherical("slant") if params.cant_focal_mm is not None else None
+    cant = _resolved_cant_focal_mm(params.cant_focal_mm, auto_focal_mm)
+    surface = Spherical("slant") if cant is not None else None
     return flower(
         n_petals=params.n_petals,
         petal_length_mm=params.petal_length_mm,
         petal_width_mm=params.petal_width_mm,
         hub_radius_mm=params.hub_radius_mm,
         surface=surface,
-        cant_focal_mm=params.cant_focal_mm,
+        cant_focal_mm=cant,
+    )
+
+
+def _design_is_flat(design: HeliostatDesign | None, c3: float, c4: float, c5: float) -> bool:
+    """True when the trace's mirror carries no focusing figure at all.
+
+    The legacy path (``design is None``) is flat exactly when the solve's
+    own figure is all-zero -- in practice this does not happen for a real
+    solve (the defocus term ``c3`` is nonzero for any finite aim distance),
+    so this branch is really only reachable in principle. The design path
+    is flat when every facet's surface is :class:`Flat` or an all-zero
+    :class:`ZernikeAstig` -- the only way there in this module is an
+    explicit ``cant_focal_mm=0`` on a grid/flower design (see
+    :func:`_resolved_cant_focal_mm`), since rect's non-default-size branch
+    and the default grid/flower auto-focus both carry a real figure.
+    """
+    if design is None:
+        return c3 == 0.0 and c4 == 0.0 and c5 == 0.0
+    return all(
+        isinstance(f.surface, Flat)
+        or (
+            isinstance(f.surface, ZernikeAstig)
+            and f.surface.c3 == 0.0
+            and f.surface.c4 == 0.0
+            and f.surface.c5 == 0.0
+        )
+        for f in design.facets
     )
 
 
@@ -308,17 +399,52 @@ def create_app():
                 detail="solar_el_deg must be > 0 (the sun is below the horizon)",
             )
 
+        sol = _solve_for(
+            body.optics,
+            body.heliostat_x_mm,
+            body.heliostat_y_mm,
+            body.solar_az_deg,
+            body.solar_el_deg,
+        )
+        aim_x_mm = sol.extras["aim_x_mm"]
+        aim_y_mm = sol.extras["aim_y_mm"]
+        aim_z_mm = sol.extras["aim_z_mm"]
+        slant_range_mm = float(
+            np.hypot(
+                np.hypot(aim_x_mm - body.heliostat_x_mm, aim_y_mm - body.heliostat_y_mm),
+                aim_z_mm,
+            )
+        )
+
+        # Pointing AND figure both come from the solve. Rectangle at the
+        # engine's legacy default size (5000x3000 mm) uses the LEGACY
+        # single-mirror path (design=None): this is bit-for-bit the
+        # validated fixture physics (tests/test_aiming.py,
+        # tests/test_design_tracing.py), so it stays the default trace.
+        # Any other rectangle size, and every grid/flower design, goes
+        # through the generalized facet path instead -- rect's own figure
+        # is carried as ZernikeAstig(c3, -c4, -c5) per the sign convention
+        # documented in tests/test_design_tracing.py (the legacy path
+        # negates c4/c5 internally; a design equivalent to legacy (c3, c4,
+        # c5) needs that flip applied up front). Grid/flower auto-focus at
+        # this heliostat's own slant range when cant_focal_mm is blank.
         try:
-            design = _build_design(body.design)
+            if isinstance(body.design, RectParams):
+                if body.design.width_mm == 5000.0 and body.design.height_mm == 3000.0:
+                    design = None
+                else:
+                    design = rect_heliostat(
+                        width_mm=body.design.width_mm,
+                        height_mm=body.design.height_mm,
+                        surface=ZernikeAstig(sol.c3, -sol.c4, -sol.c5),
+                    )
+            else:
+                design = _build_design(body.design, auto_focal_mm=slant_range_mm)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         secondary, receiver = _geometry_for(body.optics)
-        aim = AIM_POINTS[body.optics]
-        mirror_pos = (body.heliostat_x_mm, body.heliostat_y_mm, 0.0)
-        rot_az_deg, rot_el_deg, *_ = heliostat_orientation(
-            aim, mirror_pos, body.solar_az_deg, body.solar_el_deg
-        )
+        rot_az_deg, rot_el_deg = sol.rot_az_deg, sol.rot_el_deg
 
         mode = MODES[body.mode]
         t0 = time.perf_counter()
@@ -330,9 +456,9 @@ def create_app():
                 body.heliostat_y_mm,
                 rot_az_deg,
                 rot_el_deg,
-                0.0,
-                0.0,
-                0.0,
+                sol.c3,
+                sol.c4,
+                sol.c5,
                 body.solar_az_deg,
                 body.solar_el_deg,
                 secondary,
@@ -353,21 +479,33 @@ def create_app():
             )
         else:
             kernel = sunshape_kernel("super_gauss")
+            cone_kwargs = dict(mode.cone_kwargs)
+            if _design_is_flat(design, sol.c3, sol.c4, sol.c5):
+                # A deliberately flat mirror (explicit cant_focal_mm=0 on a
+                # grid/flower design -- see _design_is_flat) has no
+                # focusing figure at all, so the cone backend's per-sample
+                # kernels never overlap: at the mode's normal 20x12
+                # sampling grid that shows up as a comb/ripple artifact
+                # across the flux map (owner-reported). Denser sampling
+                # closes the gaps between kernels; only worth the extra
+                # cost for this deliberately-flat case, so it is not the
+                # mode's own default.
+                cone_kwargs["grid"] = (40, 24)
             result = trace_heliostat_cone(
                 body.heliostat_x_mm,
                 body.heliostat_y_mm,
                 rot_az_deg,
                 rot_el_deg,
-                0.0,
-                0.0,
-                0.0,
+                sol.c3,
+                sol.c4,
+                sol.c5,
                 body.solar_az_deg,
                 body.solar_el_deg,
                 secondary,
                 receiver,
                 kernel,
                 design=design,
-                **mode.cone_kwargs,
+                **cone_kwargs,
             )
             elapsed_ms = (time.perf_counter() - t0) * 1000.0
             flux = result["flux"]
@@ -395,6 +533,8 @@ def create_app():
                 "elapsed_ms": elapsed_ms,
                 "mode": body.mode,
                 "flux_png": base64.b64encode(png_bytes).decode("ascii"),
+                "aim_point_mm": [aim_x_mm, aim_y_mm, aim_z_mm],
+                "slant_range_m": slant_range_mm / 1000.0,
             }
         )
 

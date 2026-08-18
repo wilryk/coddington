@@ -85,8 +85,38 @@ def test_trace_ultra_fast_plausible(client):
     assert len(data["centroid_mm"]) == 2
     assert isinstance(data["counters"], dict) and data["counters"]
     assert data["elapsed_ms"] > 0
+    assert len(data["aim_point_mm"]) == 3
+    assert data["slant_range_m"] > 0
     png_bytes = base64.b64decode(data["flux_png"])
     assert png_bytes[:8] == PNG_MAGIC
+
+
+def test_trace_rect_ultra_fast_is_concentrated(client):
+    """Real aiming/focusing (heliostat.geometry.aiming), not the old "demo
+    aiming" flat mirror: the default 5000x3000 rect at the default
+    heliostat position must now trace a concentrated spot instead of a
+    mirror-sized wash. Values are from an actual run of this endpoint:
+    rms_radius_mm ~505, power_w ~8226 (was rms ~1400+, the unfocused
+    mirror's own half-diagonal, before this fix)."""
+    resp = client.post("/api/trace", json=_trace_payload(RECT_DESIGN))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["rms_radius_mm"] < 800
+    assert data["power_w"] > 5000
+
+
+def test_trace_flower_auto_focus_concentrates_spot(client):
+    """Blank cant_focal_mm on a grid/flower design now auto-focuses at the
+    heliostat's own solved slant range instead of defaulting to flat;
+    explicit cant_focal_mm=0 still opts into flat. rms should drop well
+    below the deliberately-flat case -- measured ~1092 mm (auto) vs
+    ~1415 mm (flat) at the default heliostat position/sun; the 0.85 factor
+    below leaves comfortable margin."""
+    auto = client.post("/api/trace", json=_trace_payload(FLOWER_DESIGN)).json()
+    flat = client.post(
+        "/api/trace", json=_trace_payload({**FLOWER_DESIGN, "cant_focal_mm": 0})
+    ).json()
+    assert auto["rms_radius_mm"] < 0.85 * flat["rms_radius_mm"]
 
 
 def test_trace_fast_accurate_plausible(client):
