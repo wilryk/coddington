@@ -3,6 +3,7 @@
   :root {
     --accent: #45739e;
     --accent-dark: #345a80;
+    --select: #0b5fd0;
     --silhouette: #d97b29;
     --border: #d8dee5;
     --bg: #f7f8fa;
@@ -126,7 +127,7 @@
     color: var(--text);
   }
 
-  .type-tabs, .mode-tabs, .view-tabs {
+  .type-tabs, .mode-tabs, .view-tabs, .surface-tabs {
     display: flex;
     gap: 6px;
     margin-bottom: 14px;
@@ -134,8 +135,15 @@
   }
 
   .view-tabs { margin: 14px 0 0 0; }
+  .surface-tabs { margin-bottom: 6px; }
 
-  .type-tabs button, .mode-tabs button, .view-tabs button {
+  .surface-label {
+    color: var(--muted);
+    font-size: 12.5px;
+    margin-bottom: 6px;
+  }
+
+  .type-tabs button, .mode-tabs button, .view-tabs button, .surface-tabs button {
     flex: 1 1 auto;
     padding: 7px 10px;
     border: 1px solid var(--border);
@@ -146,7 +154,8 @@
     font-size: 12.5px;
   }
 
-  .type-tabs button.active, .mode-tabs button.active, .view-tabs button.active {
+  .type-tabs button.active, .mode-tabs button.active, .view-tabs button.active,
+  .surface-tabs button.active {
     background: var(--accent);
     border-color: var(--accent-dark);
     color: #fff;
@@ -234,6 +243,102 @@
     cursor: pointer;
     font-size: 11.5px;
   }
+
+  /* Selection inspector: floats over the canvas's own top-right corner, so
+     it never covers the optics/mode controls (which sit above the canvas)
+     nor the scene controls and metrics table (below it). */
+  .inspector {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 224px;
+    max-height: calc(100% - 20px);
+    overflow-y: auto;
+    background: rgba(255, 255, 255, 0.96);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 10px 10px 10px;
+    box-shadow: 0 2px 10px rgba(31, 41, 51, 0.12);
+    font-size: 12px;
+    z-index: 2;
+  }
+
+  .inspector-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 8px;
+    font-weight: 600;
+    color: var(--select);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-size: 11px;
+  }
+
+  .inspector-head button {
+    border: none;
+    background: none;
+    color: var(--muted);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 2px;
+  }
+
+  .inspector-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 5px;
+  }
+
+  .inspector-row label {
+    flex: 1 1 auto;
+    color: var(--muted);
+    font-size: 11.5px;
+  }
+
+  .inspector-row input[type="number"] {
+    flex: 0 0 84px;
+    padding: 3px 5px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: #fff;
+    color: var(--text);
+    font-size: 11.5px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .inspector-row .ro {
+    flex: 0 0 84px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    color: var(--text);
+    font-size: 11.5px;
+  }
+
+  .inspector-note {
+    color: var(--muted);
+    font-size: 10.5px;
+    line-height: 1.4;
+    margin: 6px 0 2px 0;
+  }
+
+  .inspector button.apply {
+    width: 100%;
+    margin-top: 8px;
+    padding: 5px;
+    background: var(--accent);
+    border: 1px solid var(--accent-dark);
+    color: #fff;
+    border-radius: 5px;
+    font-size: 11.5px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .inspector button.apply:disabled { opacity: 0.6; cursor: default; }
 
   .placeholder {
     color: var(--muted);
@@ -395,6 +500,16 @@
       <div class="legend-note">blank = auto-focus at slant range; 0 = flat</div>
     </fieldset>
 
+    <div class="divider"></div>
+
+    <div class="surface-label">Surface (optical figure)</div>
+    <div class="surface-tabs" id="surface-tabs">
+      <button data-surface="adaptive" class="active">Adaptive</button>
+      <button data-surface="spherical">Spherical</button>
+      <button data-surface="flat">Flat</button>
+    </div>
+    <div class="legend-note" id="surface-caption"></div>
+
     <div class="preview-frame" id="preview-frame">
       <div class="placeholder">preview loading&hellip;</div>
     </div>
@@ -465,11 +580,23 @@
     <div class="scene-frame" id="scene-frame" hidden>
       <div class="placeholder" id="scene-placeholder">run a trace to see the 3D scene</div>
       <canvas id="scene-canvas" hidden></canvas>
+      <div class="inspector" id="inspector" hidden>
+        <div class="inspector-head">
+          <span id="inspector-title">&mdash;</span>
+          <button type="button" id="inspector-close" title="Deselect (Esc)">&times;</button>
+        </div>
+        <div id="inspector-body"></div>
+        <div class="inspector-note" id="inspector-note" hidden></div>
+        <button type="button" class="apply" id="inspector-apply">Apply</button>
+      </div>
     </div>
     <div class="scene-controls" id="scene-controls" hidden>
       <label><input type="checkbox" id="scene-rays" checked /> ray paths</label>
       <button type="button" id="scene-reset">Reset view</button>
       <span id="scene-caption"></span>
+    </div>
+    <div class="legend-note" id="scene-hint" hidden>
+      click an object to select and edit it; Esc or click empty sky to deselect
     </div>
 
     <table class="metrics" id="metrics-table" hidden>
@@ -531,6 +658,38 @@
     flower: document.getElementById("fields-flower"),
   };
 
+  // The mirror's optical figure. A separate axis from cant_focal_mm, which
+  // aims facets rather than curving them -- see the API's own docstrings.
+  let surfaceMode = "adaptive";
+
+  const surfaceTabs = document.getElementById("surface-tabs");
+  const surfaceCaption = document.getElementById("surface-caption");
+
+  // Adaptive means "the app's best solve-driven choice", and that choice is
+  // genuinely different per design type, so the caption says which one you
+  // are getting rather than pretending it is one thing.
+  const SURFACE_CAPTIONS = {
+    adaptive: {
+      rect: "solve-driven astigmatic figure",
+      grid: "auto-focused spherical facets",
+      flower: "auto-focused spherical facets",
+    },
+    spherical: {
+      rect: "spherical at slant range",
+      grid: "spherical at cant focal (blank = slant range)",
+      flower: "spherical at cant focal (blank = slant range)",
+    },
+    flat: {
+      rect: "no figure — expect a mirror-sized wash",
+      grid: "no figure — expect a mirror-sized wash",
+      flower: "no figure — expect a mirror-sized wash",
+    },
+  };
+
+  function updateSurfaceCaption() {
+    surfaceCaption.textContent = SURFACE_CAPTIONS[surfaceMode][designType];
+  }
+
   typeTabs.addEventListener("click", (e) => {
     const btn = e.target.closest("button[data-type]");
     if (!btn) return;
@@ -541,6 +700,20 @@
     for (const [k, el] of Object.entries(fieldsets)) {
       el.hidden = k !== designType;
     }
+    updateSurfaceCaption();
+    schedulePreview();
+  });
+
+  surfaceTabs.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-surface]");
+    if (!btn) return;
+    surfaceMode = btn.dataset.surface;
+    for (const b of surfaceTabs.querySelectorAll("button")) {
+      b.classList.toggle("active", b === btn);
+    }
+    updateSurfaceCaption();
+    // Preview draws footprint only, so the figure never changes the picture;
+    // re-previewing anyway keeps one code path for "the design changed".
     schedulePreview();
   });
 
@@ -557,6 +730,7 @@
         type: "rect",
         width_mm: numOrNull("rect-width"),
         height_mm: numOrNull("rect-height"),
+        surface: surfaceMode,
       };
     }
     if (designType === "grid") {
@@ -567,6 +741,7 @@
         facet_w_mm: numOrNull("grid-fw"),
         facet_h_mm: numOrNull("grid-fh"),
         gap_mm: numOrNull("grid-gap") ?? 0,
+        surface: surfaceMode,
       };
       const cant = numOrNull("grid-cant");
       if (cant !== null) design.cant_focal_mm = cant;
@@ -578,6 +753,7 @@
       petal_length_mm: numOrNull("flower-len"),
       petal_width_mm: numOrNull("flower-width"),
       hub_radius_mm: numOrNull("flower-hub") ?? 0,
+      surface: surfaceMode,
     };
     const cant = numOrNull("flower-cant");
     if (cant !== null) design.cant_focal_mm = cant;
@@ -681,7 +857,14 @@
     recvEdge: "#a8551a",
     ray: "rgba(255,146,54,0.26)",
     sun: "#f0b429",
+    select: "#0b5fd0",
+    ghost: "rgba(11,95,208,0.75)",
   };
+
+  // A press that moves less than this many pixels before release is a click,
+  // not an orbit. Big enough to survive a shaky mouse, small enough that a
+  // deliberate drag never selects anything by accident.
+  const CLICK_SLOP_PX = 5;
 
   const sceneCanvas = document.getElementById("scene-canvas");
   const sceneFrame = document.getElementById("scene-frame");
@@ -689,10 +872,42 @@
   const sceneControls = document.getElementById("scene-controls");
   const sceneCaption = document.getElementById("scene-caption");
   const sceneRaysToggle = document.getElementById("scene-rays");
+  const sceneHint = document.getElementById("scene-hint");
+  const inspector = document.getElementById("inspector");
+  const inspectorTitle = document.getElementById("inspector-title");
+  const inspectorBody = document.getElementById("inspector-body");
+  const inspectorNote = document.getElementById("inspector-note");
+  const inspectorApply = document.getElementById("inspector-apply");
 
   // Latest scene payload plus the cached extent we size the sun arrow and
   // ground grid from (recomputed once per trace, not per frame).
-  const sceneState = { data: null, extent: null, view: "flux" };
+  //
+  // `picks` is the hit-test index, rebuilt every frame from the SAME
+  // projected polygons the painter's pass draws -- so what you click is
+  // exactly what you see, with no second projection to drift out of step.
+  // `optics`/`opticsResolved` remember which layout the drawn scene belongs
+  // to and what its numbers resolved to, which is what the inspector edits.
+  const sceneState = {
+    data: null,
+    extent: null,
+    view: "flux",
+    picks: [],
+    optics: null,
+    opticsResolved: null,
+    design: null,
+    ghostZ: null,
+  };
+
+  // Current selection: one of "receiver", "secondary", "heliostat", or null.
+  // Selection is per OBJECT, not per facet -- clicking any facet selects the
+  // heliostat, because the numbers worth editing (position, design) belong
+  // to the whole mirror.
+  const sel = { kind: null };
+
+  // Optics overrides the user has applied, per layout. Only filled by the
+  // inspector's Apply button, so a session that never touches the inspector
+  // sends no optics_params at all and gets the server's own defaults.
+  const opticsEdits = { prime_focus: {}, axicon: {}, cassegrain: {} };
 
   // Orbit camera. It deliberately persists across traces -- you set up a
   // viewpoint once and then watch the geometry change under it. Only the
@@ -772,7 +987,12 @@
   // Queue one filled polygon for the painter's pass. A face with any vertex
   // behind the near plane is dropped rather than clipped: the camera orbits
   // outside the scene, so this only bites if you zoom right inside a surface.
-  function addFace(items, pts, basis, vw, fill, stroke) {
+  //
+  // `pick` names the scene object this face belongs to; when given, the
+  // projected polygon is also filed in sceneState.picks for hit-testing. A
+  // dropped face is not pickable either, which is the honest answer -- you
+  // cannot click what is not on screen.
+  function addFace(items, pts, basis, vw, fill, stroke, pick) {
     const view = [];
     let depth = 0;
     for (const p of pts) {
@@ -781,7 +1001,73 @@
       view.push(project(vp, vw));
       depth += vp[2];
     }
-    items.push({ pts: view, depth: depth / pts.length, fill: fill, stroke: stroke });
+    const mean = depth / pts.length;
+    items.push({ pts: view, depth: mean, fill: fill, stroke: stroke });
+    if (pick) sceneState.picks.push({ kind: pick, pts: view, depth: mean });
+  }
+
+  // Even-odd crossing test in screen pixels.
+  function pointInPoly(px, py, poly) {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const xi = poly[i][0], yi = poly[i][1];
+      const xj = poly[j][0], yj = poly[j][1];
+      if (yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  }
+
+  // Distance from a point to a polygon's nearest edge, in screen pixels.
+  function distToPolyEdge(px, py, poly) {
+    let best = Infinity;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const ax = poly[j][0], ay = poly[j][1];
+      const bx = poly[i][0] - ax, by = poly[i][1] - ay;
+      const len2 = bx * bx + by * by;
+      const t = len2 > 0 ? Math.max(0, Math.min(1, ((px - ax) * bx + (py - ay) * by) / len2)) : 0;
+      const dx = px - (ax + t * bx), dy = py - (ay + t * by);
+      best = Math.min(best, dx * dx + dy * dy);
+    }
+    return Math.sqrt(best);
+  }
+
+  // A near-horizontal face seen edge-on (the receiver window, at most camera
+  // pitches) projects to a sliver with ~zero area, so containment alone would
+  // make it unclickable. Anything this close to a face's outline counts.
+  const PICK_EDGE_PX = 6;
+
+  // Nearest scene object under a canvas-space point, or null for empty sky.
+  // Containment wins over edge proximity; among containing faces the nearest
+  // in depth wins, matching what the painter's pass shows on top.
+  function pickAt(px, py) {
+    let best = null;
+    for (const p of sceneState.picks) {
+      if (!pointInPoly(px, py, p.pts)) continue;
+      if (!best || p.depth < best.depth) best = p;
+    }
+    if (best) return best.kind;
+    let bestDist = PICK_EDGE_PX;
+    for (const p of sceneState.picks) {
+      const d = distToPolyEdge(px, py, p.pts);
+      if (d < bestDist || (d === bestDist && best && p.depth < best.depth)) {
+        best = p;
+        bestDist = d;
+      }
+    }
+    return best ? best.kind : null;
+  }
+
+  // Mouse event -> canvas CSS pixels, the same frame `project` writes into.
+  function canvasPoint(e) {
+    const r = sceneCanvas.getBoundingClientRect();
+    return [e.clientX - r.left, e.clientY - r.top];
+  }
+
+  function viewport() {
+    const h = sceneCanvas.clientHeight || 1;
+    return { w: sceneCanvas.clientWidth || 1, h: h, f: (0.5 * h) / Math.tan(FOV_Y / 2) };
   }
 
   function drawFaces(ctx, items) {
@@ -902,14 +1188,19 @@
         const a1 = (2 * Math.PI * (j + 1)) / AZ_SEGMENTS;
         const p = [ring(r0, a0), ring(r1, a0), ring(r1, a1), ring(r0, a1)];
         p[0][2] = z0; p[1][2] = z1; p[2][2] = z1; p[3][2] = z0;
-        addFace(items, p, basis, vw, COL.secFill, null);
+        addFace(items, p, basis, vw, COL.secFill, null, "secondary");
       }
     }
   }
 
   // Silhouette lines over the revolved band: the outer rim circle and a few
-  // meridians, so the shape reads as a solid rather than a haze.
-  function drawSecondaryLines(ctx, scene, basis, vw) {
+  // meridians, so the shape reads as a solid rather than a haze. Also does
+  // double duty as the secondary's selection highlight -- outlining all
+  // ~550 band quads in the accent colour would read as noise, whereas a
+  // heavier rim and meridians read as "this surface is selected".
+  function drawSecondaryLines(ctx, scene, basis, vw, colour, width) {
+    const col = colour || COL.secEdge;
+    const w = width || 1;
     const prof = scene.secondary.profile;
     const rim = prof[prof.length - 1];
     const circle = [];
@@ -917,23 +1208,27 @@
       const a = (2 * Math.PI * j) / 64;
       circle.push([rim[0] * Math.cos(a), rim[0] * Math.sin(a), rim[1]]);
     }
-    strokePath(ctx, circle, basis, vw, COL.secEdge, 1.4);
+    strokePath(ctx, circle, basis, vw, col, 1.4 * w);
     for (let j = 0; j < 8; j++) {
       const a = (2 * Math.PI * j) / 8;
       const meridian = prof.map((rz) => [rz[0] * Math.cos(a), rz[0] * Math.sin(a), rz[1]]);
-      strokePath(ctx, meridian, basis, vw, COL.secEdge, 0.8);
+      strokePath(ctx, meridian, basis, vw, col, 0.8 * w);
     }
   }
 
-  function addReceiver(items, scene, basis, vw) {
-    const r = scene.receiver;
-    const quad = [
-      [-r.half_u_mm, -r.half_v_mm, r.z_mm],
-      [r.half_u_mm, -r.half_v_mm, r.z_mm],
-      [r.half_u_mm, r.half_v_mm, r.z_mm],
-      [-r.half_u_mm, r.half_v_mm, r.z_mm],
+  function receiverQuad(r, zOverride) {
+    const z = zOverride === undefined || zOverride === null ? r.z_mm : zOverride;
+    return [
+      [-r.half_u_mm, -r.half_v_mm, z],
+      [r.half_u_mm, -r.half_v_mm, z],
+      [r.half_u_mm, r.half_v_mm, z],
+      [-r.half_u_mm, r.half_v_mm, z],
     ];
-    addFace(items, quad, basis, vw, COL.recvFill, COL.recvEdge);
+  }
+
+  function addReceiver(items, scene, basis, vw) {
+    addFace(items, receiverQuad(scene.receiver), basis, vw,
+      COL.recvFill, COL.recvEdge, "receiver");
   }
 
   // Which way the window faces: "up" absorbs light arriving from above (the
@@ -951,8 +1246,45 @@
       const toEye = v3norm(v3sub(basis.eye, centroid(poly)));
       const facingCamera = v3dot(nrm, toEye) > 0;
       addFace(items, poly, basis, vw,
-        facingCamera ? COL.facetFront : COL.facetBack, COL.facetEdge);
+        facingCamera ? COL.facetFront : COL.facetBack, COL.facetEdge, "heliostat");
     }
+  }
+
+  // Selection highlight, drawn after the painter's pass so it is never
+  // occluded: a selected object you cannot see is not much of an indicator.
+  function drawSelection(ctx, scene, basis, vw) {
+    if (!sel.kind) return;
+    if (sel.kind === "secondary") {
+      if (scene.secondary) drawSecondaryLines(ctx, scene, basis, vw, COL.select, 2.0);
+      return;
+    }
+    ctx.save();
+    ctx.strokeStyle = COL.select;
+    ctx.lineWidth = 2.4;
+    ctx.lineJoin = "round";
+    for (const p of sceneState.picks) {
+      if (p.kind !== sel.kind) continue;
+      ctx.beginPath();
+      ctx.moveTo(p.pts[0][0], p.pts[0][1]);
+      for (let i = 1; i < p.pts.length; i++) ctx.lineTo(p.pts[i][0], p.pts[i][1]);
+      ctx.closePath();
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // Where the receiver would land if the drag ended now. Dashed and unfilled
+  // so it reads as a proposal rather than as the traced geometry -- nothing
+  // has been re-traced until Apply.
+  function drawGhostReceiver(ctx, scene, basis, vw) {
+    if (sceneState.ghostZ === null || !scene.receiver) return;
+    const quad = receiverQuad(scene.receiver, sceneState.ghostZ);
+    ctx.save();
+    ctx.setLineDash([6, 4]);
+    strokePath(ctx, quad.concat([quad[0]]), basis, vw, COL.ghost, 1.8);
+    strokePath(ctx, [[0, 0, scene.receiver.z_mm], [0, 0, sceneState.ghostZ]],
+      basis, vw, COL.ghost, 1.2);
+    ctx.restore();
   }
 
   // Real traced paths: source disk -> mirror -> secondary -> receiver. Drawn
@@ -1023,6 +1355,9 @@
     drawGround(ctx, basis, vw);
     drawMast(ctx, scene, basis, vw);
 
+    // Rebuilt from scratch each frame, alongside the faces it indexes.
+    sceneState.picks = [];
+
     const items = [];
     if (scene.secondary) addSecondary(items, scene, basis, vw);
     if (scene.receiver) addReceiver(items, scene, basis, vw);
@@ -1033,17 +1368,33 @@
     if (scene.receiver) drawReceiverNormal(ctx, scene, basis, vw);
     if (sceneRaysToggle.checked) drawRays(ctx, scene, basis, vw);
     drawSun(ctx, scene, basis, vw);
+    drawSelection(ctx, scene, basis, vw);
+    drawGhostReceiver(ctx, scene, basis, vw);
   }
 
-  // Called once per trace response.
-  function setScene(scene) {
+  // Called once per trace response. `meta` carries the request context the
+  // inspector needs (which layout, what its numbers resolved to, which
+  // design produced these facets).
+  function setScene(scene, meta) {
     sceneState.data = scene || null;
+    sceneState.ghostZ = null;
+    if (meta) {
+      sceneState.optics = meta.optics;
+      sceneState.opticsResolved = meta.opticsResolved;
+      sceneState.design = meta.design;
+    }
     if (!scene) return;
     sceneState.extent = sceneExtent(scene);
     if (!cam.fitted) fitCamera();
     scenePlaceholder.hidden = true;
     sceneCanvas.hidden = false;
     sceneControls.hidden = sceneState.view !== "scene";
+    sceneHint.hidden = sceneState.view !== "scene";
+    // A selection only survives if the thing selected still exists -- prime
+    // focus has no secondary to keep selected.
+    if (sel.kind === "secondary" && !scene.secondary) sel.kind = null;
+    if (sel.kind === "receiver" && !scene.receiver) sel.kind = null;
+    renderInspector();
     sceneCaption.textContent =
       scene.rays.length === 0
         ? "no rays reached the receiver"
@@ -1053,6 +1404,168 @@
           : "ray bundle: " + scene.rays.length + " traced paths";
     renderScene();
   }
+
+  // -- selection inspector ---------------------------------------------------
+  //
+  // The panel edits the SAME numbers /api/trace resolved (they arrive as
+  // `optics_resolved`), so it never keeps a second copy of the server's
+  // defaults. Apply collects the edited fields, files them under the layout
+  // they belong to, and re-issues the trace; the camera and the selection
+  // both survive, because neither is rebuilt from the response.
+
+  const OPTICS_LABEL = {
+    prime_focus: "Prime focus",
+    axicon: "Axicon",
+    cassegrain: "Cassegrain",
+  };
+
+  const CASSEGRAIN_NOTE =
+    "fixed by the relay solve — the hyperboloid's vertex and conic were " +
+    "solved for this focus/receiver pair, so moving either would need the " +
+    "relay re-solved.";
+
+  function inspectorRow(label, field, value, editable, step) {
+    const row = document.createElement("div");
+    row.className = "inspector-row";
+    const lab = document.createElement("label");
+    lab.textContent = label;
+    row.appendChild(lab);
+    if (editable) {
+      const input = document.createElement("input");
+      input.type = "number";
+      input.dataset.field = field;
+      input.step = step === undefined ? 100 : step;
+      input.value = value;
+      lab.htmlFor = "insp-" + field;
+      input.id = "insp-" + field;
+      row.appendChild(input);
+    } else {
+      const ro = document.createElement("span");
+      ro.className = "ro";
+      ro.dataset.field = field;
+      ro.textContent = value;
+      row.appendChild(ro);
+    }
+    inspectorBody.appendChild(row);
+    return row;
+  }
+
+  function inspectorInput(field) {
+    return inspectorBody.querySelector('input[data-field="' + field + '"]');
+  }
+
+  function windowRows(resolved) {
+    inspectorRow("Window half-u (mm)", "window_half_u_mm", resolved.window_half_u_mm, true, 50);
+    inspectorRow("Window half-v (mm)", "window_half_v_mm", resolved.window_half_v_mm, true, 50);
+  }
+
+  function renderInspector() {
+    const scene = sceneState.data;
+    if (!sel.kind || !scene) {
+      inspector.hidden = true;
+      return;
+    }
+    const optics = sceneState.optics;
+    const resolved = sceneState.opticsResolved || {};
+    inspectorBody.innerHTML = "";
+    inspectorNote.hidden = true;
+    inspectorNote.textContent = "";
+    inspectorApply.hidden = false;
+
+    if (sel.kind === "receiver") {
+      inspectorTitle.textContent = "Receiver";
+      if (optics === "prime_focus") {
+        // One number doing two jobs, honestly: for prime focus the aim point
+        // IS the receiver, so there is no second height to disagree with.
+        inspectorRow("Focus height (mm)", "focus_height_mm", resolved.focus_height_mm, true, 500);
+      } else if (optics === "axicon") {
+        inspectorRow("Height z (mm)", "receiver_z_mm", resolved.receiver_z_mm, true, 500);
+      } else {
+        inspectorRow("Height z (mm)", "receiver_z_mm", scene.receiver.z_mm, false);
+        inspectorNote.textContent = CASSEGRAIN_NOTE;
+        inspectorNote.hidden = false;
+      }
+      windowRows(resolved);
+      inspectorRow("Facing", "facing", scene.receiver.facing, false);
+    } else if (sel.kind === "secondary") {
+      inspectorTitle.textContent = "Secondary";
+      if (optics === "axicon") {
+        inspectorRow("Apex height (mm)", "apex_height_mm", resolved.apex_height_mm, true, 500);
+        inspectorRow("Half angle (deg)", "half_angle_deg", resolved.half_angle_deg, true, 0.5);
+        inspectorRow(
+          "Aperture radius (mm)", "aperture_radius_mm", resolved.aperture_radius_mm, true, 500);
+      } else {
+        // Read straight off the drawn profile rather than from a second copy
+        // of the relay constants: r = 0 is the vertex, the last point is the rim.
+        const prof = scene.secondary.profile;
+        inspectorRow("Vertex z (mm)", "vertex_z_mm", fmt(prof[0][1], 1), false);
+        inspectorRow(
+          "Aperture radius (mm)", "aperture_radius_mm", fmt(prof[prof.length - 1][0], 1), false);
+        inspectorRow("Rim z (mm)", "rim_z_mm", fmt(prof[prof.length - 1][1], 1), false);
+        inspectorNote.textContent = CASSEGRAIN_NOTE;
+        inspectorNote.hidden = false;
+        inspectorApply.hidden = true;
+      }
+    } else {
+      inspectorTitle.textContent = "Heliostat";
+      inspectorRow("x (mm)", "heliostat_x_mm", numOrNull("helio-x") ?? 0, true, 1000);
+      inspectorRow("y (mm)", "heliostat_y_mm", numOrNull("helio-y") ?? -89609, true, 1000);
+      const d = sceneState.design || {};
+      inspectorRow("Design", "design", d.type || "—", false);
+      inspectorRow("Surface", "surface", d.surface || "—", false);
+      inspectorRow("Facets", "facets", scene.heliostat.length, false);
+      // Two-way sync with the trace panel's own position inputs: whichever
+      // pair you type into, both show the same number.
+      for (const field of ["heliostat_x_mm", "heliostat_y_mm"]) {
+        const input = inspectorInput(field);
+        const target = document.getElementById(
+          field === "heliostat_x_mm" ? "helio-x" : "helio-y");
+        input.addEventListener("input", () => (target.value = input.value));
+      }
+    }
+    inspector.hidden = false;
+  }
+
+  // Trace-panel position inputs push into the inspector when it is showing
+  // the heliostat -- the other half of the two-way sync.
+  for (const [id, field] of [["helio-x", "heliostat_x_mm"], ["helio-y", "heliostat_y_mm"]]) {
+    document.getElementById(id).addEventListener("input", () => {
+      if (sel.kind !== "heliostat" || inspector.hidden) return;
+      const input = inspectorInput(field);
+      if (input) input.value = document.getElementById(id).value;
+    });
+  }
+
+  function selectObject(kind) {
+    sel.kind = kind;
+    sceneState.ghostZ = null;
+    renderInspector();
+    renderScene();
+  }
+
+  document.getElementById("inspector-close").addEventListener("click", () => selectObject(null));
+
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && sel.kind) selectObject(null);
+  });
+
+  inspectorApply.addEventListener("click", () => {
+    const optics = sceneState.optics;
+    if (sel.kind === "heliostat") {
+      // Already mirrored into helio-x/helio-y by the sync above; the trace
+      // reads them from there, so there is nothing else to collect.
+      runTrace();
+      return;
+    }
+    if (!optics) return;
+    const edits = Object.assign({}, opticsEdits[optics]);
+    for (const input of inspectorBody.querySelectorAll("input[data-field]")) {
+      const v = parseFloat(input.value);
+      if (Number.isFinite(v)) edits[input.dataset.field] = v;
+    }
+    opticsEdits[optics] = edits;
+    runTrace();
+  });
 
   // -- view toggle + canvas interaction ------------------------------------
 
@@ -1069,6 +1582,7 @@
     fluxFrameEl.hidden = showScene;
     sceneFrame.hidden = !showScene;
     sceneControls.hidden = !showScene || !sceneState.data;
+    sceneHint.hidden = !showScene || !sceneState.data;
     if (showScene) renderScene();
   });
 
@@ -1080,20 +1594,104 @@
 
   // Left drag orbits, right drag (or shift-drag) pans, wheel zooms. Pitch is
   // clamped short of vertical so the world-up cross product never degenerates.
+  //
+  // Three gestures share the left button, disambiguated at mousedown:
+  //   * press and release under CLICK_SLOP_PX -> select whatever is under
+  //     the cursor (or deselect, over empty sky);
+  //   * press on the ALREADY-SELECTED receiver -> slide it along the tower
+  //     axis (a ghost outline follows; nothing is traced);
+  //   * anything else -> orbit.
+  // Requiring the receiver to be selected first is what keeps this from
+  // fighting the orbit control: an unselected scene orbits exactly as before,
+  // and the highlight tells you when the gesture has changed meaning.
+
+  // The Cassegrain receiver's height is fixed by the relay solve, so there is
+  // nothing to drag it to.
+  function receiverIsMovable() {
+    return sceneState.optics === "prime_focus" || sceneState.optics === "axicon";
+  }
+
+  function receiverHeightField() {
+    return sceneState.optics === "prime_focus" ? "focus_height_mm" : "receiver_z_mm";
+  }
+
   let drag = null;
+
   sceneCanvas.addEventListener("mousedown", (e) => {
-    drag = { x: e.clientX, y: e.clientY, pan: e.button === 2 || e.shiftKey };
+    const pan = e.button === 2 || e.shiftKey;
+    const p = canvasPoint(e);
+    const hit = pan ? null : pickAt(p[0], p[1]);
+    drag = { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, moved: 0, mode: "orbit" };
+
+    if (pan) {
+      drag.mode = "pan";
+    } else if (hit === "receiver" && sel.kind === "receiver" && receiverIsMovable()
+               && sceneState.data && sceneState.data.receiver) {
+      const basis = cameraBasis();
+      const z0 = sceneState.data.receiver.z_mm;
+      drag.mode = "receiverZ";
+      drag.z0 = z0;
+      // Depth and screen scale are sampled once, at press. The receiver
+      // moves a few metres at most during a drag, so re-deriving them every
+      // frame would only add jitter to the mapping the user is aiming with.
+      drag.depth = toView([0, 0, z0], basis)[2];
+      drag.upZ = basis.up[2];
+      drag.f = viewport().f;
+    }
     e.preventDefault();
   });
+
   sceneCanvas.addEventListener("contextmenu", (e) => e.preventDefault());
-  window.addEventListener("mouseup", () => (drag = null));
+
+  window.addEventListener("mouseup", (e) => {
+    if (!drag) return;
+    const finished = drag;
+    drag = null;
+
+    if (finished.mode === "receiverZ") {
+      if (sceneState.ghostZ !== null) {
+        // Write the dragged height into the inspector and stop there. A full
+        // trace per mouse-move would be unusable, and the ghost has already
+        // shown what Apply will do.
+        const input = inspectorInput(receiverHeightField());
+        if (input) input.value = Math.round(sceneState.ghostZ);
+      }
+      sceneState.ghostZ = null;
+      renderScene();
+      return;
+    }
+
+    if (finished.moved >= CLICK_SLOP_PX) return;
+    const p = canvasPoint(e);
+    const vwp = viewport();
+    if (p[0] < 0 || p[1] < 0 || p[0] > vwp.w || p[1] > vwp.h) return;
+    selectObject(pickAt(p[0], p[1]));
+  });
+
   window.addEventListener("mousemove", (e) => {
     if (!drag) return;
     const dx = e.clientX - drag.x;
     const dy = e.clientY - drag.y;
     drag.x = e.clientX;
     drag.y = e.clientY;
-    if (drag.pan) {
+    drag.moved += Math.abs(dx) + Math.abs(dy);
+
+    if (drag.mode === "receiverZ") {
+      // Invert the projection for the world z axis alone: a world step dz
+      // lands (dz * up_z) * f / depth pixels UP the screen, so a cursor
+      // displacement of dy pixels down means dz = -dy * depth / (f * up_z).
+      // Measured from the press point rather than accumulated per frame, so
+      // rounding cannot drift. up_z is bounded away from zero by PITCH_LIMIT.
+      if (Math.abs(drag.upZ) > 1e-3) {
+        const dyTotal = e.clientY - drag.y0;
+        const dz = (-dyTotal * drag.depth) / (drag.f * drag.upZ);
+        sceneState.ghostZ = Math.max(1, drag.z0 + dz);
+      }
+      renderScene();
+      return;
+    }
+
+    if (drag.mode === "pan") {
       // One pixel of drag moves the target by one pixel's worth of world
       // distance at the target plane, so panning tracks the cursor.
       const perPixel =
@@ -1135,20 +1733,28 @@
     });
   }
 
-  traceBtn.addEventListener("click", async () => {
+  async function runTrace() {
     clearError();
     traceBtn.disabled = true;
+    inspectorApply.disabled = true;
     traceBtn.textContent = "Tracing…";
     try {
+      const optics = document.getElementById("optics").value;
+      const design = currentDesign();
       const payload = {
-        design: currentDesign(),
+        design: design,
         mode: mode,
-        optics: document.getElementById("optics").value,
+        optics: optics,
         solar_az_deg: parseFloat(sunAz.value),
         solar_el_deg: parseFloat(sunEl.value),
         heliostat_x_mm: numOrNull("helio-x") ?? 0,
         heliostat_y_mm: numOrNull("helio-y") ?? -89609,
       };
+      // Only sent once the inspector has actually changed something, so an
+      // untouched session gets the server's own defaults rather than a
+      // client-side copy of them.
+      const edits = opticsEdits[optics];
+      if (edits && Object.keys(edits).length) payload.optics_params = edits;
       const resp = await fetch("/api/trace", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1180,17 +1786,27 @@
       countersEl.textContent = lines.join("\n");
       countersEl.hidden = false;
 
-      // The 3D view redraws from the same response; the camera survives.
-      setScene(data.scene);
+      // The 3D view redraws from the same response; the camera and the
+      // selection both survive, so an Apply reads as the scene changing
+      // under a fixed viewpoint rather than as a new picture.
+      setScene(data.scene, {
+        optics: optics,
+        opticsResolved: data.optics_resolved,
+        design: design,
+      });
     } catch (err) {
       showError("Trace request failed: " + err.message);
     } finally {
       traceBtn.disabled = false;
+      inspectorApply.disabled = false;
       traceBtn.textContent = "Trace";
     }
-  });
+  }
+
+  traceBtn.addEventListener("click", runTrace);
 
   // initial preview
+  updateSurfaceCaption();
   runPreview();
 })();
 </script>
