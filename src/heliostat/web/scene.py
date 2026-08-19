@@ -28,6 +28,17 @@ this module runs its own small side trace purely for the picture and marks
 the result ``rays_source="mc_sample"`` so the UI can say so. That side
 trace never touches the reported metrics or flux.
 
+Two scenes, one shape
+---------------------
+:func:`build_scene` describes ONE heliostat, facet by facet.
+:func:`build_field_scene` describes a whole traced field, one *silhouette*
+polygon per heliostat, and carries a parallel ``field.heliostats`` table
+(id, position, occlusion efficiency) so the client can colour mirrors by
+how much of each is shaded or blocked. Both emit the same top-level keys
+(``heliostat``, ``secondary``, ``receiver``, ``sun``, ``rays``,
+``rays_source``) built by the same helpers, so the browser's renderer draws
+either without branching on which one it got.
+
 World coordinates throughout, millimetres, in the tracers' own frame: x
 east, y north, z up, heliostat pivot at ``z = 0``, tower axis at
 ``x = y = 0``.
@@ -58,6 +69,20 @@ from ..trace.mc import (
 # Cap on ray polylines sent to the browser: 200 translucent lines already
 # read as a beam; more is payload, not information.
 MAX_SCENE_RAYS = 200
+
+# The field view's own budgets. 300 rays spread over the whole field reads as
+# "the field is aiming at the tower" without turning the canvas into a solid
+# wash; FIELD_RAY_SOURCES is how many heliostats contribute them (a
+# deterministic stride through the field, so the bundle samples near, middle
+# and far mirrors rather than one corner).
+MAX_FIELD_SCENE_RAYS = 300
+FIELD_RAY_SOURCES = 12
+
+# Vertices per heliostat outline in the field view. The occluder silhouette
+# the physics uses is a 72-gon; drawing 600 of those is ~1.2 MB of payload for
+# detail no one can see at field zoom, so the drawn outline is decimated to
+# every third vertex. Visual only -- the occlusion answer is unaffected.
+FIELD_SILHOUETTE_VERTICES = 24
 
 # Side-trace budget for the cone backends (a few milliseconds) and its
 # fixed seed -- the scene must be identical for two identical requests.
@@ -379,4 +404,154 @@ def build_scene(
         "sun": [_round_unit(c) for c in sun],
         "rays": _rays_payload(paths, max_rays),
         "rays_source": rays_source,
+    }
+
+
+# ---------------------------------------------------------------------------
+# the field scene
+
+
+def decimate_outline(outline: np.ndarray, max_vertices: int = FIELD_SILHOUETTE_VERTICES):
+    """Thin a closed outline to at most ``max_vertices``, by even stride.
+
+    A stride keeps the vertices that are actually on the real boundary
+    (every kept point is one the silhouette trace found) and keeps them in
+    order, so the decimated polygon is inscribed in the original rather than
+    smoothed off it. Returns the input untouched when it is already short
+    enough -- a rectangle stays its four exact corners.
+    """
+    v = outline.shape[0]
+    if v <= max_vertices:
+        return outline
+    step = int(np.ceil(v / max_vertices))
+    return outline[::step][:max_vertices]
+
+
+def _field_ray_sources(n: int, n_sources: int) -> list[int]:
+    """Indices of the heliostats that contribute drawn rays.
+
+    An even stride through the field in layout order. For a Fermat spiral
+    that order runs outward from the tower, so a stride samples near, middle
+    and far mirrors instead of one neighbourhood -- and it uses no rng, so
+    two identical requests pick the same heliostats.
+    """
+    if n <= 0:
+        return []
+    step = max(1, int(np.ceil(n / n_sources)))
+    return list(range(0, n, step))[:n_sources]
+
+
+def build_field_scene(
+    heliostats: list[dict],
+    outline_local_mm: np.ndarray,
+    solar_az_deg: float,
+    solar_el_deg: float,
+    secondary: Secondary,
+    receiver: Receiver,
+    max_rays: int = MAX_FIELD_SCENE_RAYS,
+    n_sources: int = FIELD_RAY_SOURCES,
+    n_sample_rays: int = SIDE_TRACE_RAYS,
+    max_vertices: int = FIELD_SILHOUETTE_VERTICES,
+) -> dict:
+    """Describe one traced *field* instant for the browser's 3-D view.
+
+    ``heliostats`` is one dict per traced heliostat, carrying exactly what
+    the trace itself used: ``id``, ``x_mm``, ``y_mm``, ``rot_az_deg``,
+    ``rot_el_deg``, ``c3``/``c4``/``c5``, ``design`` (or ``None`` for the
+    legacy rectangle) and ``eta`` (the occlusion efficiency actually applied
+    to that heliostat's contribution).
+
+    ``outline_local_mm`` is the design's silhouette in the mirror's own
+    ``(u, v)`` plane -- ONE polygon for the whole mirror, not one per facet.
+    It is passed in rather than derived here because the caller has already
+    built it for the occlusion pass, and because it is the same polygon for
+    every heliostat in the field: a silhouette depends on the facet regions
+    and their offsets, neither of which moves when a heliostat's own slant
+    range changes its figure or cant. Recomputing it per heliostat would
+    cost 600 radial traces to get 600 identical answers.
+
+    Rays are always a seeded side trace from a stride of heliostats (see
+    :func:`_field_ray_sources`), labelled ``rays_source="mc_sample"`` even
+    when the reported field trace was Monte Carlo. Keeping one ray path for
+    the picture means the drawn bundle is the same whichever backend ran,
+    and a field-wide Monte Carlo carries far more paths than a picture can
+    use anyway.
+    """
+    outline = decimate_outline(np.asarray(outline_local_mm, dtype=float), max_vertices)
+
+    polygons = []
+    table = []
+    for h in heliostats:
+        centre = np.array([h["x_mm"], h["y_mm"], 0.0])
+        _n, u, v = _mirror_frame(h["rot_az_deg"], h["rot_el_deg"])
+        poly = centre[None, :] + outline[:, :1] * u[None, :] + outline[:, 1:] * v[None, :]
+        if not np.isfinite(poly).all():  # pragma: no cover - defensive, as build_scene
+            continue
+        polygons.append(poly)
+        table.append(
+            {
+                "id": int(h["id"]),
+                "x_mm": _round(h["x_mm"]),
+                "y_mm": _round(h["y_mm"]),
+                "eta": round(float(h["eta"]), 4),
+            }
+        )
+
+    sources = _field_ray_sources(len(heliostats), n_sources)
+    bundles = []
+    for i in sources:
+        h = heliostats[i]
+        sample = trace_heliostat(
+            h["x_mm"],
+            h["y_mm"],
+            h["rot_az_deg"],
+            h["rot_el_deg"],
+            h["c3"],
+            h["c4"],
+            h["c5"],
+            solar_az_deg,
+            solar_el_deg,
+            secondary,
+            receiver,
+            n_sample_rays,
+            # Per-heliostat stream, deterministically derived from the fixed
+            # scene seed: one seed for all of them would draw the identical
+            # sample pattern on every mirror, which reads as a repeated
+            # stencil rather than as a field.
+            np.random.default_rng(np.random.SeedSequence((SIDE_TRACE_SEED, i))),
+            source_disk_radius_mm="auto",
+            return_paths=True,
+            design=h["design"],
+        )
+        bundles.append(sample["paths"])
+
+    per_source = max(1, max_rays // max(1, len(bundles)))
+    paths = (
+        np.concatenate([_subsample_paths(b, per_source) for b in bundles], axis=2)
+        if bundles
+        else np.zeros((4, 3, 0))
+    )
+
+    profile = _secondary_profile(secondary)
+    rings = None if profile is None else profile[1][np.isfinite(profile[1]).all(axis=1)]
+    sun = _sun_vector(solar_az_deg, solar_el_deg)
+
+    return {
+        "heliostat": [_poly_payload(p) for p in polygons],
+        "field": {
+            "heliostats": table,
+            "silhouette_vertices": int(outline.shape[0]),
+            "decimated": bool(np.asarray(outline_local_mm).shape[0] > outline.shape[0]),
+            # How many heliostats the drawn bundle actually came from -- the
+            # caption says so rather than letting the picture imply that
+            # every mirror in the field is sending rays.
+            "ray_sources": len(sources),
+        },
+        "secondary": None
+        if profile is None
+        else {"kind": profile[0], "profile": [[_round(r), _round(z)] for r, z in rings]},
+        "receiver": _receiver_dict(receiver),
+        "sun": [_round_unit(c) for c in sun],
+        "rays": _rays_payload(paths, max_rays),
+        "rays_source": "mc_sample",
     }

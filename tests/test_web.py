@@ -8,6 +8,7 @@ stay importable/testable without it.
 from __future__ import annotations
 
 import base64
+import json
 import math
 
 import numpy as np
@@ -25,12 +26,29 @@ from heliostat.web.app import (  # noqa: E402
     AXICON_APEX_HEIGHT_MM,
     AXICON_HALF_ANGLE_DEG,
     AXICON_RECEIVER_Z_MM,
+    FERMAT_A_M,
+    FERMAT_B,
+    MAX_FIELD_HELIOSTATS,
     PRIME_FOCUS_HEIGHT_MM,
     WINDOW_MM,
+    FermatLayout,
+    FlowerParams,
+    _build_trace_design,
+    _field_geometry,
     _geometry_for,
+    _slant_range_mm,
+    _solve_for,
     create_app,
+    resolve_optics_params,
 )
-from heliostat.web.scene import MAX_SCENE_RAYS, radial_outline  # noqa: E402
+from heliostat.web.scene import (  # noqa: E402
+    FIELD_SILHOUETTE_VERTICES,
+    MAX_FIELD_SCENE_RAYS,
+    MAX_SCENE_RAYS,
+    build_field_scene,
+    decimate_outline,
+    radial_outline,
+)
 
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
@@ -704,6 +722,392 @@ def test_geometry_for_accepts_the_optics_name_alone(client):
     assert secondary.apex_height_mm == AXICON_APEX_HEIGHT_MM
     assert receiver.z_mm == AXICON_RECEIVER_Z_MM
     assert receiver.half_u_mm == WINDOW_MM
+
+
+# ---------------------------------------------------------------------------
+# field trace (/api/field/trace)
+#
+# The property these guard first is that the field path and the single path
+# are the same physics: a one-heliostat field must equal the single trace of
+# that heliostat, and everything the field adds on top (mutual shading, the
+# summed map) must only ever take power away, never invent it.
+
+
+def _field_payload(design=RECT_DESIGN, layout=None, mode="ultra_fast", **kw):
+    payload = _trace_payload(design, mode=mode)
+    payload["layout"] = layout if layout is not None else {"type": "fermat", "n": 4}
+    payload.update(kw)
+    return payload
+
+
+def test_field_of_one_equals_the_single_trace(client):
+    """A one-heliostat field is a single trace with extra bookkeeping. If
+    these ever diverge, the two endpoints have stopped sharing their
+    physics -- which is the whole reason _trace_core exists."""
+    field = client.post("/api/field/trace", json=_field_payload(layout={"type": "fermat", "n": 1}))
+    assert field.status_code == 200
+    fd = field.json()
+    assert fd["n_heliostats"] == 1
+
+    row = fd["heliostats"][0]
+    single = client.post(
+        "/api/trace",
+        json={
+            **_trace_payload(RECT_DESIGN),
+            "heliostat_x_mm": row["x_mm"],
+            "heliostat_y_mm": row["y_mm"],
+        },
+    ).json()
+
+    # Nothing shades a lone heliostat, so the whole of it delivers.
+    assert row["eta_shade"] == row["eta_block"] == row["eta"] == 1.0
+    assert fd["power_w"] == pytest.approx(single["power_w"], rel=1e-12)
+    assert fd["rms_radius_mm"] == pytest.approx(single["rms_radius_mm"], rel=1e-9)
+    assert fd["centroid_mm"] == pytest.approx(single["centroid_mm"], abs=1e-9)
+    assert fd["incident_power_w"] == pytest.approx(single["incident_power_w"], rel=1e-12)
+    assert fd["scene"]["receiver"] == single["scene"]["receiver"]
+    assert fd["scene"]["sun"] == single["scene"]["sun"]
+
+
+# Twelve heliostats 8 m apart on a north-south line, with the sun low in the
+# south: near enough, and lit at a shallow enough angle, that the northern
+# half of the row stands in the southern half's shadow. Values are geometry,
+# not tuning -- a 3 m-tall mirror at 8 deg elevation throws a 21 m shadow.
+DENSE_ROW_XY_MM = [[0.0, -100000.0 + 8000.0 * i] for i in range(12)]
+DENSE_ROW_SUN_EL_DEG = 8.0
+
+
+def test_dense_field_shades_itself(client):
+    """Twelve neighbours at low sun must deliver less than twelve isolated
+    heliostats -- the shading is real, applied, and visible in the total."""
+    payload = _field_payload(
+        layout={"type": "positions", "xy_mm": DENSE_ROW_XY_MM},
+        solar_el_deg=DENSE_ROW_SUN_EL_DEG,
+    )
+    data = client.post("/api/field/trace", json=payload).json()
+
+    assert data["n_heliostats"] == 12
+    rows = data["heliostats"]
+    assert len(rows) == 12
+    assert [r["id"] for r in rows] == list(range(12))
+    for r, xy in zip(rows, DENSE_ROW_XY_MM):
+        assert (r["x_mm"], r["y_mm"]) == tuple(xy)
+        for key in ("eta_shade", "eta_block", "eta"):
+            assert 0.0 < r[key] <= 1.0
+
+    # At least one heliostat actually loses aperture, and the reported
+    # summary agrees with the rows it summarises.
+    etas = [r["eta"] for r in rows]
+    assert min(etas) < 1.0
+    assert data["eta_min"] == pytest.approx(min(etas))
+    assert data["eta_max"] == pytest.approx(max(etas))
+
+    isolated = 0.0
+    for xy in DENSE_ROW_XY_MM:
+        single = client.post(
+            "/api/trace",
+            json={
+                **_trace_payload(RECT_DESIGN, solar_el_deg=DENSE_ROW_SUN_EL_DEG),
+                "heliostat_x_mm": xy[0],
+                "heliostat_y_mm": xy[1],
+            },
+        ).json()
+        isolated += single["power_w"]
+    assert data["power_w"] < isolated
+    assert data["power_w"] == pytest.approx(sum(r["power_w"] for r in rows))
+
+
+def test_field_trace_is_deterministic(client):
+    """Two identical field requests agree ray for ray and watt for watt."""
+    payload = _field_payload(FLOWER_DESIGN, layout={"type": "fermat", "n": 5}, optics="axicon")
+    first = client.post("/api/field/trace", json=payload).json()
+    second = client.post("/api/field/trace", json=payload).json()
+
+    assert first["scene"]["rays"] == second["scene"]["rays"]
+    assert first["scene"]["heliostat"] == second["scene"]["heliostat"]
+    assert first["power_w"] == second["power_w"]
+    assert first["rms_radius_mm"] == second["rms_radius_mm"]
+    assert first["heliostats"] == second["heliostats"]
+    assert first["counters"] == second["counters"]
+
+
+def test_positions_layout_round_trips(client):
+    """The positions a fermat field reports back are a layout in their own
+    right: re-posting them traces the identical field."""
+    generated = client.post(
+        "/api/field/trace", json=_field_payload(layout={"type": "fermat", "n": 6})
+    ).json()
+    xy = [[r["x_mm"], r["y_mm"]] for r in generated["heliostats"]]
+
+    replayed = client.post(
+        "/api/field/trace", json=_field_payload(layout={"type": "positions", "xy_mm": xy})
+    ).json()
+    assert replayed["power_w"] == generated["power_w"]
+    assert replayed["heliostats"] == generated["heliostats"]
+    assert replayed["scene"]["heliostat"] == generated["scene"]["heliostat"]
+
+
+def test_moving_one_heliostat_changes_only_that_row(client):
+    """What the inspector's Apply does: re-post the field with one row
+    edited. The moved heliostat lands where it was told and the others are
+    untouched (they can still see a different neighbour, which is why only
+    the position is asserted, not the power)."""
+    base = [[0.0, -90000.0], [6000.0, -90000.0], [0.0, -84000.0]]
+    moved = [list(p) for p in base]
+    moved[1] = [40000.0, -70000.0]
+
+    before = client.post(
+        "/api/field/trace", json=_field_payload(layout={"type": "positions", "xy_mm": base})
+    ).json()
+    after = client.post(
+        "/api/field/trace", json=_field_payload(layout={"type": "positions", "xy_mm": moved})
+    ).json()
+
+    assert [(r["x_mm"], r["y_mm"]) for r in after["heliostats"]] == [tuple(p) for p in moved]
+    assert [r["id"] for r in after["heliostats"]] == [r["id"] for r in before["heliostats"]]
+    assert after["heliostats"][1]["power_w"] != before["heliostats"][1]["power_w"]
+
+
+def test_exclude_ids_drops_heliostats_without_renumbering(client):
+    full = client.post(
+        "/api/field/trace", json=_field_payload(layout={"type": "fermat", "n": 5})
+    ).json()
+    thinned = client.post(
+        "/api/field/trace",
+        json=_field_payload(layout={"type": "fermat", "n": 5}, exclude_ids=[1, 3]),
+    ).json()
+
+    assert thinned["n_heliostats"] == 3
+    assert [r["id"] for r in thinned["heliostats"]] == [0, 2, 4]
+    kept = {r["id"]: (r["x_mm"], r["y_mm"]) for r in full["heliostats"]}
+    for r in thinned["heliostats"]:
+        assert (r["x_mm"], r["y_mm"]) == kept[r["id"]]
+    assert thinned["power_w"] < full["power_w"]
+
+
+@pytest.mark.parametrize(
+    "layout",
+    [
+        {"type": "fermat", "n": MAX_FIELD_HELIOSTATS + 1},
+        {"type": "fermat", "n": 0},
+        {"type": "positions", "xy_mm": [[0.0, 0.0]] * (MAX_FIELD_HELIOSTATS + 1)},
+        {"type": "positions", "xy_mm": []},
+        {"type": "positions", "xy_mm": [[0.0, -90000.0, 1.0]]},
+        {"type": "spiral_of_doom", "n": 4},
+    ],
+)
+def test_bad_field_layout_is_422(client, layout):
+    assert client.post("/api/field/trace", json=_field_payload(layout=layout)).status_code == 422
+
+
+@pytest.mark.parametrize("bad", ["NaN", "Infinity", "-Infinity"])
+def test_non_finite_position_is_422(client, bad):
+    """Posted as a raw body: JSON has no NaN/Infinity literal, so an HTTP
+    client that follows the spec cannot even send one -- but Python's own
+    json module writes and reads all three, and the server must not trace a
+    heliostat at infinity."""
+    body = json.dumps(_field_payload(layout={"type": "positions", "xy_mm": [[0.0, -90000.0]]}))
+    body = body.replace("-90000.0", bad)
+    resp = client.post(
+        "/api/field/trace", content=body, headers={"Content-Type": "application/json"}
+    )
+    assert resp.status_code == 422
+    assert "finite" in str(resp.json()["detail"])
+
+
+@pytest.mark.parametrize("exclude", [[9], [-1], [0, 1, 2, 3]])
+def test_bad_exclude_ids_is_422(client, exclude):
+    """Out of range, or dropping the whole field -- both are a request that
+    cannot be answered, not a field of zero heliostats."""
+    resp = client.post(
+        "/api/field/trace",
+        json=_field_payload(layout={"type": "fermat", "n": 4}, exclude_ids=exclude),
+    )
+    assert resp.status_code == 422
+
+
+def test_field_trace_below_the_horizon_is_422(client):
+    resp = client.post("/api/field/trace", json=_field_payload(solar_el_deg=0.0))
+    assert resp.status_code == 422
+
+
+def test_field_monte_carlo_traces(client):
+    """The Monte Carlo backend sums histograms rather than hit lists, so it
+    reports no incident power (as a single trace does not) and its combined
+    spot still has to be finite and inside the window."""
+    data = client.post(
+        "/api/field/trace",
+        json=_field_payload(layout={"type": "fermat", "n": 3}, mode="monte_carlo"),
+    ).json()
+    assert data["mode"] == "monte_carlo"
+    assert data["incident_power_w"] is None
+    assert data["power_w"] > 0
+    assert 0 < data["rms_radius_mm"] < WINDOW_MM
+    assert data["counters"]["emitted"] == 3 * 120_000
+
+
+def test_field_timings_are_reported(client):
+    data = client.post(
+        "/api/field/trace", json=_field_payload(layout={"type": "fermat", "n": 4})
+    ).json()
+    t = data["timings_ms"]
+    assert set(t) == {"solve", "occlusion", "trace", "scene"}
+    assert all(v >= 0 for v in t.values())
+    # elapsed_ms is the physics: solve + occlusion + trace, scene excluded.
+    assert data["elapsed_ms"] == pytest.approx(t["solve"] + t["occlusion"] + t["trace"], rel=1e-6)
+
+
+# -- field scene ------------------------------------------------------------
+
+
+@pytest.mark.parametrize("design_key", sorted(SCENE_DESIGNS))
+def test_field_scene_is_one_silhouette_per_heliostat(client, design_key):
+    """Not one polygon per facet: at field scale a mirror is its outline."""
+    design, _n_facets = SCENE_DESIGNS[design_key]
+    data = client.post(
+        "/api/field/trace", json=_field_payload(design, layout={"type": "fermat", "n": 7})
+    ).json()
+    scene = data["scene"]
+
+    assert len(scene["heliostat"]) == 7
+    assert len(scene["field"]["heliostats"]) == 7
+    for poly in scene["heliostat"]:
+        assert 3 <= len(poly) <= FIELD_SILHOUETTE_VERTICES
+        pts = np.asarray(poly, dtype=float)
+        assert pts.shape[1] == 3
+        assert np.isfinite(pts).all()
+
+    # Each polygon sits at its own heliostat, and the table agrees with the
+    # per-heliostat rows the metrics were built from.
+    triples = zip(scene["heliostat"], scene["field"]["heliostats"], data["heliostats"])
+    for poly, entry, row in triples:
+        assert entry["id"] == row["id"]
+        assert entry["eta"] == pytest.approx(row["eta"], abs=1e-4)
+        centre = np.asarray(poly, dtype=float).mean(axis=0)
+        assert abs(centre[0] - row["x_mm"]) < _half_diagonal_mm(design)
+        assert abs(centre[1] - row["y_mm"]) < _half_diagonal_mm(design)
+
+    assert 0 < len(scene["rays"]) <= MAX_FIELD_SCENE_RAYS
+    assert scene["rays_source"] == "mc_sample"
+    assert scene["field"]["ray_sources"] <= 7
+
+
+def test_field_scene_payload_at_600_stays_small():
+    """The whole point of drawing silhouettes instead of facets: a full field
+    has to fit in a response the browser will actually parse. Built directly
+    rather than over HTTP -- 600 traces is a minute of wall time and this
+    asserts nothing about the trace."""
+    xy = FermatLayout(n=MAX_FIELD_HELIOSTATS).positions_mm()
+    params = resolve_optics_params("prime_focus", None)
+    secondary, receiver = _geometry_for("prime_focus", params)
+    # A flower: the worst case for this payload, since its silhouette is a
+    # sampled 72-gon rather than four rectangle corners.
+    design_params = FlowerParams(**FLOWER_DESIGN)
+
+    heliostats = []
+    design = None
+    for i in range(xy.shape[0]):
+        sol = _solve_for("prime_focus", float(xy[i, 0]), float(xy[i, 1]), 180.0, 45.0, params)
+        design = _build_trace_design(
+            design_params, sol, _slant_range_mm(sol, float(xy[i, 0]), float(xy[i, 1]))
+        )
+        heliostats.append(
+            {
+                "id": i,
+                "x_mm": float(xy[i, 0]),
+                "y_mm": float(xy[i, 1]),
+                "rot_az_deg": sol.rot_az_deg,
+                "rot_el_deg": sol.rot_el_deg,
+                "c3": sol.c3,
+                "c4": sol.c4,
+                "c5": sol.c5,
+                "design": design,
+                "eta": 0.9,
+            }
+        )
+
+    _region, outline, _hw, _hh = _field_geometry(design)
+    scene = build_field_scene(heliostats, outline, 180.0, 45.0, secondary, receiver)
+
+    assert len(scene["heliostat"]) == MAX_FIELD_HELIOSTATS
+    assert {len(p) for p in scene["heliostat"]} == {FIELD_SILHOUETTE_VERTICES}
+    assert scene["field"]["decimated"] is True
+    assert len(json.dumps(scene)) < 1_500_000
+
+
+def test_decimate_outline_keeps_original_vertices():
+    ang = np.linspace(0, 2 * np.pi, 72, endpoint=False)
+    outline = np.column_stack([np.cos(ang), np.sin(ang)])
+    thinned = decimate_outline(outline, 24)
+    assert thinned.shape == (24, 2)
+    assert np.isin(thinned, outline).all()
+    # A rectangle is already short enough and comes back untouched.
+    rect = np.array([[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]])
+    assert decimate_outline(rect, 24) is rect
+
+
+# -- the field honours the design panel -------------------------------------
+
+
+def test_field_surface_selector_applies_to_every_heliostat(client):
+    """Flat facets have no figure, so a flat field washes: its combined spot
+    is far broader than the same field focused."""
+    focused = client.post(
+        "/api/field/trace", json=_field_payload(GRID_DESIGN, layout={"type": "fermat", "n": 5})
+    ).json()
+    flat = client.post(
+        "/api/field/trace",
+        json=_field_payload({**GRID_DESIGN, "surface": "flat"}, layout={"type": "fermat", "n": 5}),
+    ).json()
+    assert flat["rms_radius_mm"] > 2.0 * focused["rms_radius_mm"]
+
+
+def test_field_optics_params_move_the_whole_tower(client):
+    """One tower, every heliostat aimed at it: a moved focus height shows up
+    in the scene's receiver and in what the field resolved."""
+    payload = _field_payload(layout={"type": "fermat", "n": 4})
+    payload["optics_params"] = {"focus_height_mm": 30000.0}
+    data = client.post("/api/field/trace", json=payload).json()
+
+    assert data["optics_resolved"]["focus_height_mm"] == 30000.0
+    assert data["scene"]["receiver"]["z_mm"] == 30000.0
+    rays = np.asarray(data["scene"]["rays"], dtype=float)
+    assert len(rays) > 0
+    assert np.abs(rays[:, 3, 2] - 30000.0).max() <= 1e-6
+
+
+def test_field_spherical_without_a_focal_is_422(client):
+    """The design panel's own errors reach the field endpoint unchanged."""
+    resp = client.post(
+        "/api/field/trace",
+        json=_field_payload({**GRID_DESIGN, "surface": "spherical", "cant_focal_mm": 0}),
+    )
+    assert resp.status_code == 422
+    assert "cant_focal_mm" in resp.json()["detail"]
+
+
+def test_fermat_layout_matches_the_library_generator():
+    """The endpoint's spiral is field_layouts' spiral at this module's
+    documented defaults -- not a second copy of the recipe."""
+    from heliostat.field_layouts import generate
+
+    expected = generate("fermat", 40, a_m=FERMAT_A_M, b=FERMAT_B).xy_mm
+    assert np.array_equal(FermatLayout(n=40).positions_mm(), expected)
+
+
+def test_index_carries_the_field_controls(client):
+    """Markup-only guard, same reasoning as the surface/inspector one."""
+    text = client.get("/").text
+    for marker in (
+        'id="trace-mode-tabs"',
+        'data-tracemode="single"',
+        'data-tracemode="field"',
+        'id="field-n"',
+        'id="field-legend"',
+        'id="row-eta"',
+        "/api/field/trace",
+    ):
+        assert marker in text, marker
 
 
 def test_radial_outline_traces_a_petal_boundary():
