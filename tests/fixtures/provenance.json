@@ -15,7 +15,7 @@
   "seed_scheme": "default_rng(SeedSequence((base_seed, int(timestep_key), heliostat_id)))",
   "base_seed": 20260811,
   "quantisation_scale_mm": 0.061037018951994385,
-  "quantisation_note": "int16 over +/- receiver.window_mm (2000.0 mm), matching beamdown.store.RunStore.quantise",
+  "quantisation_note": "int16 over +/- receiver.window_mm (2000.0 mm), matching the source research code's RunStore.quantise",
   "mc_parity": {
     "n_rays_per_trace": 20000,
     "heliostat_ids": [

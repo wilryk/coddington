@@ -1,6 +1,6 @@
 site_name: heliostat
 site_description: Heliostat-field simulation for concentrating solar towers
-repo_url: ""  # set when the GitLab project exists
+repo_url: "https://github.com/wilryk/heliostat"
 
 theme:
   name: material
@@ -28,4 +28,5 @@ plugins:
 
 nav:
   - Home: index.md
+  - Concepts: guide.md
   - API reference: api.md

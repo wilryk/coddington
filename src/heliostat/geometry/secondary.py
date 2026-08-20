@@ -1,11 +1,11 @@
 """Secondary reflectors between the primary mirrors and the receiver.
 
-A beam-down field reflects sunlight twice: once off each heliostat's own
-mirror, and once off a shared secondary reflector near the top of the tower
-that redirects the combined beam down onto a ground-level receiver. This
-module models that second bounce for three secondary shapes plus the
-trivial case of having none at all (a plain tower with a receiver mounted
-directly at the primary focus).
+A secondary-mirror concentrator reflects sunlight twice: once off each
+heliostat's own mirror, and once off a shared reflector near the top of the
+tower that redirects the combined beam onto a ground-level receiver below.
+This module models that second bounce for three secondary shapes
+plus the trivial case of having none at all (a plain tower with a receiver
+mounted directly at the primary focus).
 
 Every :class:`Secondary` consumes the rays leaving the primary mirrors —
 already reflected once — and returns the rays leaving its own surface,

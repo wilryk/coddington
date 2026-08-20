@@ -5,17 +5,32 @@ build-backend = "hatchling.build"
 [project]
 name = "heliostat"
 version = "0.1.0.dev0"
-description = "Heliostat-field simulation for concentrating solar towers: field layouts, Monte Carlo ray tracing, flux maps, shading/blocking, DNI, and annual energy"
+description = "Heliostat-field simulation for concentrating solar power towers: field layouts, ray tracing, flux maps, shading/blocking, DNI, and annual energy"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Ryker Eads" }]
 requires-python = ">=3.10"
-keywords = ["heliostat", "csp", "solar", "ray-tracing", "concentrating-solar", "flux-map"]
+keywords = [
+    "heliostat",
+    "concentrating solar power",
+    "csp",
+    "solar tower",
+    "ray tracing",
+    "monte carlo",
+    "optics",
+    "flux map",
+    "solar energy",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Physics",
 ]
 dependencies = [
@@ -27,7 +42,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-cov", "ruff"]
+# ruff pinned to the version CI installs, so a fresh dev environment can
+# never disagree with CI about formatting.
+dev = ["pytest>=8", "pytest-cov", "ruff==0.16.3"]
 docs = ["mkdocs-material>=9", "mkdocstrings[python]>=0.24"]
 web = ["fastapi>=0.110", "uvicorn>=0.27"]
 
@@ -35,8 +52,9 @@ web = ["fastapi>=0.110", "uvicorn>=0.27"]
 heliostat = "heliostat.cli:main"
 
 [project.urls]
-# Filled in when the GitLab project is created.
-# Homepage = "https://gitlab.com/<group>/heliostat"
+Homepage = "https://github.com/wilryk/heliostat"
+Repository = "https://github.com/wilryk/heliostat"
+Changelog = "https://github.com/wilryk/heliostat/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/heliostat"]

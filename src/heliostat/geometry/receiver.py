@@ -111,10 +111,10 @@ class Receiver(ABC):
 class FlatWindowReceiver(Receiver):
     """Horizontal rectangular window at height ``z_mm``.
 
-    ``facing="up"`` absorbs rays arriving from above (a beam-down ground
-    receiver); ``facing="down"`` absorbs rays arriving from below (a
-    prime-focus receiver at the top of a tower). ``uv`` is simply ``(x, y)``
-    at the plane.
+    ``facing="up"`` absorbs rays arriving from above (a ground receiver
+    below a tower reflector); ``facing="down"`` absorbs rays arriving from
+    below (a prime-focus receiver at the top of a tower). ``uv`` is simply
+    ``(x, y)`` at the plane.
     """
 
     z_mm: float

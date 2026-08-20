@@ -169,7 +169,7 @@ def test_trace_monte_carlo(client):
     assert png_bytes[:8] == PNG_MAGIC
 
 
-def test_trace_beam_down_optics(client):
+def test_trace_tower_reflector_optics(client):
     resp = client.post("/api/trace", json=_trace_payload(RECT_DESIGN, optics="axicon"))
     assert resp.status_code == 200
     resp = client.post("/api/trace", json=_trace_payload(RECT_DESIGN, optics="cassegrain"))
@@ -362,7 +362,7 @@ def test_scene_is_deterministic_and_does_not_disturb_the_trace(client, mode):
 # Captured from this endpoint BEFORE the surface/optics_params work landed,
 # with the default request _trace_payload builds (rect 5000x3000, ultra_fast,
 # prime focus, sun az 180 el 45, heliostat at (0, -89609)). These pin the
-# LEGACY single-mirror path: a default-size adaptive rectangle is the one
+# LEGACY single-mirror path: a default-size twisting rectangle is the one
 # combination that still traces through design=None, and these are the
 # numbers that path produced. A change here is a physics change, not a
 # refactor -- do not re-base without understanding why it moved.
@@ -439,7 +439,7 @@ def test_absent_surface_and_optics_params_equal_explicit_defaults(
     """Saying nothing is the same as saying the defaults out loud -- every
     comparable response field, including the whole 3-D scene."""
     bare = client.post("/api/trace", json=_trace_payload(design, optics=optics)).json()
-    spelled_out = _trace_payload({**design, "surface": "adaptive"}, optics=optics)
+    spelled_out = _trace_payload({**design, "surface": "twisting"}, optics=optics)
     spelled_out["optics_params"] = explicit_optics
     explicit = client.post("/api/trace", json=spelled_out).json()
 
@@ -472,11 +472,9 @@ def test_flat_rect_washes_and_leaves_the_legacy_path(client):
     path (which hard-codes the astigmatic figure): with no figure at all the
     spot is a mirror-sized wash, several times the focused rms, and the cone
     backend still reports real power through it."""
-    adaptive = client.post("/api/trace", json=_trace_payload(RECT_DESIGN)).json()
-    flat = client.post(
-        "/api/trace", json=_trace_payload({**RECT_DESIGN, "surface": "flat"})
-    ).json()
-    assert flat["rms_radius_mm"] > 3.0 * adaptive["rms_radius_mm"]
+    twisting = client.post("/api/trace", json=_trace_payload(RECT_DESIGN)).json()
+    flat = client.post("/api/trace", json=_trace_payload({**RECT_DESIGN, "surface": "flat"})).json()
+    assert flat["rms_radius_mm"] > 3.0 * twisting["rms_radius_mm"]
     assert flat["power_w"] > 0
 
 
@@ -484,12 +482,12 @@ def test_spherical_rect_is_not_the_legacy_path(client):
     """A default-size rectangle asking for a spherical figure is routed
     through the design path, so it cannot come back with the legacy path's
     astigmatic answer."""
-    adaptive = client.post("/api/trace", json=_trace_payload(RECT_DESIGN)).json()
+    twisting = client.post("/api/trace", json=_trace_payload(RECT_DESIGN)).json()
     spherical = client.post(
         "/api/trace", json=_trace_payload({**RECT_DESIGN, "surface": "spherical"})
     ).json()
     assert math.isfinite(spherical["rms_radius_mm"])
-    assert spherical["rms_radius_mm"] != adaptive["rms_radius_mm"]
+    assert spherical["rms_radius_mm"] != twisting["rms_radius_mm"]
     assert spherical["power_w"] > 0
 
 
@@ -539,10 +537,20 @@ def test_bad_surface_value_is_422(client):
     assert resp.status_code == 422
 
 
+def test_the_old_adaptive_spelling_is_rejected(client):
+    """The solve-driven surface mode was renamed "adaptive" -> "twisting"
+    before this package was ever published, and deliberately WITHOUT a
+    compatibility alias. This pins that: the old spelling must fail loudly
+    rather than being quietly accepted as the default, which is the failure
+    mode that would let stale client code keep working until it didn't."""
+    resp = client.post("/api/trace", json=_trace_payload({**RECT_DESIGN, "surface": "adaptive"}))
+    assert resp.status_code == 422
+
+
 def test_surface_is_accepted_but_ignored_by_the_preview(client):
     """The preview draws footprint only and has no sun to resolve a figure
     against, so every surface mode previews the same picture."""
-    for surface in ("adaptive", "spherical", "flat"):
+    for surface in ("twisting", "spherical", "flat"):
         resp = client.post(
             "/api/design/preview", json={"design": {**FLOWER_DESIGN, "surface": surface}}
         )
@@ -654,8 +662,9 @@ def test_prime_focus_optics_params_sanity_is_422(client, params):
         {"half_angle_deg": 120.0},
         {"apex_height_mm": -1.0},
         {"aperture_radius_mm": 0.0},
-        # Receiver at or above the cone: the beam-down drop would be zero or
-        # negative and the solve would answer for a tower that cannot exist.
+        # Receiver at or above the cone: the drop from the cone down to the
+        # receiver would be zero or negative, and the solve would answer for
+        # a tower that cannot exist.
         {"receiver_z_mm": 27000.0},
         {"receiver_z_mm": 30000.0},
     ],
@@ -705,7 +714,7 @@ def test_index_carries_the_surface_and_inspector_controls(client):
     text = client.get("/").text
     for marker in (
         'id="surface-tabs"',
-        'data-surface="adaptive"',
+        'data-surface="twisting"',
         'data-surface="spherical"',
         'data-surface="flat"',
         'id="surface-caption"',

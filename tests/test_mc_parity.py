@@ -99,7 +99,7 @@ def _geometry_for(config: str):
             z_mm=35335.0, half_u_mm=WINDOW_MM, half_v_mm=WINDOW_MM, facing="down"
         )
     elif config == "axicon":
-        # Beam-down ground receiver below the cone: rays arrive from above.
+        # Ground receiver below the cone: rays arrive from above.
         secondary = AxiconSecondary(
             apex_height_mm=27000.0, half_angle_deg=20.0, aperture_radius_mm=14000.0
         )
@@ -107,7 +107,7 @@ def _geometry_for(config: str):
             z_mm=7000.0, half_u_mm=WINDOW_MM, half_v_mm=WINDOW_MM, facing="up"
         )
     elif config == "cassegrain":
-        # Beam-down ground receiver below the hyperboloid, same side as the
+        # Ground receiver below the hyperboloid, same side as the
         # axicon layout. Vertex/radius/conic are the built secondary's fixed
         # constants, independent of the shared-focus height.
         secondary = CassegrainSecondary(

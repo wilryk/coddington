@@ -518,7 +518,7 @@
 
     <div class="surface-label">Surface (optical figure)</div>
     <div class="surface-tabs" id="surface-tabs">
-      <button data-surface="adaptive" class="active">Adaptive</button>
+      <button data-surface="twisting" class="active">Twisting</button>
       <button data-surface="spherical">Spherical</button>
       <button data-surface="flat">Flat</button>
     </div>
@@ -544,8 +544,8 @@
       <label for="optics">Optics</label>
       <select id="optics">
         <option value="prime_focus">Prime focus</option>
-        <option value="axicon">Axicon (beam-down)</option>
-        <option value="cassegrain">Cassegrain (beam-down)</option>
+        <option value="axicon">Axicon (tower reflector)</option>
+        <option value="cassegrain">Cassegrain (tower reflector)</option>
       </select>
     </div>
 
@@ -704,19 +704,22 @@
 
   // The mirror's optical figure. A separate axis from cant_focal_mm, which
   // aims facets rather than curving them -- see the API's own docstrings.
-  let surfaceMode = "adaptive";
+  let surfaceMode = "twisting";
 
   const surfaceTabs = document.getElementById("surface-tabs");
   const surfaceCaption = document.getElementById("surface-caption");
 
-  // Adaptive means "the app's best solve-driven choice", and that choice is
+  // Twisting means "the app's best solve-driven choice", and that choice is
   // genuinely different per design type, so the caption says which one you
-  // are getting rather than pretending it is one thing.
+  // are getting rather than pretending it is one thing. The twisting figure
+  // proper is the monolithic mirror's astigmatic solve; a faceted design has
+  // no monolithic surface to twist, so its facets get auto-focused spherical
+  // curvature instead and the caption says so.
   const SURFACE_CAPTIONS = {
-    adaptive: {
+    twisting: {
       rect: "solve-driven astigmatic figure",
-      grid: "auto-focused spherical facets",
-      flower: "auto-focused spherical facets",
+      grid: "auto-focused spherical facets (twisting applies to a monolithic mirror)",
+      flower: "auto-focused spherical facets (twisting applies to a monolithic mirror)",
     },
     spherical: {
       rect: "spherical at slant range",
@@ -1352,8 +1355,9 @@
       COL.recvFill, COL.recvEdge, { kind: "receiver" });
   }
 
-  // Which way the window faces: "up" absorbs light arriving from above (the
-  // beam-down ground receiver), "down" from below (prime focus on the tower).
+  // Which way the window faces: "up" absorbs light arriving from above (a
+  // ground receiver below a tower reflector), "down" from below (prime focus
+  // on the tower).
   function drawReceiverNormal(ctx, scene, basis, vw) {
     const r = scene.receiver;
     const sign = r.facing === "up" ? 1 : -1;

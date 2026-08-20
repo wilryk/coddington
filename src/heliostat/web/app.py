@@ -219,7 +219,7 @@ class AxiconOptics(BaseModel):
         if self.receiver_z_mm >= self.apex_height_mm:
             raise ValueError(
                 "receiver_z_mm must be below apex_height_mm -- the axicon "
-                "reflects the beam downward onto a ground receiver"
+                "reflects the beam onto a ground receiver beneath it"
             )
         return self
 
@@ -362,13 +362,14 @@ class _DesignBase(BaseModel):
 
     ``surface`` values:
 
-    * ``"adaptive"`` (default) -- whatever solve-driven figure this app
+    * ``"twisting"`` (default) -- whatever solve-driven figure this app
       judges best for the design type, i.e. exactly what it did before this
       field existed. For a rectangle that is the aiming solve's own
-      astigmatic figure; for a grid or flower it is *spherical* facets
-      auto-focused at the heliostat's slant range (blank ``cant_focal_mm``)
-      or at the given focal. "Adaptive" names the choice being made for
-      you, not a distinct kind of surface.
+      astigmatic figure, the twisting mirror of the companion paper; for a
+      grid or flower it is *spherical* facets auto-focused at the
+      heliostat's slant range (blank ``cant_focal_mm``) or at the given
+      focal. "Twisting" names the choice being made for you, not a single
+      distinct kind of surface.
     * ``"spherical"`` -- a spherical cap on every facet (or on the single
       rectangle), at the resolved cant focal: blank ``cant_focal_mm`` means
       this heliostat's own slant range, an explicit value means that focal.
@@ -378,7 +379,7 @@ class _DesignBase(BaseModel):
       rather than a spot.
     """
 
-    surface: Literal["adaptive", "spherical", "flat"] = "adaptive"
+    surface: Literal["twisting", "spherical", "flat"] = "twisting"
 
 
 class RectParams(_DesignBase):
@@ -577,7 +578,7 @@ def _build_design(
     Builder-level ``ValueError``s (a flower's petal width too wide for its
     length, say) are left to propagate; the endpoint maps them to a 422.
 
-    This is the ``surface="adaptive"`` construction *and* the preview
+    This is the ``surface="twisting"`` construction *and* the preview
     construction -- it ignores ``params.surface`` entirely. The design
     preview draws footprint only, never figure, and it has no sun position
     to resolve a figure against anyway; the trace endpoint goes through
@@ -602,7 +603,7 @@ def _build_trace_design(
     """The mirror a trace actually uses: ``surface`` mode crossed with design type.
 
     Returns ``None`` for the tracer's LEGACY single-mirror path, which is
-    reached by exactly one combination -- an adaptive rectangle at the
+    reached by exactly one combination -- a twisting rectangle at the
     engine's default 5000x3000 size. That path is bit-for-bit the validated
     fixture physics (``tests/test_aiming.py``,
     ``tests/test_design_tracing.py``), so it stays the default trace; but it
@@ -611,7 +612,7 @@ def _build_trace_design(
     instead, or it would silently get the astigmatic figure it did not ask
     for.
 
-    Rect's adaptive figure is carried as ``ZernikeAstig(c3, -c4, -c5)`` per
+    Rect's twisting figure is carried as ``ZernikeAstig(c3, -c4, -c5)`` per
     the sign convention documented in ``tests/test_design_tracing.py`` (the
     legacy path negates c4/c5 internally; a design equivalent to legacy
     (c3, c4, c5) needs that flip applied up front).
@@ -620,7 +621,7 @@ def _build_trace_design(
     :class:`_DesignBase` for why those are two axes and not one.
     """
     if isinstance(params, RectParams):
-        if params.surface == "adaptive":
+        if params.surface == "twisting":
             if params.width_mm == 5000.0 and params.height_mm == 3000.0:
                 return None
             figure: Surface = ZernikeAstig(sol.c3, -sol.c4, -sol.c5)
@@ -630,11 +631,9 @@ def _build_trace_design(
             # A rectangle has no cant_focal_mm to read, so "the resolved
             # cant focal" is the blank case: this heliostat's slant range.
             figure = Spherical(slant_range_mm)
-        return rect_heliostat(
-            width_mm=params.width_mm, height_mm=params.height_mm, surface=figure
-        )
+        return rect_heliostat(width_mm=params.width_mm, height_mm=params.height_mm, surface=figure)
 
-    if params.surface == "adaptive":
+    if params.surface == "twisting":
         return _build_design(params, auto_focal_mm=slant_range_mm)
 
     cant = _resolved_cant_focal_mm(params.cant_focal_mm, slant_range_mm)
@@ -667,7 +666,7 @@ def _design_is_flat(design: HeliostatDesign | None, c3: float, c4: float, c5: fl
     :class:`ZernikeAstig`. Two ways to get there: ``surface="flat"`` on any
     design type (including a rectangle, which is then deliberately routed
     off the legacy path so this check can see it), or an explicit
-    ``cant_focal_mm=0`` on an adaptive grid/flower design, which leaves the
+    ``cant_focal_mm=0`` on a twisting grid/flower design, which leaves the
     builders' own all-zero ``ZernikeAstig`` default in place (see
     :func:`_resolved_cant_focal_mm`). Canting does not count: a canted flat
     facet is still flat, and still needs the denser sampling.

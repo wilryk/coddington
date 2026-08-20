@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Same pin as the dev extra: formatting rules must not depend on
+      # which ruff a machine happens to have.
+      - run: pip install ruff==0.16.3
+      - run: ruff check src tests
+      - run: ruff format --check src tests
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      # web extra included so the FastAPI app's tests run in CI rather
+      # than being importorskip'd away -- the web app is a headline
+      # feature and deserves gate coverage.
+      - run: pip install -e .[dev,web]
+      - run: pytest --cov=heliostat --cov-report=term
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .[docs]
+      - run: mkdocs build --strict
