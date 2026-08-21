@@ -362,29 +362,29 @@ python reproduce.py --instant-only --out runs/instant
 python check.py --out runs/instant --instant-only
 ```
 
-### The annual columns were not validated at this scale
+### The annual columns: validated at full scale for one configuration
 
-Stated plainly, because it is the one gap in this pack. Reproducing an annual
-energy means all 94 timesteps — about two hours per configuration — and that
-was not run end to end here. What *was* checked:
+`axicon:twisting` was reproduced end to end — all 94 timesteps, 643
+heliostats, 120,000 rays — on 2026-08-20 (1 h 43 m single-core), and the
+annual totals landed on the paper's:
 
-- The annual path was exercised on a partial 37-timestep trace (December
-  solstice and January complete, February part-way — 2.3 of the 7
-  declinations, with 66% of the year's hours extrapolated). It returns
-  **19,082 MWh** against the paper's 20,725.77 for `axicon:twisting`. That
-  rules out the failure modes worth worrying about — wrong units, wrong power
-  column, a factor of a thousand — and the 8% shortfall is what a two-summer-
-  declination model of a whole year should look like. It is not a validation.
-- The instant table above shares everything with the annual except the
-  time integration: the same trace, the same occlusion, the same aperture
-  mask, the same per-heliostat power column summed a different way.
+| DNI basis | paper (MWh) | reproduced (MWh) | Δ |
+| --- | --- | --- | --- |
+| constant 1 kW/m² | 20,725.77 | 20,730.60 | **+0.023%** |
+| Petrolina climatology | 9,338.35 | 9,339.69 | **+0.014%** |
 
-So the honest statement is that the optics are validated and the **time
-integration is not** — and the time integration is precisely where this
-package and the paper deliberately differ. Their tolerance is therefore set
-from that method difference rather than from a measurement, and not because
-an annual total is noisier (it is an integral over 94 instants, so shot noise
-is *smaller* there):
+The same configuration through the `ultra_fast` cone backend (2 h 06 m)
+gives 20,743.41 / 9,345.56 MWh — **+0.085% / +0.077%** against the paper, so
+the deterministic backend integrates the year to within a tenth of a percent
+as well.
+
+Two things follow. First, the instant table above shares everything with the
+annual except the time integration — same trace, same occlusion, same
+aperture mask — so with both now validated on this configuration, the other
+eight configurations' annual columns rest on validated optics plus a
+time-integration method measured at +0.02%. Second, that +0.02% is itself
+notable, because the time integration is where this package and the paper
+deliberately differ:
 
 ### How the year is filled in — and how that differs
 
@@ -409,12 +409,15 @@ year is extrapolated (`extrapolated_fraction` is recorded in each
 and the numbers this pack produces are therefore two estimators of the same
 integral, not one estimator run twice.
 
-That is why `check.py` gives the annual columns a **3%** band — just above
-the 2.69% the paper quotes for its own month mapping. A band narrower than
-the method difference the paper itself documents would fail on the method
-rather than on the reproduction. Read an annual difference as a statement
-about the two integration methods; the instant table above is what tests the
-optics.
+`check.py` gives the annual columns a **3%** band — just above the 2.69% the
+paper quotes for its own month mapping, since a band narrower than the method
+difference the paper itself documents would fail on the method rather than on
+the reproduction. In practice the two estimators agree far inside that band:
+the full-scale `axicon:twisting` run above measured **+0.023%**, meaning the
+paper's nearest-declination snapping and this package's PCHIP interpolation
+land on essentially the same integral when fed seven declinations spanning
+both solstices. The band is kept at 3% because one configuration is one data
+point, not because a larger difference is expected.
 
 ### Where else this pack could not be literal
 

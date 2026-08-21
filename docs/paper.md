@@ -102,13 +102,15 @@ Peak flux is the value of one bin out of 65,536 — the noisiest statistic on
 the table by construction. `check.py` sets each tolerance at three times the
 worst observed value.
 
-The annual columns are the gap: reproducing one is ~2 hours per
-configuration and was not run end to end. The annual code path was exercised
-on a partial trace (2.3 of the 7 declinations, 66% of the year extrapolated)
-and returns 19,082 MWh against the paper's 20,726 for `axicon:twisting` —
-enough to rule out a units or wrong-column error, not enough to call it
-validated. The optics are validated; the time integration is not, and the
-time integration is exactly where this package and the paper differ.
+The annual columns were validated at full scale for one configuration:
+`axicon:twisting`, all 94 timesteps at 120,000 rays, reproduces the paper's
+annual energy to **+0.023%** on the constant-1 kW basis and **+0.014%** on
+the Petrolina climatology (1 h 43 m single-core). The same configuration
+through the `ultra_fast` cone backend lands within **+0.085%** in 2 h 06 m.
+The remaining eight configurations' annual columns therefore rest on
+validated optics (the instant table above) plus a time-integration method
+measured at +0.02% — notable because the time integration is exactly where
+this package and the paper differ, as described next.
 
 ## Two things this pack does differently
 
