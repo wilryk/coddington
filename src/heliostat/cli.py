@@ -1,10 +1,17 @@
 """Command-line entry point.
 
-Subcommands (``layout``, ``trace``, ``figures``, ``energy``, ``fetch-dni``,
-``info``) are added as their modules are ported; ``serve`` (the local web
-GUI) and ``trace`` (the sweep driver) are in. Until the rest land, a bare
-``heliostat`` with no subcommand is still the stub it always was: print help
-and exit 0.
+Two audiences share one executable. Someone who types ``heliostat`` with no
+arguments -- or double-clicks ``heliostat.exe`` from a desktop shortcut,
+which is the same thing with an empty ``argv`` -- wants the web app, so that
+is what an empty argv does: pick a port, print a short banner, open a
+browser, serve. Someone who types a subcommand wants the batch tool, and
+every subcommand (``serve``, ``layout``, ``trace``, ``shortcut``) behaves
+exactly as it always did. ``--help``, ``-h`` and ``--version`` are argv, so
+they are never the launcher.
+
+The launcher stays a *console* script on purpose: the console window is the
+off switch. A windowless entry point would leave a server running with no
+obvious way to stop it.
 """
 
 from __future__ import annotations
@@ -12,9 +19,22 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import math
+import os
+import shutil
+import socket
+import subprocess
+import sys
 import time
+import webbrowser
+from collections.abc import Callable
+from pathlib import Path
 
 from heliostat import __version__
+
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 8420
+#: Last port the automatic scan will try before giving up (inclusive).
+PORT_SCAN_LAST = 8439
 
 
 def _layout_fermat(args: argparse.Namespace) -> int:
@@ -111,33 +131,349 @@ def _trace(args: argparse.Namespace) -> int:
     return 0
 
 
-def _serve(host: str, port: int, open_browser: bool) -> int:
+class PortBusyError(RuntimeError):
+    """A port the user explicitly asked for is already in use."""
+
+
+class NoFreePortError(RuntimeError):
+    """Every port in the automatic scan range is in use."""
+
+
+def _connect_host(host: str) -> str:
+    """The address to *connect* to for a server bound to ``host``.
+
+    A wildcard bind is not a connectable address on every platform, so the
+    readiness poll and the browser URL both aim at the loopback instead.
+    """
+    if host in ("0.0.0.0", "", "::", "*"):
+        return "127.0.0.1"
+    return host
+
+
+def port_is_free(host: str, port: int) -> bool:
+    """True if a TCP server can bind ``host:port`` right now.
+
+    Deliberately no ``SO_REUSEADDR``: on Windows that option lets a second
+    bind succeed on a port already in use, which would answer a different
+    question than the one uvicorn is about to ask.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
+def find_free_port(host: str, start: int = DEFAULT_PORT, last: int = PORT_SCAN_LAST) -> int:
+    """First free port in ``[start, last]``, or raise :class:`NoFreePortError`."""
+    for port in range(start, last + 1):
+        if port_is_free(host, port):
+            return port
+    raise NoFreePortError(f"no free port between {start} and {last}")
+
+
+def resolve_port(host: str, requested: int | None) -> int:
+    """Decide which port to serve on.
+
+    ``requested is None`` means "the default, or the next one up if it is
+    busy" -- the no-arguments launcher must not fail just because something
+    else already owns 8420. An explicit ``--port`` is an instruction, not a
+    preference, so a busy one raises instead of quietly moving.
+    """
+    if requested is None:
+        return find_free_port(host)
+    if not port_is_free(host, requested):
+        raise PortBusyError(f"port {requested} is already in use")
+    return requested
+
+
+def _open_browser_when_ready(
+    url: str,
+    host: str,
+    port: int,
+    *,
+    timeout: float = 30.0,
+    interval: float = 0.25,
+    opener: Callable[[str], object] = webbrowser.open,
+    sleeper: Callable[[float], None] = time.sleep,
+) -> bool:
+    """Open ``url`` once the server actually accepts connections.
+
+    Polls with a real TCP connect rather than sleeping a fixed amount, so a
+    slow first import cannot land the browser on a connection-refused page.
+    Returns True if the browser was opened, False if the server never came
+    up within ``timeout`` -- in which case nothing is opened at all, because
+    a browser window showing an error is worse than no window.
+    """
+    target = _connect_host(host)
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            with socket.create_connection((target, port), timeout=1.0):
+                pass
+        except OSError:
+            if time.monotonic() >= deadline:
+                return False
+            sleeper(interval)
+            continue
+        opener(url)
+        return True
+
+
+def _console_safe(text: str) -> str:
+    """Downgrade the banner's dash if the attached console cannot encode it."""
+    encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+    try:
+        text.encode(encoding)
+    except (UnicodeEncodeError, LookupError):
+        return text.replace("—", "-")
+    return text
+
+
+def _banner(url: str, *, opening_browser: bool, moved_from: int | None) -> str:
+    """The short human-facing block printed before uvicorn's own logging."""
+    browser_note = "  (opening your browser)" if opening_browser else ""
+    lines = [
+        f"heliostat {__version__} — starting the web app",
+        f"  {url}{browser_note}",
+    ]
+    if moved_from is not None:
+        lines.append(f"  (port {moved_from} was busy, so it moved up to the next free one.)")
+    lines.append("  Close this window or press Ctrl+C to stop.")
+    lines.append("  Batch commands: heliostat --help")
+    return "\n".join(lines)
+
+
+_MISSING_WEB_EXTRA = (
+    "heliostat: the web app needs the optional 'web' extra, which is not installed.\n"
+    'Install it with:  pip install "heliostat[web]"'
+)
+
+
+def _serve(host: str, port: int | None, open_browser: bool) -> int:
+    """Run the web app. ``port=None`` means "default port, or the next free one"."""
     try:
         import uvicorn
-    except ImportError as exc:
-        raise ImportError(
-            "the 'serve' command needs the web extra: pip install heliostat[web]"
-        ) from exc
 
-    from heliostat.web import create_app
+        from heliostat.web.app import create_app
+    except ImportError:
+        # A traceback here would be noise: the fix is one pip command, and
+        # the person seeing this may well have double-clicked an icon.
+        print(_MISSING_WEB_EXTRA, file=sys.stderr)
+        return 1
+
+    try:
+        chosen = resolve_port(host, port)
+    except PortBusyError as exc:
+        print(f"heliostat: {exc}.", file=sys.stderr)
+        print("Pick another with --port, or omit --port to scan for a free one.", file=sys.stderr)
+        return 1
+    except NoFreePortError as exc:
+        print(f"heliostat: {exc}.", file=sys.stderr)
+        print("Free one of those ports, or choose your own with --port.", file=sys.stderr)
+        return 1
+
+    url = f"http://{_connect_host(host)}:{chosen}/"
+    moved_from = DEFAULT_PORT if (port is None and chosen != DEFAULT_PORT) else None
+    print(_console_safe(_banner(url, opening_browser=open_browser, moved_from=moved_from)))
+    print(flush=True)
 
     app = create_app()
 
     if open_browser:
         import threading
-        import webbrowser
 
-        def _open() -> None:
-            webbrowser.open(f"http://{host}:{port}/")
+        threading.Thread(
+            target=_open_browser_when_ready,
+            args=(url, host, chosen),
+            daemon=True,
+        ).start()
 
-        # Short delay so the browser doesn't race uvicorn's startup.
-        threading.Timer(1.0, _open).start()
+    uvicorn.run(app, host=host, port=chosen)
+    return 0
 
-    uvicorn.run(app, host=host, port=port)
+
+class ShortcutError(RuntimeError):
+    """A desktop launcher could not be created (reason is the message)."""
+
+
+def heliostat_executable() -> Path | None:
+    """Locate the installed ``heliostat`` program.
+
+    The running interpreter's own bin directory first: a shortcut should
+    point at the installation that is creating it, and when several
+    installs coexist (a venv invoked by full path, an older system-Python
+    install still on ``PATH``), ``shutil.which`` would silently pick the
+    wrong one. ``which`` remains the fallback for layouts where the
+    console script does not sit beside the interpreter.
+    """
+    bindir = Path(sys.executable).resolve().parent
+    for candidate in (
+        bindir / "heliostat.exe",
+        bindir / "heliostat",
+        bindir / "Scripts" / "heliostat.exe",
+        bindir / "bin" / "heliostat",
+    ):
+        if candidate.is_file():
+            return candidate
+    found = shutil.which("heliostat")
+    if found:
+        return Path(found).resolve()
+    return None
+
+
+# One PowerShell call does the whole Windows job: it resolves the Desktop
+# through the shell folder API (so a OneDrive-redirected Desktop is found,
+# which %USERPROFILE%\Desktop would miss), enforces the no-clobber rule, and
+# creates the .lnk through WScript.Shell -- no extra Python dependency.
+# Paths travel in the environment rather than the command line so that
+# spaces and quotes in them cannot be re-parsed by PowerShell.
+_PS_MAKE_SHORTCUT = r"""
+$ErrorActionPreference = 'Stop'
+$target = $env:HELIOSTAT_SHORTCUT_TARGET
+$dir = $env:HELIOSTAT_SHORTCUT_DIR
+if ([string]::IsNullOrEmpty($dir)) { $dir = [Environment]::GetFolderPath('Desktop') }
+if (-not (Test-Path -LiteralPath $dir)) { Write-Output "ERR:nodir:$dir"; exit 3 }
+$lnk = Join-Path $dir 'heliostat.lnk'
+if ((Test-Path -LiteralPath $lnk) -and ($env:HELIOSTAT_SHORTCUT_FORCE -ne '1')) {
+    Write-Output "ERR:exists:$lnk"
+    exit 4
+}
+$shell = New-Object -ComObject WScript.Shell
+$sc = $shell.CreateShortcut($lnk)
+$sc.TargetPath = $target
+$sc.WorkingDirectory = Split-Path -Parent $target
+$sc.Description = 'Start the heliostat web app'
+$sc.Save()
+Write-Output "OK:$lnk"
+"""
+
+
+def _powershell() -> str:
+    exe = shutil.which("powershell") or shutil.which("pwsh")
+    if exe is None:
+        raise ShortcutError("PowerShell was not found, so a .lnk cannot be created.")
+    return exe
+
+
+def _create_windows_shortcut(exe: Path, directory: Path | None, force: bool) -> Path:
+    env = dict(os.environ)
+    env["HELIOSTAT_SHORTCUT_TARGET"] = str(exe)
+    env["HELIOSTAT_SHORTCUT_DIR"] = str(directory) if directory is not None else ""
+    env["HELIOSTAT_SHORTCUT_FORCE"] = "1" if force else "0"
+    proc = subprocess.run(
+        [
+            _powershell(),
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            _PS_MAKE_SHORTCUT,
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    result = lines[-1] if lines else ""
+    if result.startswith("OK:"):
+        return Path(result[3:])
+    if result.startswith("ERR:exists:"):
+        existing = result.removeprefix("ERR:exists:")
+        raise ShortcutError(f"{existing} already exists; pass --force to replace it.")
+    if result.startswith("ERR:nodir:"):
+        raise ShortcutError(f"{result.removeprefix('ERR:nodir:')} is not a directory.")
+    detail = (proc.stderr.strip() or proc.stdout.strip() or "no output").splitlines()[0]
+    raise ShortcutError(f"PowerShell could not create the shortcut: {detail}")
+
+
+def macos_command_text(exe: Path) -> str:
+    """Contents of the ``.command`` file macOS runs on double-click.
+
+    ``as_posix`` so the text is a pure function of the path on every
+    platform -- these two writers can then be unit-tested from Windows even
+    though they only ever run elsewhere.
+    """
+    return f'#!/bin/sh\nexec "{exe.as_posix()}"\n'
+
+
+def linux_desktop_text(exe: Path) -> str:
+    """Contents of the freedesktop ``.desktop`` entry.
+
+    ``Terminal=true`` on purpose: the terminal window it opens is how the
+    user stops the server again.
+    """
+    return (
+        "[Desktop Entry]\n"
+        "Type=Application\n"
+        "Name=Heliostat\n"
+        "Comment=Start the heliostat web app\n"
+        f'Exec="{exe.as_posix()}"\n'
+        "Terminal=true\n"
+        "Categories=Science;Education;\n"
+    )
+
+
+def _write_posix_launcher(path: Path, text: str, force: bool) -> Path:
+    if not path.parent.is_dir():
+        raise ShortcutError(f"{path.parent} is not a directory.")
+    if path.exists() and not force:
+        raise ShortcutError(f"{path} already exists; pass --force to replace it.")
+    path.write_text(text, encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+def _shortcut(args: argparse.Namespace) -> int:
+    exe = heliostat_executable()
+    if exe is None:
+        print(
+            "heliostat: could not find the installed 'heliostat' program to point at.",
+            file=sys.stderr,
+        )
+        print(
+            'Install it with:  pip install "heliostat[web]"  '
+            "(or activate the environment it is installed in), then try again.",
+            file=sys.stderr,
+        )
+        return 1
+
+    directory = Path(args.path).expanduser().resolve() if args.path else None
+    try:
+        if sys.platform == "win32":
+            created = _create_windows_shortcut(exe, directory, args.force)
+        elif sys.platform == "darwin":
+            target_dir = directory if directory is not None else Path.home() / "Desktop"
+            created = _write_posix_launcher(
+                target_dir / "Heliostat.command", macos_command_text(exe), args.force
+            )
+        elif sys.platform.startswith("linux"):
+            target_dir = directory if directory is not None else Path.home() / "Desktop"
+            created = _write_posix_launcher(
+                target_dir / "heliostat.desktop", linux_desktop_text(exe), args.force
+            )
+        else:
+            print(f"heliostat: no launcher recipe for this platform ({sys.platform}).")
+            print(f"The program itself is at: {exe}")
+            print("Make a shortcut that runs it, or just type 'heliostat' in a terminal.")
+            return 1
+    except ShortcutError as exc:
+        print(f"heliostat: {exc}", file=sys.stderr)
+        return 1
+
+    print("Created a double-clickable launcher:")
+    print(f"  {created}")
+    print(f"  -> {exe}")
+    print("Double-click it to start the web app.")
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+
     parser = argparse.ArgumentParser(
         prog="heliostat",
         description="Heliostat-field simulation for concentrating solar towers.",
@@ -145,11 +481,37 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", action="version", version=f"heliostat {__version__}")
     subparsers = parser.add_subparsers(dest="command")
 
-    serve_parser = subparsers.add_parser("serve", help="Run the local web GUI.")
-    serve_parser.add_argument("--host", default="127.0.0.1", help="Bind host (default 127.0.0.1).")
-    serve_parser.add_argument("--port", type=int, default=8420, help="Bind port (default 8420).")
+    serve_parser = subparsers.add_parser(
+        "serve", help="Run the local web app (same as running 'heliostat' with no arguments)."
+    )
     serve_parser.add_argument(
-        "--no-open", action="store_true", help="Don't open a browser window automatically."
+        "--host", default=DEFAULT_HOST, help=f"Bind host (default {DEFAULT_HOST})."
+    )
+    serve_parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help=f"Bind port. Omit to use {DEFAULT_PORT}, or the next free port up to "
+        f"{PORT_SCAN_LAST} if it is busy; an explicit port that is busy is an error.",
+    )
+    serve_parser.add_argument(
+        "--no-browser",
+        "--no-open",
+        action="store_true",
+        dest="no_browser",
+        help="Don't open a browser window automatically ('--no-open' is an alias).",
+    )
+
+    shortcut_parser = subparsers.add_parser(
+        "shortcut", help="Create a double-clickable launcher for the web app on your Desktop."
+    )
+    shortcut_parser.add_argument(
+        "--path",
+        default=None,
+        help="directory to create the launcher in (default: your Desktop).",
+    )
+    shortcut_parser.add_argument(
+        "--force", action="store_true", help="replace an existing launcher of the same name."
     )
 
     layout_parser = subparsers.add_parser(
@@ -283,10 +645,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     trace_parser.add_argument("-o", "--output", required=True, help="output run directory.")
 
+    if not argv:
+        # Truly empty argv only: no subcommand, no flags. This is what a
+        # desktop shortcut or a double-clicked heliostat.exe sends, and what
+        # someone who just types the name means. Anything else -- including
+        # '--help' and '--version' -- goes to argparse untouched.
+        return _serve(DEFAULT_HOST, None, open_browser=True)
+
     args = parser.parse_args(argv)
 
     if args.command == "serve":
-        return _serve(args.host, args.port, open_browser=not args.no_open)
+        return _serve(args.host, args.port, open_browser=not args.no_browser)
+    if args.command == "shortcut":
+        return _shortcut(args)
     if args.command == "trace":
         return _trace(args)
     if args.command == "layout":

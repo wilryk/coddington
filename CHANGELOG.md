@@ -72,8 +72,15 @@ stable; see the status note in the README.
   over declination and hour angle, annual energy against any DNI provider,
   traced-day cross-checks and per-heliostat annual totals.
 - CLI: `heliostat layout fermat`, `heliostat trace` and `heliostat serve`.
+- One-word launcher: a bare `heliostat` (including a double-clicked
+  `heliostat.exe`) starts the web app — free-port scan upward from 8420, a
+  short banner, and a browser opened only once the server actually accepts
+  connections. An explicit `--port` that is busy stays an error.
+- `heliostat shortcut`: writes a double-clickable Desktop launcher
+  (`heliostat.lnk` / `Heliostat.command` / `heliostat.desktop`) pointing at
+  the installed executable; `--path` relocates it, `--force` replaces one.
 
-**Web app** (`pip install heliostat[web]`, then `heliostat serve`)
+**Web app** (`pip install heliostat[web]`, then `heliostat`)
 
 - Design panel: rectangle, facet grid and flower layouts, with a twisting /
   spherical / flat surface selector and separate facet canting.

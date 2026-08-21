@@ -13,14 +13,36 @@ library, a command-line tool, and a local web app.
 Start with the [concepts guide](guide.md) for the model this package is
 built around, or the [API reference](api.md) for the modules themselves.
 
-## Install
+## Run it
 
 ```
-pip install heliostat          # library + CLI
-pip install heliostat[web]     # adds the web app
+pip install heliostat[web]
+heliostat
 ```
 
-Until the first release, install from a clone:
+Typing `heliostat` with no arguments starts the web app on your own machine
+and opens a browser at it — `http://127.0.0.1:8420`, or the next free port
+if something else already holds 8420, which the startup banner tells you.
+Everything runs locally; nothing is uploaded anywhere. The console window it
+runs in is the off switch: close it, or press Ctrl+C.
+
+For a double-clickable launcher on your Desktop instead:
+
+```
+heliostat shortcut
+```
+
+That writes `heliostat.lnk` (Windows), `Heliostat.command` (macOS) or
+`heliostat.desktop` (Linux) pointing at the `heliostat` you installed;
+`--path DIR` puts it elsewhere, and an existing launcher is only replaced
+with `--force`.
+
+`pipx install "heliostat[web]"` installs the app into its own isolated
+environment while keeping the `heliostat` command on your PATH (the quotes
+stop a Unix shell from treating `[web]` as a glob).
+
+Plain `pip install heliostat` — no extra — gives you the library and the
+batch CLI without the app. From a clone, before the first release:
 
 ```
 pip install -e .[dev,web]
@@ -71,13 +93,10 @@ of which need an API key.
 
 ## Web app
 
-```
-pip install heliostat[web]
-heliostat serve
-```
-
-`heliostat serve` starts a local server (default `127.0.0.1:8420`) and opens
-a browser. Everything runs on your machine; nothing is uploaded anywhere.
+Started by a bare `heliostat` (see [Run it](#run-it)) or, if you want to
+choose the details, by `heliostat serve --host … --port … --no-browser`. An
+explicit `--port` that is already in use is an error rather than a silent
+move to another one.
 
 The **design** panel builds a mirror — a plain rectangle, a facet grid, or a
 "flower" of petals — and gives it an optical figure: **twisting** (the

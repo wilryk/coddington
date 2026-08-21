@@ -54,28 +54,54 @@ performance pass toward a 2-minute full-day sweep is in progress;
 `scripts/sweep_benchmark.py` is the yardstick. Annual energy, by contrast,
 is already instant — it interpolates traced timesteps rather than re-tracing.
 
-## Install
+## Run it
 
 ```
-pip install heliostat          # library + CLI
-pip install heliostat[web]     # adds the web app
+pip install heliostat[web]
+heliostat
 ```
 
-Until the first release, install from a clone:
+That is the whole thing. Typing `heliostat` with no arguments starts the web
+app on your own machine and opens a browser at it — `http://127.0.0.1:8420`,
+or the next free port if something else already holds 8420, which the
+startup banner tells you. Everything runs locally; nothing is uploaded
+anywhere. The console window it runs in is the off switch: close it, or
+press Ctrl+C.
+
+Prefer an icon to a terminal?
+
+```
+heliostat shortcut
+```
+
+puts a double-clickable launcher on your Desktop — `heliostat.lnk` on
+Windows, `Heliostat.command` on macOS, `heliostat.desktop` on Linux —
+pointing at the `heliostat` you just installed. `--path DIR` puts it
+somewhere else; an existing launcher is never replaced without `--force`.
+
+`pipx install "heliostat[web]"` is a good alternative if you want the app in
+its own isolated environment with the `heliostat` command still on your PATH
+(the quotes are what stop a Unix shell from treating `[web]` as a glob).
+
+Without the extra — plain `pip install heliostat` — you get the library and
+the batch CLI, but not the app.
+
+### The batch tool is the same executable
+
+`heliostat layout`, `heliostat trace`, and `heliostat serve` (the app again,
+with `--host`, `--port` and `--no-browser`). `heliostat --help` lists them.
+Any argument at all means "run this subcommand" — only a bare `heliostat`
+launches the app.
+
+### From a clone
+
+Until the first release:
 
 ```
 pip install -e .[dev,web]
 ```
 
 ## Web app
-
-```
-pip install heliostat[web]
-heliostat serve
-```
-
-`heliostat serve` starts a local server (default `127.0.0.1:8420`) and opens
-a browser. Everything runs on your machine; nothing is uploaded anywhere.
 
 The **design** panel builds a mirror — a plain rectangle, a facet grid, or a
 "flower" of petals — and gives it an optical figure: **twisting** (the
