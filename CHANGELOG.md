@@ -86,8 +86,21 @@ stable; see the status note in the README.
 - Field mode: trace a whole layout at once, with each mirror tinted by its
   own efficiency.
 
+**Examples**
+
+- `examples/paper`: a reproduction pack for the companion SPIE paper's nine
+  configurations (prime focus / Cassegrain / axicon x twisting / spherical /
+  flat), shipping the paper's own field file, frozen-figure tables and NASA
+  POWER irradiance record. `reproduce.py` traces them and reports both DNI
+  bases plus the published spot table; `check.py` compares against the
+  shipped `expected/` values with tolerances derived from a measured
+  full-field validation. All 54 published instantaneous values reproduce
+  within 0.7%, and total collected power within 0.02%.
+
 **Project**
 
 - Repository bootstrap: packaging, CI (lint, tests on 3.11/3.12, docs) and
   documentation scaffolding.
-- Documentation: concepts guide and API reference built with MkDocs.
+- Documentation: concepts guide, API reference and a "Reproducing the paper"
+  page, built with MkDocs.
+- CI lints `examples/` alongside `src/` and `tests/`.

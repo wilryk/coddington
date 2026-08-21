@@ -155,6 +155,25 @@ high-count Monte Carlo reference to about ±0.2% on power and rms radius.
 Shading/blocking, the Fermat layout, the aiming solves and the stored-run
 read path each have their own fixture parity gates.
 
+## Reproducing the companion paper
+
+[`examples/paper/`](examples/paper/) reproduces all nine configurations the
+companion paper compares — three optical layouts × three mirror figures —
+from the paper's own field file, frozen-figure tables and irradiance record.
+Every published value at the paper's own instant is reproduced to better than
+0.7%, and total collected power to better than 0.02%:
+
+```
+cd examples/paper
+python reproduce.py --quick            # ~2 min, all nine, pipeline test
+python reproduce.py --instant-only     # ~5 min, all nine, real numbers
+python check.py --out runs/paper       # compare against the published values
+```
+
+The example's [README](examples/paper/README.md) documents the provenance of
+every data file, the two DNI bases, the validation measurements, and how to
+move the whole thing off the paper onto your own field, site and geometry.
+
 ## Documentation
 
 Full documentation, including a concepts guide and the API reference, is

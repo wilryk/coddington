@@ -16,8 +16,10 @@ jobs:
       # Same pin as the dev extra: formatting rules must not depend on
       # which ruff a machine happens to have.
       - run: pip install ruff==0.16.3
-      - run: ruff check src tests
-      - run: ruff format --check src tests
+      # examples/ is linted too: the paper example is a shipped deliverable
+      # people read and copy, not a scratch script.
+      - run: ruff check src tests examples
+      - run: ruff format --check src tests examples
 
   test:
     runs-on: ubuntu-latest

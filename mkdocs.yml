@@ -29,4 +29,5 @@ plugins:
 nav:
   - Home: index.md
   - Concepts: guide.md
+  - Reproducing the paper: paper.md
   - API reference: api.md

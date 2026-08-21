@@ -1,0 +1,10 @@
+layout,figure,peak_kw_m2,window_kw,power_720mm_kw,frac_720mm,conc_720mm_suns,r90_mm
+prime_focus,twisting,14163.9,6683.4,6178.6,0.9245,3793.8,667.5
+prime_focus,spherical,8725.8,6545.5,4668.4,0.7132,2866.5,1236.8
+prime_focus,flat,350.3,4118.1,458.1,0.1112,281.3,2133.1
+cassegrain,twisting,4781.3,5791.9,5300.1,0.9151,3254.4,704.5
+cassegrain,spherical,2909.1,5615.1,3225.7,0.5745,1980.7,1460.8
+cassegrain,flat,161.8,1712.9,183.2,0.1069,112.5,2208.6
+axicon,twisting,5877.9,5811.5,5266.2,0.9062,3233.6,712.7
+axicon,spherical,3544.9,5624.4,3323.8,0.5910,2040.9,1376.2
+axicon,flat,238.8,2244.8,292.2,0.1302,179.4,2080.5
