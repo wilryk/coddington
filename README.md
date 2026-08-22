@@ -22,8 +22,9 @@ says which, and what this package changed about each.
   DNI, reflectivity, and shading/blocking scalars are applied at read time,
   so changing weather data or optical assumptions never requires re-tracing.
 - **Bring your own field — or generate one.** Load heliostat positions from
-  CSV or XLSX, or generate a Fermat-spiral (sunflower) layout with
-  composable filters for roads, rings, angular wedges and minimum spacing.
+  CSV (or XLSX, with `openpyxl` installed), or generate a Fermat-spiral
+  (sunflower) layout with composable filters for roads, rings, angular
+  wedges and minimum spacing.
 - **Real heliostats.** Multi-facet mirrors built from composable aperture
   regions (rectangles, discs, annuli, polygons, and boolean combinations of
   them), on-axis canting to the slant-range sphere, and flat, spherical or

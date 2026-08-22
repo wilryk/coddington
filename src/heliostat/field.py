@@ -31,7 +31,17 @@ def _read_xy(path: Path) -> tuple[np.ndarray, np.ndarray]:
     """Read an x/y position table from .xlsx or .csv, in metres."""
     path = Path(path)
     if path.suffix.lower() in (".xlsx", ".xls"):
-        df = pd.read_excel(path)
+        # openpyxl is not a hard dependency of this package -- most fields
+        # arrive as CSV, and a spreadsheet engine is weight the CSV path does
+        # not need. Say so plainly rather than letting pandas' own
+        # "missing optional dependency" surface from three frames down.
+        try:
+            df = pd.read_excel(path)
+        except ImportError as exc:
+            raise ImportError(
+                f"reading {path.name} needs a spreadsheet engine: "
+                "pip install openpyxl (or save the field as .csv)"
+            ) from exc
     else:
         df = pd.read_csv(path)
     xcol = _pick_column(df, _X_ALIASES, "x")
