@@ -1,66 +1,31 @@
 # Coddington
 
-**A twisting heliostat software package**, installed and imported as `heliostat`.
+A twisting heliostat software package: field layouts, ray tracing, flux
+maps, shading and blocking, DNI, and annual energy. Installed and imported
+as `heliostat`.
 
-Heliostat-field simulation for concentrating solar power towers: field
-layouts, Monte Carlo and cone-optics ray tracing, flux maps, shading and
-blocking, DNI handling, and annual energy — as an installable Python
-library, a command-line tool, and a local web app.
-
-!!! warning "Pre-release"
-    The engine is being ported and generalized from a research codebase
-    whose Monte Carlo tracer was validated to 0.15% annual agreement against
-    a commercial optical CAD package. Expect the API to move until v0.1.0.
-
-Start with the [concepts guide](guide.md) for the model this package is
-built around, or the [API reference](api.md) for the modules themselves.
-
-## Run it
+## Install
 
 ```
-pip install heliostat[web]
-heliostat
+pip install heliostat[web]     # library, CLI and the app
+heliostat                      # starts the app
 ```
 
-Typing `heliostat` with no arguments starts the web app on your own machine
-and opens a browser at it — `http://127.0.0.1:8420`, or the next free port
-if something else already holds 8420, which the startup banner tells you.
-Everything runs locally; nothing is uploaded anywhere. The console window it
-runs in is the off switch: close it, or press Ctrl+C.
-
-For a double-clickable launcher on your Desktop instead:
-
-```
-heliostat shortcut
-```
-
-That writes `heliostat.lnk` (Windows), `Heliostat.command` (macOS) or
-`heliostat.desktop` (Linux) pointing at the `heliostat` you installed;
-`--path DIR` puts it elsewhere, and an existing launcher is only replaced
-with `--force`.
-
-`pipx install "heliostat[web]"` installs the app into its own isolated
-environment while keeping the `heliostat` command on your PATH (the quotes
-stop a Unix shell from treating `[web]` as a glob).
-
-Plain `pip install heliostat` — no extra — gives you the library and the
-batch CLI without the app. From a clone, before the first release:
-
-```
-pip install -e .[dev,web]
-```
+Or download a build for your platform from
+[releases](https://github.com/wilryk/coddington/releases) — no Python
+needed. `heliostat shortcut` adds a Desktop launcher.
 
 ## CLI quickstart
 
-Generate a 600-heliostat Fermat-spiral field:
+Generate a field:
 
 ```
 heliostat layout fermat --n 600 --a 4.5 --b 0.55 -o field.csv
 ```
 
-Trace it over a few days and write a stored run. Annual energy interpolates
-across solar *declination*, so trace at least two dates at different
-declinations — the more you trace, the better the surface:
+Trace it. Annual energy interpolates across solar *declination*, so trace at
+least two dates at different declinations — the more dates, the better the
+surface:
 
 ```
 heliostat trace --field field.csv --optics axicon --mode ultra_fast \
@@ -68,9 +33,8 @@ heliostat trace --field field.csv --optics axicon --mode ultra_fast \
     -o runs/four_days
 ```
 
-Then read that run and integrate a year from it. `cfg` is any object
-carrying the site and mirror area — the library only reads those attributes,
-so a `SimpleNamespace` is a perfectly good config:
+Integrate a year from the stored run. `cfg` is any object carrying the site
+and mirror area, so a `SimpleNamespace` will do:
 
 ```python
 from types import SimpleNamespace
@@ -79,85 +43,28 @@ from heliostat.store import RunStore
 
 store = RunStore("runs/four_days")
 cfg = SimpleNamespace(
-    site=SimpleNamespace(**store.manifest["site"]),   # the site that was traced
-    field=SimpleNamespace(mirror_area_m2=5.0 * 3.0),  # one mirror, m^2
+    site=SimpleNamespace(**store.manifest["site"]),
+    field=SimpleNamespace(mirror_area_m2=5.0 * 3.0),
 )
 result = energy.annual_energy(store.summary(), cfg, dni.ConstantDNI(1000.0), year=2026)
-print(f"{result['annual_energy_mwh']:.1f} MWh/yr, "
-      f"eta = {result['annual_optical_efficiency']:.3f}")
+print(f"{result['annual_energy_mwh']:.1f} MWh/yr")
 ```
 
-`annual_energy` also returns the hourly and daily breakdowns it integrated,
-so the total can be inspected rather than taken on faith. For real weather,
-swap `ConstantDNI` for `dni.TableDNI`, `dni.MonthlyProfileDNI`,
-`dni.ClearSkyDNI` or a PVGIS/NASA POWER table fetched by `dni.fetch` — none
-of which need an API key.
+For real weather, swap `ConstantDNI` for `TableDNI`, `MonthlyProfileDNI`,
+`ClearSkyDNI`, or a PVGIS / NASA POWER table from `dni.fetch` — none need an
+API key.
 
-## Web app
+## The app
 
-Started by a bare `heliostat` (see [Run it](#run-it)) or, if you want to
-choose the details, by `heliostat serve --host … --port … --no-browser`. An
-explicit `--port` that is already in use is an error rather than a silent
-move to another one.
+Design a mirror, trace it, and look at the result four ways: flux map (kW/m²
+with power, peak flux, rms radius), an interactive 3-D scene with real ray
+paths, the mirror's sag, and an Analysis tab that traces a whole day and
+plots collected power against time. Field mode traces a whole layout at
+once. Day sweeps and flux maps export to CSV.
 
-The **design** panel builds a mirror — a plain rectangle or a facet grid —
-and gives it an optical figure: **twisting** (the
-solve-driven astigmatic figure for a monolithic mirror, auto-focused
-spherical facets for a faceted one), **spherical**, or **flat**. Facet
-canting is a separate control, because a canted flat facet is still flat.
+## Next
 
-The **trace** panel picks one of three optical layouts (prime focus, axicon,
-Cassegrain), the receiver window size, one of three fidelity modes
-(ultra-fast and fast-accurate cone optics, or Monte Carlo), a sun position
-(typed directly, or computed from a latitude, longitude, date and clock
-time), and the tower geometry, then traces
-and returns a flux map in kW/m² with spot metrics — power, peak flux, rms
-radius, centroid, and the full loss chain from emitted rays to rays in the
-window.
-
-Alongside the flux map is an interactive **3-D scene** drawn from the trace
-that just ran: the facets as they were traced, the secondary revolved from
-its own equations, the receiver, the sun, and real traced ray paths. Orbit
-and zoom it, click the receiver, the secondary or a heliostat to inspect and
-edit it, and drag the receiver along the tower axis. Typing a new position
-or height draws a dashed preview of where it would land before you apply it;
-the rays stay where the last trace put them, so what moves is what the edit
-moves.
-
-In **field mode** the same panel traces a whole layout at once, tinting each
-mirror by its own efficiency so shaded and blocked regions of the field are
-visible at a glance. Four chief rays are drawn from *every* heliostat rather
-than a dense bundle from a few, so the picture shows the whole field
-working; they are sun-centre rays drawn without shading or blocking, which
-is what makes them cheap enough to draw for all of them. The nearest and
-farthest heliostat radii shape the layout itself.
-
-A third view, **mirror sag**, shows the figure doing the focusing —
-millimetres of departure from flat across the aperture, with peak-to-valley
-and contours. It is invisible in the 3-D scene, which draws facets flat for
-exactly that reason.
-
-**Saved setups** name the whole panel state — both panels, every tab, and
-any geometry edited in the 3-D inspector — and load it back later. They are
-plain JSON under `~/.heliostat/setups`, one file per setup.
-
-## Validation
-
-The Monte Carlo tracer is checked against 45 golden fixtures — five
-heliostats × three sun positions × three optical layouts — exported from the
-research code this package was ported from. On the platform the fixtures
-were generated on, the reproduction is bit-for-bit: the loss-chain counters,
-the quantised receiver rays, and the recomputed spot metrics all match
-exactly; elsewhere the test degrades to statistical checks against the
-fixtures' own Monte Carlo noise. That research tracer is the one validated
-to 0.15% annual agreement against a commercial optical CAD package. The
-cone-optics backend is then held to the same fixtures, and agrees with a
-high-count Monte Carlo reference to about ±0.2% on power and rms radius.
-Shading/blocking, the Fermat layout, the aiming solves and the stored-run
-read path each have their own fixture parity gates.
-
-## License
-
-MIT. If this software contributes to published research, please cite the
-companion paper (reference forthcoming) and this repository:
-<https://github.com/wilryk/coddington>.
+- [Concepts](guide.md) — the model this is built around
+- [API reference](api.md)
+- [Reproducing the paper](paper.md)
+- [References](references.md) — what this borrows, and from whom

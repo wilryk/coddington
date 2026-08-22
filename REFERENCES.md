@@ -1,12 +1,7 @@
 # References and provenance
 
-Everything in this package that came from somewhere else, and where it came
-from. This file is at the top level on purpose: what a simulation borrows
-should be the first thing a reader can check, not something to be excavated
-from docstrings.
-
-Items marked **[confirm]** still need the maintainer to verify or complete
-them before this file can be treated as authoritative.
+Everything this package borrows, and from whom. Items marked **[confirm]**
+still need the maintainer to verify.
 
 ---
 
@@ -52,13 +47,11 @@ NOAA's calculator is in turn based on:
 
 > Meeus, J. *Astronomical Algorithms*. Willmann-Bell.
 
-The code was ported from a MATLAB implementation of that spreadsheet
-(`SolarPositionCalculatorV3`); the formulas are unchanged. Three defects were
-fixed while porting — an atmospheric-refraction branch that only worked for
-array input, unclipped `arccos` arguments that produced NaN at the horizon,
-and a fraction-of-day time convention that had caused unit errors at call
-sites. The Excel-epoch Julian day arithmetic is kept so results track the
-spreadsheet exactly.
+Ported from a MATLAB implementation of that spreadsheet
+(`SolarPositionCalculatorV3`), formulas unchanged, with three fixes: a
+refraction branch that only worked for array input, unclipped `arccos` at
+the horizon, and a fraction-of-day time convention that caused unit errors.
+Excel-epoch Julian day arithmetic is kept so results track the spreadsheet.
 
 ### Optical figure (mirror shape) convention
 
@@ -83,8 +76,7 @@ analytically.
 **This sits inside an established tradition and does not originate it.**
 Computing heliostat flux by convolving a sunshape with an optical mapping,
 rather than tracing random rays, goes back to the first generation of
-central-receiver codes. The relevant lineage — which should be narrowed and
-confirmed before publication — includes: **[confirm]**
+central-receiver codes. Lineage to narrow and confirm: **[confirm]**
 
 - **HELIOS** — Biggs, F., & Vittitoe, C. N. (Sandia National Laboratories):
   the convolution model for reflecting solar concentrators.
@@ -96,8 +88,8 @@ confirmed before publication — includes: **[confirm]**
   analytic flux model.
 - **Analytical flux models** — Collado, F. J.; Bendt, P., & Rabl, A.
 
-**What appears specific to this implementation** — stated so a reader can see
-the boundary, not as a novelty claim:
+**What appears specific to this implementation**, so a reader can see the
+boundary:
 
 - the Jacobian is *measured* through the real optical chain rather than
   assumed Gaussian or expanded analytically, so off-axis astigmatism, cone
@@ -191,8 +183,8 @@ app is hand-written and uses no third-party graphics library.
 
 ## Provenance of this codebase
 
-This package is a port and generalisation of a private research codebase built
-for the companion paper. Two things follow, both load-bearing:
+A port and generalisation of a private research codebase built for the
+companion paper. Two things follow:
 
 1. **The Monte Carlo tracer reproduces that research engine bit-for-bit** — 45
    golden fixtures (five heliostats x three sun positions x three optical
