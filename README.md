@@ -1,4 +1,10 @@
-# heliostat
+# Coddington
+
+**A twisting heliostat software package.** Install and import as `heliostat`:
+
+```
+pip install heliostat
+```
 
 Heliostat-field simulation for concentrating solar power towers: field
 layouts, Monte Carlo and cone-optics ray tracing, flux maps, shading and
@@ -75,6 +81,20 @@ timesteps rather than re-tracing, so a year costs a surface evaluation, not
 a sweep.
 
 ## Run it
+
+### No Python? Download and run
+
+Grab the build for your platform from the
+[releases page](https://github.com/wilryk/coddington/releases), unzip it, and
+double-click **Coddington**. It bundles Python and everything else, so the
+machine needs nothing but a browser. A console window appears, the app
+starts, and your browser opens at it — closing that window quits the app.
+
+The builds are unsigned, so the first launch shows Windows SmartScreen's
+"Windows protected your PC" (choose *More info → Run anyway*), and macOS
+will need the app allowed through Gatekeeper.
+
+### With Python
 
 ```
 pip install heliostat[web]
@@ -254,7 +274,7 @@ mkdocs serve
 
 If this software contributes to published research, please cite the
 companion paper (reference forthcoming) and this repository:
-<https://github.com/wilryk/heliostat>.
+<https://github.com/wilryk/coddington>.
 
 ## License
 

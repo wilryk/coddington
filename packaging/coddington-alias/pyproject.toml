@@ -1,0 +1,30 @@
+# Alias distribution: `pip install coddington` pulls in the real package.
+#
+# The project is called Coddington; the code installs and imports as
+# `heliostat`. This stub exists so a reader who meets the name in the paper
+# and types the obvious thing lands on the right library instead of on
+# nothing (or on someone else's package). It ships no modules of its own.
+#
+# Publish from this directory, independently of the main package:
+#     python -m build && python -m twine upload dist/*
+# Keep `version` in step with the heliostat release it points at.
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "coddington"
+version = "0.1.0.dev0"
+description = "Coddington, a twisting heliostat software package — installs the heliostat package"
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Ryker Eads" }]
+requires-python = ">=3.10"
+dependencies = ["heliostat"]
+
+[project.urls]
+Homepage = "https://github.com/wilryk/coddington"
+
+[tool.hatch.build.targets.wheel]
+bypass-selection = true

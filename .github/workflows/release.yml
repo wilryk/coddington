@@ -1,0 +1,89 @@
+name: Release builds
+
+# Builds the download-and-run desktop app for all three platforms and
+# attaches them to the release. PyInstaller cannot cross-compile, so each
+# platform is built on its own runner -- this workflow is the only practical
+# way to publish a macOS or Linux build from a Windows machine.
+#
+# NOTE: these bundles are unsigned. Windows SmartScreen and macOS Gatekeeper
+# will warn on first run. Signing needs certificates held outside CI.
+
+on:
+  push:
+    tags: ["v*"]
+  # So the workflow can be exercised without cutting a release.
+  workflow_dispatch:
+
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            asset: Coddington-windows-x64
+          - os: macos-latest
+            asset: Coddington-macos-arm64
+          - os: ubuntu-latest
+            asset: Coddington-linux-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -e .[web] pyinstaller
+      - run: python -m PyInstaller packaging/desktop/coddington.spec --noconfirm
+
+      # Prove the thing runs before publishing it: start it on a fixed port,
+      # ask it for a trace, and check the number against the value the test
+      # suite pins. A bundle that starts but cannot trace is worse than no
+      # bundle, because it fails in the user's hands instead of here.
+      - name: Smoke-test the bundle
+        shell: bash
+        run: |
+          cd dist/Coddington
+          ./Coddington serve --port 8499 --no-browser &
+          for _ in $(seq 1 90); do
+            curl -sf http://127.0.0.1:8499/api/health >/dev/null && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:8499/api/health
+          curl -sf -X POST http://127.0.0.1:8499/api/trace \
+            -H "Content-Type: application/json" \
+            -d '{"design":{"type":"rect","width_mm":5000,"height_mm":3000},
+                 "mode":"ultra_fast","optics":"prime_focus",
+                 "solar_az_deg":180,"solar_el_deg":45}' \
+            | python -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          power = data['power_w']
+          assert abs(power - 8225.974283127302) < 1.0, f'frozen build traced {power} W'
+          print(f'bundle traced {power:.1f} W, matching the pinned value')
+          "
+
+      - name: Package
+        shell: bash
+        run: |
+          cd dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a -tzip "${{ matrix.asset }}.zip" Coddington
+          else
+            tar czf "${{ matrix.asset }}.tar.gz" Coddington
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.zip
+            dist/*.tar.gz
