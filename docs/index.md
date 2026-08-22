@@ -98,17 +98,20 @@ choose the details, by `heliostat serve --host … --port … --no-browser`. An
 explicit `--port` that is already in use is an error rather than a silent
 move to another one.
 
-The **design** panel builds a mirror — a plain rectangle, a facet grid, or a
-"flower" of petals — and gives it an optical figure: **twisting** (the
+The **design** panel builds a mirror — a plain rectangle or a facet grid —
+and gives it an optical figure: **twisting** (the
 solve-driven astigmatic figure for a monolithic mirror, auto-focused
 spherical facets for a faceted one), **spherical**, or **flat**. Facet
 canting is a separate control, because a canted flat facet is still flat.
 
 The **trace** panel picks one of three optical layouts (prime focus, axicon,
-Cassegrain), one of three fidelity modes (ultra-fast and fast-accurate cone
-optics, or Monte Carlo), a sun position, and the tower geometry, then traces
-and returns a flux map with spot metrics — power, rms radius, centroid, and
-the full loss chain from emitted rays to rays in the window.
+Cassegrain), the receiver window size, one of three fidelity modes
+(ultra-fast and fast-accurate cone optics, or Monte Carlo), a sun position
+(typed directly, or computed from a latitude, longitude, date and clock
+time), and the tower geometry, then traces
+and returns a flux map in kW/m² with spot metrics — power, peak flux, rms
+radius, centroid, and the full loss chain from emitted rays to rays in the
+window.
 
 Alongside the flux map is an interactive **3-D scene** drawn from the trace
 that just ran: the facets as they were traced, the secondary revolved from

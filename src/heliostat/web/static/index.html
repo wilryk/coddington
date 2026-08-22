@@ -161,17 +161,31 @@
     color: #fff;
   }
 
-  .mode-tabs { flex-direction: column; }
-  .mode-tabs button {
-    text-align: left;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
+  /* The three fidelity modes are one choice, so they read as one segmented
+     control. They used to stack vertically with a paragraph under each,
+     which spread a single decision over a third of the panel. */
+  .mode-tabs.compact { margin-bottom: 6px; }
+  .mode-tabs.compact button { padding: 6px 8px; text-align: center; }
+
+  details#site-block {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-bottom: 12px;
   }
-  .mode-tabs button .desc {
-    font-size: 11px;
-    font-weight: 400;
-    opacity: 0.85;
+  details#site-block summary {
+    cursor: pointer;
+    font-size: 12.5px;
+    font-weight: 600;
+  }
+  details#site-block[open] summary { margin-bottom: 8px; }
+  details#site-block button {
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    background: #fff;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12.5px;
   }
 
   fieldset {
@@ -448,7 +462,6 @@
     <div class="type-tabs" id="type-tabs">
       <button data-type="rect" class="active">Rectangle</button>
       <button data-type="grid">Grid</button>
-      <button data-type="flower">Flower</button>
     </div>
 
     <fieldset id="fields-rect">
@@ -490,29 +503,6 @@
       <div class="legend-note">blank = auto-focus at slant range; 0 = flat</div>
     </fieldset>
 
-    <fieldset id="fields-flower" hidden>
-      <div class="field-row">
-        <label for="flower-n">Petals</label>
-        <input type="number" id="flower-n" value="5" min="1" step="1" />
-      </div>
-      <div class="field-row">
-        <label for="flower-len">Petal length (mm)</label>
-        <input type="number" id="flower-len" value="2000" min="1" step="10" />
-      </div>
-      <div class="field-row">
-        <label for="flower-width">Petal width (mm)</label>
-        <input type="number" id="flower-width" value="900" min="1" step="10" />
-      </div>
-      <div class="field-row">
-        <label for="flower-hub">Hub radius (mm)</label>
-        <input type="number" id="flower-hub" value="200" min="0" step="10" />
-      </div>
-      <div class="field-row">
-        <label for="flower-cant">Cant focal (mm, blank=auto)</label>
-        <input type="number" id="flower-cant" placeholder="auto-focus" min="0" step="100" />
-      </div>
-      <div class="legend-note">blank = auto-focus at slant range; 0 = flat</div>
-    </fieldset>
 
     <div class="divider"></div>
 
@@ -548,34 +538,67 @@
         <option value="cassegrain">Cassegrain (tower reflector)</option>
       </select>
     </div>
+    <div class="field-row">
+      <label for="recv-half-u">Receiver half-width (mm)</label>
+      <input type="number" id="recv-half-u" value="2000" min="1" step="100" />
+    </div>
+    <div class="field-row">
+      <label for="recv-half-v">Receiver half-height (mm)</label>
+      <input type="number" id="recv-half-v" value="2000" min="1" step="100" />
+    </div>
+    <div class="legend-note">
+      The flux map spans the receiver window, so shrinking it zooms in on the
+      spot. A spot cannot be smaller than the sun's own image: about
+      9.3&nbsp;mrad &times; the slant range.
+    </div>
 
-    <div class="mode-tabs" id="mode-tabs">
-      <button data-mode="ultra_fast" class="active">
-        Ultra fast
-        <span class="desc">Cone optics, linearised stencil — fastest, ~1% map residual.</span>
-      </button>
-      <button data-mode="fast_accurate">
-        Fast accurate
-        <span class="desc">Cone optics, quadratic stencil — resolves ultra fast's leading error, ~2x cost.</span>
-      </button>
-      <button data-mode="monte_carlo">
-        Monte Carlo
-        <span class="desc">Reference trace, 120k rays — noise falls as 1/&radic;rays.</span>
-      </button>
+    <div class="mode-tabs compact" id="mode-tabs">
+      <button data-mode="ultra_fast" class="active">Ultra fast</button>
+      <button data-mode="fast_accurate">Fast accurate</button>
+      <button data-mode="monte_carlo">Monte Carlo</button>
+    </div>
+    <div class="legend-note" id="mode-note">
+      Cone optics, linearised stencil — fastest, ~1% map residual.
     </div>
 
     <div class="divider"></div>
 
     <div class="field-row">
-      <label for="sun-az">Sun azimuth</label>
-      <input type="range" id="sun-az" min="0" max="360" step="1" value="180" />
-      <span class="readout" id="sun-az-readout">180&deg;</span>
+      <label for="sun-az">Sun azimuth (&deg;)</label>
+      <input type="number" id="sun-az" min="0" max="360" step="1" value="180" />
     </div>
     <div class="field-row">
-      <label for="sun-el">Sun elevation</label>
-      <input type="range" id="sun-el" min="0.5" max="90" step="0.5" value="45" />
-      <span class="readout" id="sun-el-readout">45&deg;</span>
+      <label for="sun-el">Sun elevation (&deg;)</label>
+      <input type="number" id="sun-el" min="-5" max="90" step="0.5" value="45" />
     </div>
+
+    <details id="site-block">
+      <summary>Set the sun from a place and time</summary>
+      <div class="field-row">
+        <label for="site-lat">Latitude (&deg;)</label>
+        <input type="number" id="site-lat" value="-10.0" step="0.1" min="-90" max="90" />
+      </div>
+      <div class="field-row">
+        <label for="site-lon">Longitude (&deg;)</label>
+        <input type="number" id="site-lon" value="-52.0" step="0.1" min="-180" max="180" />
+      </div>
+      <div class="field-row">
+        <label for="site-tz">UTC offset (h)</label>
+        <input type="number" id="site-tz" value="-3" step="0.5" min="-14" max="14" />
+      </div>
+      <div class="field-row">
+        <label for="site-date">Date</label>
+        <input type="date" id="site-date" value="2026-03-21" />
+      </div>
+      <div class="field-row">
+        <label for="site-hour">Local time (h)</label>
+        <input type="number" id="site-hour" value="12.0" step="0.25" min="0" max="23.99" />
+      </div>
+      <button type="button" id="site-apply">Set sun from site</button>
+      <div class="legend-note" id="site-note">
+        Solar position by the NOAA calculator method (see REFERENCES.md).
+      </div>
+    </details>
     <fieldset id="fields-single">
       <div class="field-row">
         <label for="helio-x">Heliostat x (mm)</label>
@@ -641,6 +664,7 @@
       <tbody>
         <tr><td class="k">Power</td><td class="v" id="m-power">&mdash;</td></tr>
         <tr><td class="k">Incident power</td><td class="v" id="m-incident">&mdash;</td></tr>
+        <tr><td class="k">Peak flux</td><td class="v" id="m-peak">&mdash;</td></tr>
         <tr><td class="k">RMS spot radius</td><td class="v" id="m-rms">&mdash;</td></tr>
         <tr><td class="k">Centroid (u, v)</td><td class="v" id="m-centroid">&mdash;</td></tr>
         <tr id="row-slant"><td class="k">Slant range</td><td class="v" id="m-slant">&mdash;</td></tr>
@@ -699,7 +723,6 @@
   const fieldsets = {
     rect: document.getElementById("fields-rect"),
     grid: document.getElementById("fields-grid"),
-    flower: document.getElementById("fields-flower"),
   };
 
   // The mirror's optical figure. A separate axis from cant_focal_mm, which
@@ -719,17 +742,14 @@
     twisting: {
       rect: "solve-driven astigmatic figure",
       grid: "auto-focused spherical facets (twisting applies to a monolithic mirror)",
-      flower: "auto-focused spherical facets (twisting applies to a monolithic mirror)",
     },
     spherical: {
       rect: "spherical at slant range",
       grid: "spherical at cant focal (blank = slant range)",
-      flower: "spherical at cant focal (blank = slant range)",
     },
     flat: {
       rect: "no figure — expect a mirror-sized wash",
       grid: "no figure — expect a mirror-sized wash",
-      flower: "no figure — expect a mirror-sized wash",
     },
   };
 
@@ -794,17 +814,7 @@
       if (cant !== null) design.cant_focal_mm = cant;
       return design;
     }
-    const design = {
-      type: "flower",
-      n_petals: numOrNull("flower-n"),
-      petal_length_mm: numOrNull("flower-len"),
-      petal_width_mm: numOrNull("flower-width"),
-      hub_radius_mm: numOrNull("flower-hub") ?? 0,
-      surface: surfaceMode,
-    };
-    const cant = numOrNull("flower-cant");
-    if (cant !== null) design.cant_focal_mm = cant;
-    return design;
+    throw new Error("unknown design type " + designType);
   }
 
   // -- design preview (debounced) -----------------------------------------
@@ -846,7 +856,6 @@
   for (const id of [
     "rect-width", "rect-height",
     "grid-nu", "grid-nv", "grid-fw", "grid-fh", "grid-gap", "grid-cant",
-    "flower-n", "flower-len", "flower-width", "flower-hub", "flower-cant",
   ]) {
     document.getElementById(id).addEventListener("input", schedulePreview);
   }
@@ -894,6 +903,16 @@
 
   let mode = "ultra_fast";
   const modeTabs = document.getElementById("mode-tabs");
+  // One shared description line under the tab strip, rather than a blurb
+  // stacked inside every button -- three paragraphs of body text made the
+  // three modes read as three separate sections of the panel.
+  const MODE_NOTES = {
+    ultra_fast: "Cone optics, linearised stencil — fastest, ~1% map residual.",
+    fast_accurate:
+      "Cone optics, quadratic stencil — resolves ultra fast's leading error, ~2x cost.",
+    monte_carlo: "Reference trace, 120k rays — noise falls as 1/√rays.",
+  };
+  const modeNote = document.getElementById("mode-note");
   modeTabs.addEventListener("click", (e) => {
     const btn = e.target.closest("button[data-mode]");
     if (!btn) return;
@@ -901,14 +920,67 @@
     for (const b of modeTabs.querySelectorAll("button")) {
       b.classList.toggle("active", b === btn);
     }
+    modeNote.textContent = MODE_NOTES[mode] || "";
   });
 
   const sunAz = document.getElementById("sun-az");
   const sunEl = document.getElementById("sun-el");
-  const sunAzReadout = document.getElementById("sun-az-readout");
-  const sunElReadout = document.getElementById("sun-el-readout");
-  sunAz.addEventListener("input", () => (sunAzReadout.textContent = sunAz.value + "°"));
-  sunEl.addEventListener("input", () => (sunElReadout.textContent = sunEl.value + "°"));
+
+  // Sun from a place and a moment. The trace itself only ever takes azimuth
+  // and elevation; this fills those two boxes from something a person
+  // actually knows, using the same NOAA solar-position code the sweep uses
+  // (server side, so the browser and a batch run cannot drift apart).
+  const siteApply = document.getElementById("site-apply");
+  const siteNote = document.getElementById("site-note");
+  siteApply.addEventListener("click", async () => {
+    const date = document.getElementById("site-date").value;
+    if (!date) {
+      siteNote.textContent = "Pick a date first.";
+      return;
+    }
+    const [year, month, day] = date.split("-").map(Number);
+    siteApply.disabled = true;
+    try {
+      const resp = await fetch("/api/sun", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          latitude_deg: numOrNull("site-lat") ?? 0,
+          longitude_deg: numOrNull("site-lon") ?? 0,
+          timezone_h: numOrNull("site-tz") ?? 0,
+          year: year,
+          month: month,
+          day: day,
+          hour: numOrNull("site-hour") ?? 12,
+        }),
+      });
+      if (!resp.ok) {
+        siteNote.textContent = "Could not compute: " + (await parseErrorDetail(resp));
+        return;
+      }
+      const data = await resp.json();
+      sunAz.value = data.solar_az_deg;
+      sunEl.value = data.solar_el_deg;
+      const window_ =
+        data.sunrise_h === null
+          ? "no sunrise/sunset that day"
+          : "daylight " + fmtHour(data.sunrise_h) + "–" + fmtHour(data.sunset_h);
+      siteNote.textContent =
+        "az " + data.solar_az_deg.toFixed(1) + "°, el " +
+        data.solar_el_deg.toFixed(1) + "° — " + window_ +
+        (data.above_horizon ? "" : " (sun is below the horizon: a trace will be refused)");
+    } catch (err) {
+      siteNote.textContent = "Could not compute: " + err.message;
+    } finally {
+      siteApply.disabled = false;
+    }
+  });
+
+  function fmtHour(h) {
+    const hh = Math.floor(h);
+    const mm = Math.round((h - hh) * 60);
+    return String(hh).padStart(2, "0") + ":" + String(mm === 60 ? 0 : mm).padStart(2, "0");
+  }
 
   // -- 3D scene view --------------------------------------------------------
   //
@@ -1957,11 +2029,17 @@
         payload.heliostat_x_mm = numOrNull("helio-x") ?? 0;
         payload.heliostat_y_mm = numOrNull("helio-y") ?? -89609;
       }
-      // Only sent once the inspector has actually changed something, so an
-      // untouched session gets the server's own defaults rather than a
-      // client-side copy of them.
-      const edits = opticsEdits[optics];
-      if (edits && Object.keys(edits).length) payload.optics_params = edits;
+      // optics_params carries two things: whatever the 3-D inspector has
+      // edited for this layout, plus the receiver window, which is a visible
+      // panel control and so is always sent. The window is deliberately last
+      // -- the panel boxes are what the user can see, so they win over a
+      // stale inspector value for the same field.
+      const edits = Object.assign({}, opticsEdits[optics]);
+      const halfU = numOrNull("recv-half-u");
+      const halfV = numOrNull("recv-half-v");
+      if (halfU !== null) edits.window_half_u_mm = halfU;
+      if (halfV !== null) edits.window_half_v_mm = halfV;
+      if (Object.keys(edits).length) payload.optics_params = edits;
       const resp = await fetch(field ? "/api/field/trace" : "/api/trace", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1982,6 +2060,10 @@
       document.getElementById("m-power").textContent = fmt(data.power_w, 0) + " W";
       document.getElementById("m-incident").textContent =
         data.incident_power_w === null ? "—" : fmt(data.incident_power_w, 0) + " W";
+      document.getElementById("m-peak").textContent =
+        data.peak_flux_kw_m2 === null || data.peak_flux_kw_m2 === undefined
+          ? "—"
+          : fmt(data.peak_flux_kw_m2, 1) + " kW/m²";
       document.getElementById("m-rms").textContent = fmt(data.rms_radius_mm, 1) + " mm";
       document.getElementById("m-centroid").textContent =
         "(" + fmt(data.centroid_mm[0], 1) + ", " + fmt(data.centroid_mm[1], 1) + ") mm";
@@ -2007,6 +2089,15 @@
       // The 3D view redraws from the same response; the camera and the
       // selection both survive, so an Apply reads as the scene changing
       // under a fixed viewpoint rather than as a new picture.
+      if (data.optics_resolved) {
+        if (data.optics_resolved.window_half_u_mm !== undefined) {
+          document.getElementById("recv-half-u").value = data.optics_resolved.window_half_u_mm;
+        }
+        if (data.optics_resolved.window_half_v_mm !== undefined) {
+          document.getElementById("recv-half-v").value = data.optics_resolved.window_half_v_mm;
+        }
+      }
+
       setScene(data.scene, {
         optics: optics,
         opticsResolved: data.optics_resolved,

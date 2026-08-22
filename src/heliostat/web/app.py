@@ -98,6 +98,7 @@ from heliostat.geometry.shading import (
     polygon_occlusion,
     search_radius_for,
 )
+from heliostat.solar import sun_position, sunrise_sunset
 from heliostat.trace.cone import sunshape_kernel, trace_heliostat_cone
 from heliostat.trace.mc import MIRROR_HALF_X_MM, MIRROR_HALF_Y_MM, trace_heliostat
 from heliostat.trace.modes import MODES, TraceMode
@@ -413,6 +414,29 @@ class FlowerParams(_DesignBase):
 
 
 DesignParams = Annotated[Union[RectParams, GridParams, FlowerParams], Field(discriminator="type")]
+
+
+class SunRequest(BaseModel):
+    """A place and a moment, for the sun-position endpoint.
+
+    The GUI's own sun controls are azimuth and elevation, because that is
+    what a trace needs. Those are awkward numbers to know for a real site,
+    so this turns a site and a clock time into them via
+    :func:`heliostat.solar.sun_position` -- the NOAA calculator method (see
+    REFERENCES.md). Elevation carries NOAA's atmospheric-refraction
+    correction, so it can be slightly positive with the sun geometrically
+    just below the horizon.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    latitude_deg: float = Field(default=-10.0, ge=-90.0, le=90.0)
+    longitude_deg: float = Field(default=-52.0, ge=-180.0, le=180.0)
+    timezone_h: float = Field(default=-3.0, ge=-14.0, le=14.0)
+    year: int = Field(default=2026, ge=1901, le=2099)
+    month: int = Field(default=3, ge=1, le=12)
+    day: int = Field(default=21, ge=1, le=31)
+    hour: float = Field(default=12.0, ge=0.0, lt=24.0)
 
 
 class PreviewRequest(BaseModel):
@@ -889,15 +913,19 @@ def _render_flux_png(
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(figsize=(5.6, 4.6))
+    # Displayed in kW/m2: a tower receiver runs in the hundreds to
+    # thousands of kW/m2, and five- and six-digit W/m2 tick labels are
+    # harder to read than the two- and three-digit kW/m2 ones. The stored
+    # and returned arrays stay in W/m2 -- this is a display unit only.
     im = ax.imshow(
-        flux,
+        flux / 1000.0,
         origin="lower",
         cmap="magma",
         extent=(float(u_edges[0]), float(u_edges[-1]), float(v_edges[0]), float(v_edges[-1])),
         aspect="auto",
     )
     cbar = fig.colorbar(im, ax=ax)
-    cbar.set_label("W/m²")
+    cbar.set_label("kW/m²")
     ax.set_xlabel("u (mm)")
     ax.set_ylabel("v (mm)")
     ax.set_title(f"{mode}, {elapsed_ms:.0f} ms")
@@ -1066,6 +1094,40 @@ def create_app():
     def health() -> JSONResponse:
         return JSONResponse({"version": __version__})
 
+    @app.post("/api/sun")
+    def sun(body: SunRequest) -> JSONResponse:
+        """Sun azimuth/elevation for a site and moment, plus that day's
+        sunrise and sunset so the caller can offer a sensible time range."""
+        try:
+            az, el = sun_position(
+                body.latitude_deg,
+                body.longitude_deg,
+                body.timezone_h,
+                body.year,
+                body.month,
+                body.day,
+                body.hour,
+            )
+            rise, set_ = sunrise_sunset(
+                body.latitude_deg,
+                body.longitude_deg,
+                body.timezone_h,
+                body.year,
+                body.month,
+                body.day,
+            )
+        except ValueError as exc:  # e.g. 31 February
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return JSONResponse(
+            {
+                "solar_az_deg": round(float(az), 3),
+                "solar_el_deg": round(float(el), 3),
+                "sunrise_h": None if not np.isfinite(rise) else round(float(rise), 3),
+                "sunset_h": None if not np.isfinite(set_) else round(float(set_), 3),
+                "above_horizon": bool(el > 0.0),
+            }
+        )
+
     @app.post("/api/design/preview")
     def design_preview(body: PreviewRequest) -> Response:
         import matplotlib
@@ -1187,6 +1249,7 @@ def create_app():
             {
                 "power_w": _clean(power_w),
                 "incident_power_w": _clean(incident_power_w),
+                "peak_flux_kw_m2": _clean(float(np.max(flux)) / 1000.0),
                 "rms_radius_mm": _clean(rms_mm),
                 "centroid_mm": [_clean(centroid[0]), _clean(centroid[1])],
                 "counters": {k: int(v) for k, v in counters.items()},
@@ -1375,6 +1438,7 @@ def create_app():
             {
                 "power_w": _clean(power_w),
                 "incident_power_w": _clean(incident_power_w),
+                "peak_flux_kw_m2": _clean(float(np.max(flux)) / 1000.0),
                 "rms_radius_mm": _clean(rms_mm),
                 "centroid_mm": [_clean(centroid[0]), _clean(centroid[1])],
                 "counters": {k: int(v) for k, v in counters.items()},
