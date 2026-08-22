@@ -8,8 +8,11 @@ stay importable/testable without it.
 from __future__ import annotations
 
 import base64
+import csv
 import json
 import math
+import time
+from io import StringIO
 
 import numpy as np
 import pytest
@@ -36,6 +39,7 @@ from heliostat.web.app import (  # noqa: E402
     CASSEGRAIN_VERTEX_Z_MM,
     FERMAT_A_M,
     FERMAT_B,
+    FLUX_GRID,
     MAX_FIELD_HELIOSTATS,
     PRIME_FOCUS_HEIGHT_MM,
     WINDOW_MM,
@@ -1403,3 +1407,123 @@ def test_sag_rejects_a_sun_below_the_horizon(client):
     """There is no solve, so there is no figure to draw."""
     resp = client.post("/api/design/sag", json=_trace_payload(RECT_DESIGN, solar_el_deg=0.0))
     assert resp.status_code == 422
+
+
+# -- ray budget, day sweeps and exports --------------------------------------
+
+
+def test_monte_carlo_ray_budget_is_adjustable(client):
+    """Rays are the Monte Carlo fidelity dial; without control over them the
+    only choice is 120,000 or a different backend."""
+    payload = _trace_payload(RECT_DESIGN, mode="monte_carlo")
+    payload["n_rays"] = 5000
+    data = client.post("/api/trace", json=payload).json()
+    assert data["counters"]["emitted"] == 5000
+
+
+def test_ray_budget_is_ignored_by_the_cone_backends(client):
+    """The cone backends sample the mirror on a fixed grid; there is no ray
+    count to set, and pretending otherwise would be a lie in the UI."""
+    payload = _trace_payload(RECT_DESIGN, mode="ultra_fast")
+    payload["n_rays"] = 5000
+    data = client.post("/api/trace", json=payload).json()
+    assert data["counters"].get("emitted") is None
+    assert data["power_w"] > 0
+
+
+def _run_day(client, **overrides):
+    payload = _trace_payload(RECT_DESIGN)
+    payload.update(overrides)
+    started = client.post("/api/day/start", json=payload)
+    assert started.status_code == 200, started.json()
+    job_id = started.json()["job_id"]
+    for _ in range(600):
+        status = client.get(f"/api/day/status/{job_id}").json()
+        if status["state"] != "running":
+            break
+        time.sleep(0.05)
+    assert status["state"] == "done", status
+    return job_id, client.get(f"/api/day/result/{job_id}").json()
+
+
+def test_day_trace_walks_the_daylight_hours(client):
+    """Sunrise to sunset, with power rising and falling across it."""
+    _job_id, data = _run_day(client, hour_step=2.0)
+    steps = data["steps"]
+    assert len(steps) >= 4
+    assert steps == sorted(steps, key=lambda s: s["hour"])
+    # The sun starts and ends near the horizon and is highest in between.
+    assert steps[0]["solar_el_deg"] < max(s["solar_el_deg"] for s in steps)
+    assert steps[-1]["solar_el_deg"] < max(s["solar_el_deg"] for s in steps)
+    assert data["energy_kwh"] > 0
+    assert all(s["power_w"] >= 0 for s in steps)
+
+
+def test_day_energy_is_the_integral_of_its_own_power_curve(client):
+    """The headline number must be the trapezoid of the table beneath it, or
+    the two disagree in public."""
+    _job_id, data = _run_day(client, hour_step=2.0)
+    steps = data["steps"]
+    hours = np.array([s["hour"] for s in steps])
+    power_kw = np.array([s["power_w"] for s in steps]) / 1000.0
+    # 1e-4 rather than tighter: the response rounds energy to 3 decimals
+    # and each power to 4, so recomputing from the published table cannot
+    # agree to more than that. The point is that it is the same integral,
+    # not a different quantity.
+    assert data["energy_kwh"] == pytest.approx(float(np.trapz(power_kw, hours)), rel=1e-4)
+
+
+def test_day_progress_is_reported_and_result_waits_for_it(client):
+    payload = _trace_payload(RECT_DESIGN)
+    payload["hour_step"] = 2.0
+    job_id = client.post("/api/day/start", json=payload).json()["job_id"]
+    # Asking for a result before it exists is a 409, not a wrong answer.
+    early = client.get(f"/api/day/result/{job_id}")
+    assert early.status_code in (200, 409)
+    for _ in range(600):
+        status = client.get(f"/api/day/status/{job_id}").json()
+        assert 0 <= status["done"] <= status["total"]
+        if status["state"] != "running":
+            break
+        time.sleep(0.05)
+    assert status["state"] == "done"
+    assert status["done"] == status["total"]
+
+
+def test_day_trace_of_a_field_carries_the_occlusion(client):
+    """A field shades itself at low sun and not at noon; a day sweep that did
+    not show that would not be tracing the field it claims to."""
+    _job_id, data = _run_day(client, hour_step=2.0, layout={"type": "fermat", "n": 8})
+    etas = [s["eta_mean"] for s in data["steps"]]
+    assert all(0.0 < e <= 1.0 for e in etas)
+    assert min(etas) < max(etas)
+    assert data["n_heliostats"] == 8
+
+
+def test_day_export_is_csv_with_a_row_per_timestep(client):
+    job_id, data = _run_day(client, hour_step=2.0)
+    resp = client.get(f"/api/day/export/{job_id}.csv")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/csv")
+    rows = list(csv.DictReader(StringIO(resp.text)))
+    assert len(rows) == len(data["steps"])
+    assert {"key", "hour", "solar_el_deg", "power_w"} <= set(rows[0])
+
+
+def test_unknown_day_job_is_404(client):
+    assert client.get("/api/day/status/nosuchjob").status_code == 404
+    assert client.get("/api/day/result/nosuchjob").status_code == 404
+
+
+def test_flux_csv_export_is_a_labelled_grid(client):
+    """Self-describing: the axes travel with the numbers."""
+    resp = client.post("/api/trace/flux.csv", json=_trace_payload(RECT_DESIGN))
+    assert resp.status_code == 200
+    rows = list(csv.reader(StringIO(resp.text)))
+    assert len(rows) == FLUX_GRID + 1
+    assert len(rows[0]) == FLUX_GRID + 1
+    assert "u_mm" in rows[0][0]
+    # Header and index are receiver coordinates in millimetres, ascending.
+    u_axis = [float(x) for x in rows[0][1:]]
+    assert u_axis == sorted(u_axis)
+    assert max(float(x) for x in rows[1][1:]) >= 0.0

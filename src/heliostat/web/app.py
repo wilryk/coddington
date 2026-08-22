@@ -47,9 +47,13 @@ the identical fixture secondaries/receivers.
 from __future__ import annotations
 
 import base64
+import csv
+import datetime as _dt
 import time
-from io import BytesIO
+from dataclasses import replace
+from io import BytesIO, StringIO
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Annotated, Literal, Union
 
 import numpy as np
@@ -104,10 +108,11 @@ from heliostat.geometry.shading import (
     polygon_occlusion,
     search_radius_for,
 )
-from heliostat.solar import sun_position, sunrise_sunset
+from heliostat.solar import build_time_grid, sun_position, sunrise_sunset
 from heliostat.trace.cone import sunshape_kernel, trace_heliostat_cone
 from heliostat.trace.mc import MIRROR_HALF_X_MM, MIRROR_HALF_Y_MM, trace_heliostat
 from heliostat.trace.modes import MODES, TraceMode
+from heliostat.web.jobs import JobRegistry
 from heliostat.web.scene import build_field_scene, build_scene
 from heliostat.web.setups import (
     SetupError,
@@ -118,6 +123,10 @@ from heliostat.web.setups import (
 )
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+#: Background runs (day sweeps). One registry per process; see
+#: heliostat.web.jobs for why it is deliberately this small.
+JOBS = JobRegistry()
 
 WINDOW_MM = 2000.0
 FLUX_GRID = 128
@@ -485,6 +494,18 @@ class _TraceRequestBase(BaseModel):
     # which one applies depends on `optics`). Absent means "the defaults",
     # which are this module's constants.
     optics_params: dict | None = None
+    #: Rays per heliostat, Monte Carlo only. ``None`` takes the mode's own
+    #: budget (120,000), which is what every stored result was traced with.
+    #: Lowering it is the fidelity/speed dial: Monte Carlo error falls as
+    #: 1/sqrt(rays), so a tenth of the rays is about three times the noise.
+    n_rays: int | None = Field(default=None, ge=100, le=2_000_000)
+
+    def trace_mode(self) -> TraceMode:
+        """The fidelity mode this request asks for, ray budget applied."""
+        mode = MODES[self.mode]
+        if self.n_rays is None or mode.backend != "mc":
+            return mode
+        return replace(mode, n_rays=self.n_rays)
 
     @field_validator("solar_el_deg")
     @classmethod
@@ -665,6 +686,41 @@ class FieldTraceRequest(_TraceRequestBase):
     #: original layout index as their id, so dropping one does not renumber
     #: the rest -- an id in a response means the same mirror across requests.
     exclude_ids: list[int] = Field(default_factory=list)
+
+
+class DaySite(BaseModel):
+    """Where and when. The sun angles come from this, per timestep."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    latitude_deg: float = Field(default=-10.0, ge=-90.0, le=90.0)
+    longitude_deg: float = Field(default=-52.0, ge=-180.0, le=180.0)
+    timezone_h: float = Field(default=-3.0, ge=-14.0, le=14.0)
+    year: int = Field(default=2026, ge=1901, le=2099)
+    month: int = Field(default=3, ge=1, le=12)
+    day: int = Field(default=21, ge=1, le=31)
+
+
+class DayTraceRequest(_TraceRequestBase):
+    """Trace one date from sunrise to sunset.
+
+    Inherits the design, fidelity mode, optics and tower geometry a single
+    trace takes; ``solar_az_deg``/``solar_el_deg`` are inherited too but
+    ignored, because the whole point is that the sun moves. ``layout``
+    traces a field at every timestep; without one it traces the single
+    heliostat at ``heliostat_x_mm``/``heliostat_y_mm``.
+    """
+
+    site: DaySite = Field(default_factory=DaySite)
+    #: Maximum spacing between samples, hours. The day is divided into equal
+    #: intervals no wider than this, so the first and last land exactly on
+    #: the daylight edges rather than being snapped inward.
+    hour_step: float = Field(default=1.0, gt=0.05, le=6.0)
+    sunrise_margin_min: float = Field(default=10.0, ge=0.0, le=120.0)
+    layout: FieldLayout | None = None
+    exclude_ids: list[int] = Field(default_factory=list)
+    heliostat_x_mm: float = 0.0
+    heliostat_y_mm: float = -89609.0
 
 
 # ---------------------------------------------------------------------------
@@ -1072,6 +1128,195 @@ def _zero_power_note(counters: dict, power_w: float | None) -> str | None:
     return "No light reached the receiver with this geometry."
 
 
+def _day_timesteps(req: "DayTraceRequest") -> list:
+    """The day's sample times, from true sunrise to true sunset."""
+    site = req.site
+    cfg = SimpleNamespace(
+        site=SimpleNamespace(
+            latitude=site.latitude_deg,
+            longitude=site.longitude_deg,
+            timezone=site.timezone_h,
+        ),
+        sweep=SimpleNamespace(
+            hour_step=req.hour_step,
+            sunrise_margin_min=req.sunrise_margin_min,
+            dates=[_dt.date(site.year, site.month, site.day)],
+        ),
+    )
+    return build_time_grid(cfg, [_dt.date(site.year, site.month, site.day)])
+
+
+def _trace_instant_metrics(
+    req: "DayTraceRequest", solar_az_deg: float, solar_el_deg: float
+) -> dict:
+    """Power and spot metrics at one instant, for one heliostat or a field.
+
+    Built from the same helpers the single and field endpoints use --
+    :func:`_solve_for`, :func:`_build_trace_design`, :func:`_field_occlusion`
+    and :func:`_trace_core` -- so a day's numbers are the numbers those
+    endpoints would report, timestep by timestep. Nothing here re-implements
+    physics; it only skips the parts a time series has no use for (the flux
+    PNG, the 3-D scene, the per-heliostat table).
+    """
+    optics_params = resolve_optics_params(req.optics, req.optics_params)
+    secondary, receiver = _geometry_for(req.optics, optics_params)
+    mode = req.trace_mode()
+    (u0, u1), (v0, v1) = receiver.uv_extent()
+    u_edges = np.linspace(u0, u1, FLUX_GRID + 1)
+    v_edges = np.linspace(v0, v1, FLUX_GRID + 1)
+    bin_area_m2 = ((u1 - u0) / FLUX_GRID / 1000.0) * ((v1 - v0) / FLUX_GRID / 1000.0)
+
+    if req.layout is None:
+        xy_mm = np.array([[req.heliostat_x_mm, req.heliostat_y_mm]], dtype=float)
+        ids = [0]
+    else:
+        xy_mm, ids = _field_positions(req.layout, req.exclude_ids)
+
+    solutions = [
+        _solve_for(req.optics, float(x), float(y), solar_az_deg, solar_el_deg, optics_params)
+        for x, y in xy_mm
+    ]
+    designs = [
+        _build_trace_design(req.design, sol, _slant_range_mm(sol, float(x), float(y)))
+        for sol, (x, y) in zip(solutions, xy_mm)
+    ]
+
+    if len(ids) > 1:
+        eta_shade, eta_block, eta_union, _outline = _field_occlusion(
+            xy_mm, ids, solutions, designs[0], solar_az_deg, solar_el_deg
+        )
+    else:
+        ones = np.ones(len(ids))
+        eta_shade = eta_block = eta_union = ones
+
+    flux = np.zeros((FLUX_GRID, FLUX_GRID))
+    power_w = 0.0
+    for i in range(len(ids)):
+        result = _trace_core(
+            designs[i],
+            float(xy_mm[i, 0]),
+            float(xy_mm[i, 1]),
+            solutions[i],
+            solar_az_deg,
+            solar_el_deg,
+            secondary,
+            receiver,
+            mode,
+            mc_seed=np.random.SeedSequence((FIELD_MC_SEED, int(ids[i]))),
+            mc_return_paths=False,
+        )
+        eta = float(eta_union[i])
+        if result["backend"] == "mc":
+            counts, _, _ = np.histogram2d(result["xy"][1], result["xy"][0], bins=[v_edges, u_edges])
+            flux += counts * result["watts_per_ray"] / bin_area_m2 * eta
+            power_w += result["watts_per_ray"] * result["counters"].get("in_window", 0) * eta
+        else:
+            flux += result["flux"] * eta
+            power_w += result["power_w"] * eta
+
+    rms_mm, centroid = _cone_metrics(flux, u_edges, v_edges)
+    return {
+        "power_w": float(power_w),
+        "peak_flux_kw_m2": float(np.max(flux)) / 1000.0,
+        "rms_radius_mm": rms_mm,
+        "centroid_mm": list(centroid),
+        "eta_shade_mean": float(np.mean(eta_shade)),
+        "eta_block_mean": float(np.mean(eta_block)),
+        "eta_mean": float(np.mean(eta_union)),
+        "n_heliostats": len(ids),
+    }
+
+
+def _flux_grid_for(body: "TraceRequest") -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``(flux_w_m2, u_edges, v_edges)`` for one single-heliostat request.
+
+    The same solve/design/trace path :func:`_trace_core` gives the trace
+    endpoint, kept separate only so an export does not have to render a PNG
+    or build a scene to get at the numbers behind them.
+    """
+    optics_params = resolve_optics_params(body.optics, body.optics_params)
+    secondary, receiver = _geometry_for(body.optics, optics_params)
+    sol = _solve_for(
+        body.optics,
+        body.heliostat_x_mm,
+        body.heliostat_y_mm,
+        body.solar_az_deg,
+        body.solar_el_deg,
+        optics_params,
+    )
+    design = _build_trace_design(
+        body.design, sol, _slant_range_mm(sol, body.heliostat_x_mm, body.heliostat_y_mm)
+    )
+    result = _trace_core(
+        design,
+        body.heliostat_x_mm,
+        body.heliostat_y_mm,
+        sol,
+        body.solar_az_deg,
+        body.solar_el_deg,
+        secondary,
+        receiver,
+        body.trace_mode(),
+        mc_return_paths=False,
+    )
+    if result["backend"] == "mc":
+        flux, u_edges, v_edges, _rms, _cen = _mc_flux_and_metrics(
+            result["xy"], result["watts_per_ray"], receiver
+        )
+        return flux, u_edges, v_edges
+    return result["flux"], result["u_edges"], result["v_edges"]
+
+
+def _render_day_png(steps: list[dict]) -> bytes:
+    """Collected power and peak flux against local time."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    hours = [s["hour"] for s in steps]
+    power_kw = [s["power_w"] / 1000.0 for s in steps]
+    peak = [s["peak_flux_kw_m2"] for s in steps]
+
+    fig, ax = plt.subplots(figsize=(6.4, 4.2))
+    ax.plot(hours, power_kw, "o-", color="#d97b29", label="collected power")
+    ax.set_xlabel("local time (h)")
+    ax.set_ylabel("collected power (kW)")
+    ax.grid(alpha=0.3)
+    ax.set_ylim(bottom=0)
+
+    twin = ax.twinx()
+    twin.plot(hours, peak, "s--", color="#3b6ea5", markersize=4, label="peak flux")
+    twin.set_ylabel("peak flux (kW/m²)")
+    twin.set_ylim(bottom=0)
+
+    lines = ax.get_lines() + twin.get_lines()
+    ax.legend(lines, [ln.get_label() for ln in lines], loc="upper left", fontsize=9)
+    fig.tight_layout()
+
+    buf = BytesIO()
+    try:
+        fig.savefig(buf, format="png", dpi=110)
+    finally:
+        plt.close(fig)
+    return buf.getvalue()
+
+
+def _day_energy_kwh(steps: list[dict]) -> float:
+    """Integrate collected power over the day, trapezoidally in local time.
+
+    Trapezoid rather than a rectangle per sample because the samples land on
+    the daylight edges, where power is near zero: a rectangle rule would
+    charge each edge sample a full interval of its own value and overstate
+    the ends.
+    """
+    if len(steps) < 2:
+        return 0.0
+    hours = np.array([s["hour"] for s in steps], dtype=float)
+    power_kw = np.array([s["power_w"] for s in steps], dtype=float) / 1000.0
+    return float(np.trapz(power_kw, hours))
+
+
 def _render_sag_png(design, sol, params, half_x_mm: float, half_y_mm: float) -> bytes:
     """Sag map of the mirror a trace would use, in millimetres.
 
@@ -1368,6 +1613,137 @@ def create_app():
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return JSONResponse({"deleted": name})
 
+    @app.post("/api/day/start")
+    def day_start(body: DayTraceRequest) -> JSONResponse:
+        """Trace one date end to end, on a background thread.
+
+        Returns a job id immediately. A day is dozens of timesteps and a
+        field is hundreds of mirrors, so this is minutes of work -- far too
+        long to hold a request open with nothing to show. Poll
+        ``/api/day/status/{job_id}``.
+        """
+        try:
+            resolve_optics_params(body.optics, body.optics_params)
+            steps = _day_timesteps(body)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if not steps:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "the sun does not rise at that site on that date, so there is nothing to trace"
+                ),
+            )
+
+        def work(job):
+            rows = []
+            for index, step in enumerate(steps):
+                if job.cancelled():
+                    break
+                job.detail = f"{step.key} ({step.solar_el_deg:.1f}° elevation)"
+                metrics = _trace_instant_metrics(body, step.solar_az_deg, step.solar_el_deg)
+                rows.append(
+                    {
+                        "key": step.key,
+                        "hour": round(float(step.hour), 4),
+                        "solar_az_deg": round(float(step.solar_az_deg), 3),
+                        "solar_el_deg": round(float(step.solar_el_deg), 3),
+                        **{
+                            k: (None if v is None or not np.isfinite(v) else round(float(v), 4))
+                            for k, v in metrics.items()
+                            if k not in ("centroid_mm", "n_heliostats")
+                        },
+                        "n_heliostats": metrics["n_heliostats"],
+                    }
+                )
+                job.done = index + 1
+            return {
+                "steps": rows,
+                "energy_kwh": round(_day_energy_kwh(rows), 3),
+                "date": f"{body.site.year:04d}-{body.site.month:02d}-{body.site.day:02d}",
+                "mode": body.mode,
+                "optics": body.optics,
+                "n_heliostats": rows[0]["n_heliostats"] if rows else 0,
+            }
+
+        job = JOBS.start(len(steps), work, label=f"day trace, {len(steps)} timesteps")
+        return JSONResponse(job.snapshot())
+
+    @app.get("/api/day/status/{job_id}")
+    def day_status(job_id: str) -> JSONResponse:
+        job = JOBS.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"no job {job_id!r}")
+        return JSONResponse(job.snapshot())
+
+    @app.post("/api/day/cancel/{job_id}")
+    def day_cancel(job_id: str) -> JSONResponse:
+        if not JOBS.cancel(job_id):
+            raise HTTPException(status_code=409, detail="that job is not running")
+        return JSONResponse({"cancelled": job_id})
+
+    @app.get("/api/day/result/{job_id}")
+    def day_result(job_id: str) -> JSONResponse:
+        job = JOBS.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"no job {job_id!r}")
+        if job.state == "running":
+            raise HTTPException(status_code=409, detail="still running")
+        if job.state == "error":
+            raise HTTPException(status_code=500, detail=job.error or "the run failed")
+        payload = dict(job.result or {})
+        payload["state"] = job.state
+        payload["elapsed_s"] = round(job.elapsed_s, 2)
+        if payload.get("steps"):
+            payload["plot_png"] = base64.b64encode(_render_day_png(payload["steps"])).decode(
+                "ascii"
+            )
+        return JSONResponse(payload)
+
+    @app.get("/api/day/export/{job_id}.csv")
+    def day_export(job_id: str) -> Response:
+        """The day's numbers as CSV, for analysis somewhere else."""
+        job = JOBS.get(job_id)
+        if job is None or not (job.result or {}).get("steps"):
+            raise HTTPException(status_code=404, detail="no finished run with that id")
+        rows = job.result["steps"]
+        columns = list(rows[0].keys())
+        out = StringIO()
+        writer = csv.DictWriter(out, fieldnames=columns)
+        writer.writeheader()
+        writer.writerows(rows)
+        return Response(
+            content=out.getvalue(),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="heliostat-day-{job.result.get("date", job_id)}.csv"'
+                )
+            },
+        )
+
+    @app.post("/api/trace/flux.csv")
+    def trace_flux_csv(body: TraceRequest) -> Response:
+        """The flux map of one trace as CSV, in kW/m2.
+
+        Row and column headers are the receiver-plane coordinates of each
+        bin centre in millimetres, so the grid is self-describing rather
+        than a bare block of numbers whose axes live in another document.
+        """
+        flux, u_edges, v_edges = _flux_grid_for(body)
+        u_mid = 0.5 * (u_edges[:-1] + u_edges[1:])
+        v_mid = 0.5 * (v_edges[:-1] + v_edges[1:])
+        out = StringIO()
+        writer = csv.writer(out)
+        writer.writerow([r"v_mm \ u_mm"] + [f"{u:.1f}" for u in u_mid])
+        for row_index, v in enumerate(v_mid):
+            writer.writerow([f"{v:.1f}"] + [f"{x / 1000.0:.6g}" for x in flux[row_index]])
+        return Response(
+            content=out.getvalue(),
+            media_type="text/csv",
+            headers={"Content-Disposition": 'attachment; filename="heliostat-flux-kW_m2.csv"'},
+        )
+
     @app.post("/api/sun")
     def sun(body: SunRequest) -> JSONResponse:
         """Sun azimuth/elevation for a site and moment, plus that day's
@@ -1504,7 +1880,7 @@ def create_app():
         secondary, receiver = _geometry_for(body.optics, optics_params)
         rot_az_deg, rot_el_deg = sol.rot_az_deg, sol.rot_el_deg
 
-        mode = MODES[body.mode]
+        mode = body.trace_mode()
         t0 = time.perf_counter()
         result = _trace_core(
             design,
@@ -1631,7 +2007,7 @@ def create_app():
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         secondary, receiver = _geometry_for(body.optics, optics_params)
-        mode = MODES[body.mode]
+        mode = body.trace_mode()
         n = xy_mm.shape[0]
 
         # -- phase 1: one pointing/figure solve and one design per heliostat.

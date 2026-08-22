@@ -167,6 +167,37 @@
   .mode-tabs.compact { margin-bottom: 6px; }
   .mode-tabs.compact button { padding: 6px 8px; text-align: center; }
 
+  .progress { margin: 10px 0; }
+  .progress-bar {
+    height: 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+    background: #fff;
+  }
+  .progress-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--accent);
+    transition: width 0.2s linear;
+  }
+  #day-frame button, #day-csv {
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    background: #fff;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12.5px;
+    color: var(--text);
+    text-decoration: none;
+  }
+  #flux-export {
+    margin-top: 8px;
+    display: inline-block;
+    font-size: 12px;
+    cursor: pointer;
+  }
+
   details#site-block {
     border: 1px solid var(--border);
     border-radius: 6px;
@@ -580,6 +611,10 @@
       <button data-mode="fast_accurate">Fast accurate</button>
       <button data-mode="monte_carlo">Monte Carlo</button>
     </div>
+    <div class="field-row" id="rays-row" hidden>
+      <label for="mc-rays">Rays per heliostat</label>
+      <input type="number" id="mc-rays" value="120000" min="100" max="2000000" step="10000" />
+    </div>
     <div class="legend-note" id="mode-note">
       Cone optics, linearised stencil — fastest, ~1% map residual.
     </div>
@@ -658,12 +693,50 @@
       <button data-view="flux" class="active">Flux map</button>
       <button data-view="scene">3D scene</button>
       <button data-view="sag">Mirror sag</button>
+      <button data-view="day">Analysis</button>
+    </div>
+
+    <div id="day-frame" hidden>
+      <div class="field-row">
+        <label for="day-date">Date</label>
+        <input type="date" id="day-date" value="2026-03-21" />
+      </div>
+      <div class="field-row">
+        <label for="day-step">Max step (h)</label>
+        <input type="number" id="day-step" value="1.0" min="0.1" max="6" step="0.25" />
+      </div>
+      <div class="field-row">
+        <button type="button" id="day-run">Trace this day</button>
+        <button type="button" id="day-cancel" hidden>Cancel</button>
+        <a id="day-csv" hidden download>Download CSV</a>
+      </div>
+      <div class="progress" id="day-progress" hidden>
+        <div class="progress-bar"><div class="progress-fill" id="day-fill"></div></div>
+        <div class="legend-note" id="day-detail"></div>
+      </div>
+      <table class="metrics" id="day-metrics" hidden>
+        <tbody>
+          <tr><td class="k">Collected energy</td><td class="v" id="day-energy">&mdash;</td></tr>
+          <tr><td class="k">Peak power</td><td class="v" id="day-peak">&mdash;</td></tr>
+          <tr><td class="k">Timesteps</td><td class="v" id="day-steps">&mdash;</td></tr>
+          <tr><td class="k">Wall time</td><td class="v" id="day-elapsed">&mdash;</td></tr>
+        </tbody>
+      </table>
+      <div class="flux-frame" id="day-plot">
+        <p class="placeholder">Trace a day to see collected power against time.</p>
+      </div>
+      <div class="legend-note">
+        Uses the design, optics, fidelity mode and (in field mode) the layout
+        from the panels above. The sun comes from the site block's latitude,
+        longitude and UTC offset, at this date.
+      </div>
     </div>
 
     <div class="flux-frame" id="sag-frame" hidden>
       <p class="placeholder">Trace to see the mirror's figure.</p>
     </div>
 
+    <a id="flux-export" hidden>Download this flux map as CSV</a>
     <div class="flux-frame" id="flux-frame">
       <div class="placeholder">run a trace to see the flux map</div>
     </div>
@@ -957,7 +1030,11 @@
       b.classList.toggle("active", b === btn);
     }
     modeNote.textContent = MODE_NOTES[mode] || "";
+    // Rays are a Monte Carlo idea; the cone backends sample the mirror on a
+    // fixed grid instead, so the box would be a lie for them.
+    document.getElementById("rays-row").hidden = mode !== "monte_carlo";
   });
+  document.getElementById("rays-row").hidden = mode !== "monte_carlo";
 
   const sunAz = document.getElementById("sun-az");
   const sunEl = document.getElementById("sun-el");
@@ -1943,7 +2020,9 @@
     }
     const showScene = sceneState.view === "scene";
     const showSag = sceneState.view === "sag";
-    fluxFrameEl.hidden = showScene || showSag;
+    const showDay = sceneState.view === "day";
+    fluxFrameEl.hidden = showScene || showSag || showDay;
+    dayFrame.hidden = !showDay;
     sagFrame.hidden = !showSag;
     sceneFrame.hidden = !showScene;
     sceneControls.hidden = !showScene || !sceneState.data;
@@ -2153,6 +2232,8 @@
     if (halfU !== null) edits.window_half_u_mm = halfU;
     if (halfV !== null) edits.window_half_v_mm = halfV;
     if (Object.keys(edits).length) payload.optics_params = edits;
+    const rays = numOrNull("mc-rays");
+    if (mode === "monte_carlo" && rays !== null) payload.n_rays = rays;
     return payload;
   }
 
@@ -2207,6 +2288,7 @@
         document.getElementById("m-slant").textContent = fmt(data.slant_range_m, 1) + " m";
       }
       metricsTable.hidden = false;
+      document.getElementById("flux-export").hidden = false;
 
       const lines = Object.entries(data.counters).map(([k, v]) => `${k}: ${v}`);
       countersEl.textContent = lines.join("\n");
@@ -2288,6 +2370,188 @@
     } catch (err) {
       sagFrame.innerHTML = '<p class="placeholder">' + err.message + "</p>";
     }
+  }
+
+  // Flux map export. Built on demand rather than shipped with every trace:
+  // a 128 x 128 grid as CSV is ~200 kB of text nobody has asked for yet.
+  const fluxExport = document.getElementById("flux-export");
+  fluxExport.addEventListener("click", async () => {
+    const payload = tracePayload();
+    delete payload.layout;   // one heliostat's map; a field's is the sum
+    payload.heliostat_x_mm = numOrNull("helio-x") ?? 0;
+    payload.heliostat_y_mm = numOrNull("helio-y") ?? -89609;
+    fluxExport.textContent = "Building CSV…";
+    try {
+      const resp = await fetch("/api/trace/flux.csv", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) {
+        showError("Export failed: " + (await parseErrorDetail(resp)));
+        return;
+      }
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "heliostat-flux-kW_m2.csv";
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch (err) {
+      showError("Export failed: " + err.message);
+    } finally {
+      fluxExport.textContent = "Download this flux map as CSV";
+    }
+  });
+
+  // -- analysis: trace a whole day -----------------------------------------
+  //
+  // A day is dozens of timesteps and a field is hundreds of mirrors, so this
+  // is minutes of work. It runs as a job on the server and is polled: the
+  // progress bar is the difference between "working" and "hung".
+
+  const dayFrame = document.getElementById("day-frame");
+  const dayRun = document.getElementById("day-run");
+  const dayCancelBtn = document.getElementById("day-cancel");
+  const dayProgress = document.getElementById("day-progress");
+  const dayFill = document.getElementById("day-fill");
+  const dayDetail = document.getElementById("day-detail");
+  const dayPlot = document.getElementById("day-plot");
+  const dayMetrics = document.getElementById("day-metrics");
+  const dayCsv = document.getElementById("day-csv");
+  let dayJobId = null;
+  let dayPlotUrl = null;
+
+  function dayPayload() {
+    const payload = tracePayload();
+    const date = document.getElementById("day-date").value;
+    if (!date) throw new Error("pick a date first");
+    const [year, month, day] = date.split("-").map(Number);
+    payload.site = {
+      latitude_deg: numOrNull("site-lat") ?? 0,
+      longitude_deg: numOrNull("site-lon") ?? 0,
+      timezone_h: numOrNull("site-tz") ?? 0,
+      year: year,
+      month: month,
+      day: day,
+    };
+    payload.hour_step = numOrNull("day-step") ?? 1.0;
+    // The sun angles in the body are ignored by this endpoint -- it computes
+    // one per timestep -- but the model still validates them, so leave the
+    // panel's values in place rather than sending something implausible.
+    return payload;
+  }
+
+  dayRun.addEventListener("click", async () => {
+    clearError();
+    let payload;
+    try {
+      payload = dayPayload();
+    } catch (err) {
+      showError(err.message);
+      return;
+    }
+    dayRun.disabled = true;
+    dayCancelBtn.hidden = false;
+    dayCsv.hidden = true;
+    dayProgress.hidden = false;
+    dayFill.style.width = "0%";
+    dayDetail.textContent = "starting…";
+    try {
+      const resp = await fetch("/api/day/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) {
+        showError("Day trace failed: " + (await parseErrorDetail(resp)));
+        dayFinished();
+        return;
+      }
+      dayJobId = (await resp.json()).job_id;
+      pollDay();
+    } catch (err) {
+      showError("Day trace failed: " + err.message);
+      dayFinished();
+    }
+  });
+
+  dayCancelBtn.addEventListener("click", async () => {
+    if (!dayJobId) return;
+    await fetch("/api/day/cancel/" + dayJobId, { method: "POST" });
+    dayDetail.textContent = "cancelling…";
+  });
+
+  async function pollDay() {
+    if (!dayJobId) return;
+    try {
+      const resp = await fetch("/api/day/status/" + dayJobId);
+      if (!resp.ok) {
+        showError("Lost track of the run.");
+        dayFinished();
+        return;
+      }
+      const st = await resp.json();
+      const pct = st.total ? (100 * st.done) / st.total : 0;
+      dayFill.style.width = pct.toFixed(1) + "%";
+      dayDetail.textContent =
+        st.state === "running"
+          ? `step ${st.done} of ${st.total}` +
+            (st.detail ? " — " + st.detail : "") +
+            (st.eta_s !== null ? ` — about ${fmtDuration(st.eta_s)} left` : "")
+          : st.state;
+      if (st.state === "running") {
+        setTimeout(pollDay, 600);
+        return;
+      }
+      if (st.state === "error") {
+        showError("Day trace failed: " + (st.error || "unknown error"));
+        dayFinished();
+        return;
+      }
+      await showDayResult(dayJobId);
+      dayFinished();
+    } catch (err) {
+      showError("Day trace failed: " + err.message);
+      dayFinished();
+    }
+  }
+
+  async function showDayResult(jobId) {
+    const resp = await fetch("/api/day/result/" + jobId);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (!data.steps || !data.steps.length) return;
+    const peak = Math.max(...data.steps.map((s) => s.power_w || 0));
+    document.getElementById("day-energy").textContent = fmt(data.energy_kwh, 1) + " kWh";
+    document.getElementById("day-peak").textContent = fmt(peak / 1000, 1) + " kW";
+    document.getElementById("day-steps").textContent =
+      data.steps.length + (data.n_heliostats ? " × " + data.n_heliostats + " heliostats" : "");
+    document.getElementById("day-elapsed").textContent = fmtDuration(data.elapsed_s);
+    dayMetrics.hidden = false;
+    if (data.plot_png) {
+      if (dayPlotUrl) URL.revokeObjectURL(dayPlotUrl);
+      dayPlot.innerHTML = "";
+      const img = document.createElement("img");
+      img.src = "data:image/png;base64," + data.plot_png;
+      img.alt = "collected power through the day";
+      dayPlot.appendChild(img);
+    }
+    dayCsv.href = "/api/day/export/" + jobId + ".csv";
+    dayCsv.hidden = false;
+  }
+
+  function dayFinished() {
+    dayRun.disabled = false;
+    dayCancelBtn.hidden = true;
+  }
+
+  function fmtDuration(seconds) {
+    if (seconds === null || seconds === undefined) return "—";
+    if (seconds < 90) return seconds.toFixed(1) + " s";
+    const mins = Math.floor(seconds / 60);
+    return mins + " min " + Math.round(seconds - 60 * mins) + " s";
   }
 
   // -- saved setups ---------------------------------------------------------
