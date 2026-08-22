@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "heliostat"
 version = "0.1.0.dev0"
-description = "Heliostat-field simulation for concentrating solar power towers: field layouts, ray tracing, flux maps, shading/blocking, DNI, and annual energy"
+description = "Coddington, a twisting heliostat software package. Heliostat-field simulation for concentrating solar power towers: field layouts, ray tracing, flux maps, shading/blocking, DNI, and annual energy"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -56,9 +56,9 @@ web = ["fastapi>=0.110", "uvicorn>=0.27"]
 heliostat = "heliostat.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/wilryk/heliostat"
-Repository = "https://github.com/wilryk/heliostat"
-Changelog = "https://github.com/wilryk/heliostat/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/wilryk/coddington"
+Repository = "https://github.com/wilryk/coddington"
+Changelog = "https://github.com/wilryk/coddington/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/heliostat"]

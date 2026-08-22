@@ -4,9 +4,10 @@ message: >-
   repository and the companion paper. See REFERENCES.md for the methods,
   datasets and prior work this package builds on, each of which carries its
   own citation.
-title: heliostat
+title: Coddington
 abstract: >-
-  Heliostat-field simulation for concentrating solar power towers: field
+  Coddington, a twisting heliostat software package (installed and imported as
+  `heliostat`). Heliostat-field simulation for concentrating solar power towers: field
   layouts, Monte Carlo and cone-optics ray tracing, flux maps, shading and
   blocking, DNI handling, and annual energy, with an interactive local web
   app.
@@ -15,7 +16,7 @@ authors:
   - family-names: Eads
     given-names: Ryker
 license: MIT
-repository-code: "https://github.com/wilryk/heliostat"
+repository-code: "https://github.com/wilryk/coddington"
 version: 0.1.0.dev0
 keywords:
   - heliostat

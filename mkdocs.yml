@@ -1,6 +1,6 @@
-site_name: heliostat
-site_description: Heliostat-field simulation for concentrating solar towers
-repo_url: "https://github.com/wilryk/heliostat"
+site_name: Coddington
+site_description: "Coddington: a twisting heliostat software package — field layouts, ray tracing, flux maps and annual energy"
+repo_url: "https://github.com/wilryk/coddington"
 
 theme:
   name: material

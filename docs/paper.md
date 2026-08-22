@@ -10,7 +10,7 @@ re-derivation. **Every published value at the paper's own instant is
 reproduced to better than 0.7%, and total collected power to better than
 0.02%** — see [validation](#validation) below.
 
-The [example's own README](https://github.com/wilryk/heliostat/tree/main/examples/paper)
+The [example's own README](https://github.com/wilryk/coddington/tree/main/examples/paper)
 is the full version, with the provenance of every data file and a
 "customize it" section. This page is the summary.
 

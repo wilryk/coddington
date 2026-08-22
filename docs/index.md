@@ -1,4 +1,6 @@
-# heliostat
+# Coddington
+
+**A twisting heliostat software package**, installed and imported as `heliostat`.
 
 Heliostat-field simulation for concentrating solar power towers: field
 layouts, Monte Carlo and cone-optics ray tracing, flux maps, shading and
@@ -158,4 +160,4 @@ read path each have their own fixture parity gates.
 
 MIT. If this software contributes to published research, please cite the
 companion paper (reference forthcoming) and this repository:
-<https://github.com/wilryk/heliostat>.
+<https://github.com/wilryk/coddington>.
