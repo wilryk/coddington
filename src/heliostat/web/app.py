@@ -88,6 +88,7 @@ from heliostat.geometry.design import (
     grid_facets,
     rect_heliostat,
 )
+from heliostat.geometry.heliostat import zernike_sag_and_slopes
 from heliostat.geometry.receiver import FlatWindowReceiver
 from heliostat.geometry.secondary import AxiconSecondary, CassegrainSecondary, NoSecondary
 from heliostat.geometry.shading import (
@@ -977,6 +978,81 @@ def _clean(x) -> float | None:
     return None if x is None or not np.isfinite(x) else float(x)
 
 
+def _render_sag_png(design, sol, params, half_x_mm: float, half_y_mm: float) -> bytes:
+    """Sag map of the mirror a trace would use, in millimetres.
+
+    "Sag" is how far the reflecting surface departs from the flat plane
+    through its own vertex -- the shape that turns a mirror into a lens.
+    It is millimetres over metres of aperture, invisible in the 3-D scene
+    (which draws facets flat for exactly that reason), so it gets its own
+    view.
+
+    Sampled from the same objects the trace uses: for the legacy path the
+    solve's own astigmatic coefficients, for a design each facet's surface
+    evaluated in that facet's frame. Points outside every facet -- the gaps
+    in a grid, the space between petals -- are left blank rather than
+    filled with the value a facet would have had if it were there.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    n = 241
+    xs = np.linspace(-half_x_mm, half_x_mm, n)
+    ys = np.linspace(-half_y_mm, half_y_mm, n)
+    gx, gy = np.meshgrid(xs, ys)
+    sag = np.full(gx.shape, np.nan)
+
+    if design is None:
+        # Legacy single mirror: the tracer negates c4/c5 for its inherited
+        # frame, so the surface actually traced is (c3, -c4, -c5).
+        flat = zernike_sag_and_slopes(gx.ravel(), gy.ravel(), sol.c3, -sol.c4, -sol.c5)[0]
+        sag = flat.reshape(gx.shape)
+        inside = (np.abs(gx) <= half_x_mm) & (np.abs(gy) <= half_y_mm)
+        sag = np.where(inside, sag, np.nan)
+    else:
+        for facet in design.facets:
+            du = gx - facet.offset_mm[0]
+            dv = gy - facet.offset_mm[1]
+            inside = np.asarray(facet.region.contains(du.ravel(), dv.ravel())).reshape(gx.shape)
+            if not inside.any():
+                continue
+            values = facet.surface.sag_and_slopes(du.ravel(), dv.ravel())[0].reshape(gx.shape)
+            sag = np.where(inside, values, sag)
+
+    fig, ax = plt.subplots(figsize=(5.6, 4.6))
+    finite = np.isfinite(sag)
+    if not finite.any():
+        ax.text(0.5, 0.5, "no surface here", ha="center", va="center", transform=ax.transAxes)
+    else:
+        span = float(np.nanmax(sag) - np.nanmin(sag))
+        im = ax.imshow(
+            sag,
+            origin="lower",
+            cmap="viridis",
+            extent=(-half_x_mm, half_x_mm, -half_y_mm, half_y_mm),
+            aspect="equal",
+        )
+        cbar = fig.colorbar(im, ax=ax)
+        cbar.set_label("sag (mm)")
+        # Contours make a smooth figure legible; pointless on a flat mirror,
+        # where the whole map is one value and matplotlib would warn.
+        if span > 1e-9:
+            ax.contour(gx, gy, sag, levels=8, colors="white", linewidths=0.4, alpha=0.6)
+        ax.set_title(f"peak-to-valley {span:.3f} mm")
+    ax.set_xlabel("u (mm)")
+    ax.set_ylabel("v (mm)")
+    fig.tight_layout()
+
+    buf = BytesIO()
+    try:
+        fig.savefig(buf, format="png", dpi=110)
+    finally:
+        plt.close(fig)
+    return buf.getvalue()
+
+
 def _render_flux_png(
     flux: np.ndarray, u_edges: np.ndarray, v_edges: np.ndarray, mode: str, elapsed_ms: float
 ) -> bytes:
@@ -1255,6 +1331,47 @@ def create_app():
             plt.close(fig)
 
         return Response(content=buf.getvalue(), media_type="image/png")
+
+    @app.post("/api/design/sag")
+    def design_sag(body: TraceRequest) -> Response:
+        """Sag map of the mirror this exact request would trace.
+
+        Takes a full trace request because the figure depends on the solve:
+        a twisting mirror's astigmatism is a function of where the sun is
+        and where the heliostat stands, so there is no sag to draw without
+        them.
+        """
+        if body.solar_el_deg <= 0:
+            raise HTTPException(
+                status_code=422,
+                detail="solar_el_deg must be > 0 (the sun is below the horizon)",
+            )
+        try:
+            optics_params = resolve_optics_params(body.optics, body.optics_params)
+            sol = _solve_for(
+                body.optics,
+                body.heliostat_x_mm,
+                body.heliostat_y_mm,
+                body.solar_az_deg,
+                body.solar_el_deg,
+                optics_params,
+            )
+            design = _build_trace_design(
+                body.design,
+                sol,
+                _slant_range_mm(sol, body.heliostat_x_mm, body.heliostat_y_mm),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        if design is None:
+            half_x, half_y = MIRROR_HALF_X_MM, MIRROR_HALF_Y_MM
+        else:
+            u0, u1, v0, v1 = design.bbox
+            half_x = max(abs(u0), abs(u1))
+            half_y = max(abs(v0), abs(v1))
+        png = _render_sag_png(design, sol, body.design, half_x, half_y)
+        return Response(content=png, media_type="image/png")
 
     @app.post("/api/trace")
     def trace(body: TraceRequest) -> JSONResponse:

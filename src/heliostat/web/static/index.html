@@ -657,6 +657,11 @@
     <div class="view-tabs" id="view-tabs">
       <button data-view="flux" class="active">Flux map</button>
       <button data-view="scene">3D scene</button>
+      <button data-view="sag">Mirror sag</button>
+    </div>
+
+    <div class="flux-frame" id="sag-frame" hidden>
+      <p class="placeholder">Trace to see the mirror's figure.</p>
     </div>
 
     <div class="flux-frame" id="flux-frame">
@@ -1877,12 +1882,15 @@
       b.classList.toggle("active", b === btn);
     }
     const showScene = sceneState.view === "scene";
-    fluxFrameEl.hidden = showScene;
+    const showSag = sceneState.view === "sag";
+    fluxFrameEl.hidden = showScene || showSag;
+    sagFrame.hidden = !showSag;
     sceneFrame.hidden = !showScene;
     sceneControls.hidden = !showScene || !sceneState.data;
     sceneHint.hidden = !showScene || !sceneState.data;
     fieldLegend.hidden = !showScene || !sceneState.data || !sceneState.isField;
     if (showScene) renderScene();
+    if (showSag) refreshSag();
   });
 
   sceneRaysToggle.addEventListener("change", renderScene);
@@ -2046,6 +2054,47 @@
     return layout;
   }
 
+  // The body every trace-shaped request sends: /api/trace, /api/field/trace
+  // and /api/design/sag all describe the same configuration, so they build
+  // it in one place rather than three that can drift.
+  function tracePayload() {
+    const optics = document.getElementById("optics").value;
+    const payload = {
+      design: currentDesign(),
+      mode: mode,
+      optics: optics,
+      solar_az_deg: parseFloat(sunAz.value),
+      solar_el_deg: parseFloat(sunEl.value),
+    };
+    if (isFieldMode()) {
+      payload.layout = currentLayout();
+    } else {
+      payload.heliostat_x_mm = numOrNull("helio-x") ?? 0;
+      payload.heliostat_y_mm = numOrNull("helio-y") ?? -89609;
+    }
+    // optics_params carries two things: whatever the 3-D inspector has
+    // edited for this layout, plus the receiver window, which is a visible
+    // panel control and so is always sent. The window is deliberately last
+    // -- the panel boxes are what the user can see, so they win over a stale
+    // inspector value for the same field.
+    const edits = Object.assign({}, opticsEdits[optics]);
+    // "Tower height" is one label over two different numbers: for prime
+    // focus the receiver IS the aim point, for the axicon it is the cone's
+    // apex. The Cassegrain has neither -- its relay was solved for one fixed
+    // geometry -- so the box is disabled there rather than sending a field
+    // the server would reject.
+    const towerField =
+      optics === "prime_focus" ? "focus_height_mm" : optics === "axicon" ? "apex_height_mm" : null;
+    const tower = numOrNull("tower-height");
+    if (towerField && tower !== null) edits[towerField] = tower;
+    const halfU = numOrNull("recv-half-u");
+    const halfV = numOrNull("recv-half-v");
+    if (halfU !== null) edits.window_half_u_mm = halfU;
+    if (halfV !== null) edits.window_half_v_mm = halfV;
+    if (Object.keys(edits).length) payload.optics_params = edits;
+    return payload;
+  }
+
   async function runTrace() {
     clearError();
     const field = isFieldMode();
@@ -2055,39 +2104,7 @@
     try {
       const optics = document.getElementById("optics").value;
       const design = currentDesign();
-      const payload = {
-        design: design,
-        mode: mode,
-        optics: optics,
-        solar_az_deg: parseFloat(sunAz.value),
-        solar_el_deg: parseFloat(sunEl.value),
-      };
-      if (field) {
-        payload.layout = currentLayout();
-      } else {
-        payload.heliostat_x_mm = numOrNull("helio-x") ?? 0;
-        payload.heliostat_y_mm = numOrNull("helio-y") ?? -89609;
-      }
-      // optics_params carries two things: whatever the 3-D inspector has
-      // edited for this layout, plus the receiver window, which is a visible
-      // panel control and so is always sent. The window is deliberately last
-      // -- the panel boxes are what the user can see, so they win over a
-      // stale inspector value for the same field.
-      const edits = Object.assign({}, opticsEdits[optics]);
-      // "Tower height" is one label over two different numbers: for prime
-      // focus the receiver IS the aim point, for the axicon it is the cone's
-      // apex. The Cassegrain has neither -- its relay was solved for one
-      // fixed geometry -- so the box is disabled there rather than sending a
-      // field the server would reject.
-      const towerField =
-        optics === "prime_focus" ? "focus_height_mm" : optics === "axicon" ? "apex_height_mm" : null;
-      const tower = numOrNull("tower-height");
-      if (towerField && tower !== null) edits[towerField] = tower;
-      const halfU = numOrNull("recv-half-u");
-      const halfV = numOrNull("recv-half-v");
-      if (halfU !== null) edits.window_half_u_mm = halfU;
-      if (halfV !== null) edits.window_half_v_mm = halfV;
-      if (Object.keys(edits).length) payload.optics_params = edits;
+      const payload = tracePayload();
       const resp = await fetch(field ? "/api/field/trace" : "/api/trace", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2169,6 +2186,48 @@
   }
 
   traceBtn.addEventListener("click", runTrace);
+
+  // -- mirror sag view ------------------------------------------------------
+  //
+  // Fetched on demand rather than with every trace: the figure only changes
+  // when the design, the surface mode or the solve does, and a trace is the
+  // expensive part. The request body is a trace request because the figure
+  // depends on the solve -- a twisting mirror's astigmatism is a function of
+  // where the sun is and where the heliostat stands.
+
+  const sagFrame = document.getElementById("sag-frame");
+  let sagObjectUrl = null;
+
+  async function refreshSag() {
+    const payload = tracePayload();
+    // Field mode traces many heliostats; the sag view is one mirror's
+    // figure, so it uses the single-heliostat position controls.
+    delete payload.layout;
+    payload.heliostat_x_mm = numOrNull("helio-x") ?? 0;
+    payload.heliostat_y_mm = numOrNull("helio-y") ?? -89609;
+    try {
+      const resp = await fetch("/api/design/sag", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) {
+        sagFrame.innerHTML =
+          '<p class="placeholder">' + (await parseErrorDetail(resp)) + "</p>";
+        return;
+      }
+      const blob = await resp.blob();
+      if (sagObjectUrl) URL.revokeObjectURL(sagObjectUrl);
+      sagObjectUrl = URL.createObjectURL(blob);
+      sagFrame.innerHTML = "";
+      const img = document.createElement("img");
+      img.src = sagObjectUrl;
+      img.alt = "mirror sag map";
+      sagFrame.appendChild(img);
+    } catch (err) {
+      sagFrame.innerHTML = '<p class="placeholder">' + err.message + "</p>";
+    }
+  }
 
   // -- saved setups ---------------------------------------------------------
   //

@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from heliostat import __version__  # noqa: E402
 from heliostat.geometry.design import _petal_at_angle, flower, grid_facets  # noqa: E402
+from heliostat.geometry.heliostat import zernike_sag_and_slopes  # noqa: E402
 from heliostat.trace.mc import MIRROR_HALF_X_MM, MIRROR_HALF_Y_MM  # noqa: E402
 from heliostat.web.app import (  # noqa: E402
     AXICON_APERTURE_RADIUS_MM,
@@ -1279,3 +1280,53 @@ def test_unreadable_setup_file_is_skipped_not_fatal(client, setups_dir):
     (setups_dir / "broken.json").write_text("{not json", encoding="utf-8")
     listed = client.get("/api/setups").json()["setups"]
     assert [e["name"] for e in listed] == ["good"]
+
+
+# -- mirror sag -------------------------------------------------------------
+
+
+@pytest.mark.parametrize("surface", ["twisting", "spherical", "flat"])
+def test_sag_endpoint_renders_for_every_surface_mode(client, surface):
+    resp = client.post("/api/design/sag", json=_trace_payload({**RECT_DESIGN, "surface": surface}))
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/png"
+    assert resp.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_sag_matches_the_figure_the_trace_would_use(client):
+    """The sag view must describe the mirror actually traced, not a
+    plausible one. The legacy path negates c4/c5 for its inherited frame, so
+    a sag map built from the raw solve would be mirrored about both axes."""
+    payload = _trace_payload(RECT_DESIGN)
+    sol = _solve_for(
+        payload["optics"], 0.0, -89609.0, payload["solar_az_deg"], payload["solar_el_deg"]
+    )
+    # Sampled the way the renderer samples: the traced surface is
+    # (c3, -c4, -c5).
+    edge_u = zernike_sag_and_slopes(
+        np.array([MIRROR_HALF_X_MM]), np.array([0.0]), sol.c3, -sol.c4, -sol.c5
+    )[0][0]
+    edge_v = zernike_sag_and_slopes(
+        np.array([0.0]), np.array([MIRROR_HALF_Y_MM]), sol.c3, -sol.c4, -sol.c5
+    )[0][0]
+    centre = zernike_sag_and_slopes(np.array([0.0]), np.array([0.0]), sol.c3, -sol.c4, -sol.c5)[0][
+        0
+    ]
+
+    # A focusing mirror: vertex at zero, both edges pulled the same way, and
+    # the two axes differing -- that difference is what "twisting" names.
+    # "Zero" is relative to the figure's own depth: the ANSI defocus term
+    # carries a constant piston (Z4 is proportional to 2r^2 - 1, so it is
+    # nonzero at r = 0), which lands around a nanometre against tens of
+    # millimetres of sag. That is an offset, not a shape.
+    assert abs(centre) < 1e-4 * max(edge_u, edge_v)
+    assert edge_u > 0 and edge_v > 0
+    assert not math.isclose(edge_u, edge_v, rel_tol=0.05)
+
+    assert client.post("/api/design/sag", json=payload).status_code == 200
+
+
+def test_sag_rejects_a_sun_below_the_horizon(client):
+    """There is no solve, so there is no figure to draw."""
+    resp = client.post("/api/design/sag", json=_trace_payload(RECT_DESIGN, solar_el_deg=0.0))
+    assert resp.status_code == 422
