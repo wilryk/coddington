@@ -17,6 +17,13 @@ theme:
       scheme: slate
       toggle: { icon: material/weather-sunny, name: Light mode }
 
+markdown_extensions:
+  # Lets the docs site include the top-level REFERENCES.md verbatim,
+  # so the canonical file stays at the repo root where it is visible.
+  - pymdownx.snippets:
+      base_path: ["."]
+      check_paths: true
+
 plugins:
   - search
   - mkdocstrings:
@@ -31,3 +38,4 @@ nav:
   - Concepts: guide.md
   - Reproducing the paper: paper.md
   - API reference: api.md
+  - References: references.md

@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: >-
+  If this software contributes to published research, please cite both this
+  repository and the companion paper. See REFERENCES.md for the methods,
+  datasets and prior work this package builds on, each of which carries its
+  own citation.
+title: heliostat
+abstract: >-
+  Heliostat-field simulation for concentrating solar power towers: field
+  layouts, Monte Carlo and cone-optics ray tracing, flux maps, shading and
+  blocking, DNI handling, and annual energy, with an interactive local web
+  app.
+type: software
+authors:
+  - family-names: Eads
+    given-names: Ryker
+license: MIT
+repository-code: "https://github.com/wilryk/heliostat"
+version: 0.1.0.dev0
+keywords:
+  - heliostat
+  - concentrating solar power
+  - solar tower
+  - ray tracing
+  - optics

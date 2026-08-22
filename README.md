@@ -11,6 +11,11 @@ to design a mirror and watch it trace.
 > agreement against a commercial optical CAD package. Expect the API to move
 > until v0.1.0.
 
+**Where everything came from:** the sunshape model, the solar-position
+algorithm, the fast tracer's method lineage, the spiral field layout, and
+both DNI datasets are other people's work. [**REFERENCES.md**](REFERENCES.md)
+says which, and what this package changed about each.
+
 ## Design principles
 
 - **Trace once, weigh later.** Ray traces run at a normalized 1000 W/m².
