@@ -171,6 +171,55 @@ class AxiconSecondary(Secondary):
         return cone_hit, d, on_cone
 
 
+def solve_cassegrain_relay(
+    vertex_z_mm: float, focus_height_mm: float, receiver_z_mm: float
+) -> tuple[float, float]:
+    """Vertex radius and conic constant of the hyperboloid joining two foci.
+
+    A hyperboloid mirror images one focus onto the other, which is the whole
+    job of a Cassegrain relay: it takes the beam converging on the primary
+    focus ``focus_height_mm`` and re-images it at ``receiver_z_mm``. Placing
+    the vertex fixes the rest, because for a conic of vertex radius ``R`` and
+    conic constant ``k = -e**2`` the two foci sit at ``R / (1 + e)`` and
+    ``R / (1 - e)`` from the vertex along the axis. Inverting that pair:
+
+    ``e = (d2 - d1) / (d1 + d2)``, ``R = d1 (1 + e)``
+
+    with ``d1``/``d2`` the signed vertex-to-focus distances.
+
+    This is what makes the relay adjustable rather than a fixed triple of
+    magic constants: change any of the three heights and the surface that
+    serves them is solved, not looked up. Round-trips this package's own
+    fixture relay to better than 1e-6.
+
+    :returns: ``(vertex_radius_mm, conic)``.
+    :raises ValueError: if the three heights do not describe a hyperboloid --
+        the primary focus must sit above the vertex, and the receiver below
+        it by more than the focus sits above, or the surface that would
+        join them is not a hyperbola.
+    """
+    d1 = float(focus_height_mm) - float(vertex_z_mm)
+    d2 = float(receiver_z_mm) - float(vertex_z_mm)
+    if d1 <= 0.0:
+        raise ValueError(
+            "the primary focus must be above the secondary vertex "
+            f"(focus {focus_height_mm:g} mm, vertex {vertex_z_mm:g} mm)"
+        )
+    if d2 >= 0.0:
+        raise ValueError(
+            "the receiver must be below the secondary vertex "
+            f"(receiver {receiver_z_mm:g} mm, vertex {vertex_z_mm:g} mm)"
+        )
+    if abs(d2) <= d1:
+        raise ValueError(
+            "the receiver must be further below the vertex than the primary "
+            f"focus is above it (focus is {d1:g} mm above, receiver "
+            f"{abs(d2):g} mm below); otherwise the relay is not a hyperboloid"
+        )
+    eccentricity = (d2 - d1) / (d1 + d2)
+    return float(d1 * (1.0 + eccentricity)), float(-eccentricity * eccentricity)
+
+
 @dataclass(frozen=True)
 class CassegrainSecondary(Secondary):
     """Hyperboloid relay secondary, relaying the primary focus to the receiver.

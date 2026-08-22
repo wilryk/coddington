@@ -90,7 +90,12 @@ from heliostat.geometry.design import (
 )
 from heliostat.geometry.heliostat import zernike_sag_and_slopes
 from heliostat.geometry.receiver import FlatWindowReceiver
-from heliostat.geometry.secondary import AxiconSecondary, CassegrainSecondary, NoSecondary
+from heliostat.geometry.secondary import (
+    AxiconSecondary,
+    CassegrainSecondary,
+    NoSecondary,
+    solve_cassegrain_relay,
+)
 from heliostat.geometry.shading import (
     MirrorGeometry,
     min_beam_elevation_deg,
@@ -120,10 +125,13 @@ FLUX_GRID = 128
 # ---------------------------------------------------------------------------
 # field-trace limits and layout defaults
 #
-# 600 is the size of this package's own reference field
-# (``scripts/sweep_benchmark.py``) and, serially traced, roughly a minute of
-# ultra_fast wall time -- past that a browser request stops being a request.
-MAX_FIELD_HELIOSTATS = 600
+# 1000 rather than the 600 of this package's reference field
+# (``scripts/sweep_benchmark.py``): the companion paper's own field is 643
+# heliostats, and a tool that cannot express the field it reproduces is
+# the wrong tool. Large fields are slow in a browser request -- that is
+# what the day-sweep job endpoint is for -- but slow is the caller's
+# choice to make, not something to forbid.
+MAX_FIELD_HELIOSTATS = 1000
 
 # Fermat-spiral geometry for the ``{"type": "fermat", "n": ...}`` layout.
 #
@@ -234,54 +242,46 @@ class AxiconOptics(BaseModel):
         return self
 
 
-# Position/shape fields a caller might reasonably try to send for the
-# Cassegrain layout, each of which would silently invalidate the relay
-# solve. Named explicitly so the rejection can say *why* rather than
-# leaving pydantic's generic "extra inputs are not permitted".
-_CASSEGRAIN_FIXED_FIELDS = (
-    "apex_height_mm",
-    "aperture_radius_mm",
-    "conic",
-    "focus_height_mm",
-    "half_angle_deg",
-    "receiver_z_mm",
-    "vertex_radius_mm",
-    "vertex_z_mm",
-    "z_mm",
-)
-
-
 class CassegrainOptics(BaseModel):
-    """Hyperboloid relay: window size only, positions deliberately fixed.
+    """Hyperboloid relay: adjustable, with the relay solved to match.
 
-    The hyperboloid's vertex, vertex radius and conic constant were solved
-    for one specific ``(F1, receiver z)`` pair -- that is what makes the
-    relay stigmatic between the two. Move either point and the stored conic
-    constants no longer describe a hyperboloid with those foci, so the
-    trace would still run and would quietly be wrong. Re-solving the relay
-    is out of scope for this app, so position fields are rejected outright
-    rather than accepted and ignored.
+    The relay used to be fixed, because its vertex radius and conic constant
+    were solved once for one focus/receiver pair and moving either would
+    have left the stored constants describing a surface that no longer
+    joined them. Re-solving is not hard, though -- a hyperboloid images one
+    focus onto the other, and that pins the surface exactly (see
+    :func:`~heliostat.geometry.secondary.solve_cassegrain_relay`) -- so the
+    geometry is a set of heights the caller chooses, and the mirror that
+    serves them is computed.
+
+    ``vertex_z_mm`` is where the secondary sits, ``focus_height_mm`` the
+    primary focus it relays (which is also what the aiming solve points the
+    field at), and ``receiver_z_mm`` where the beam is delivered. The three
+    have to describe a real hyperboloid; they are checked together.
     """
 
     model_config = ConfigDict(extra="forbid")
 
+    vertex_z_mm: float = Field(default=CASSEGRAIN_VERTEX_Z_MM, gt=0)
+    focus_height_mm: float = Field(default=CASSEGRAIN_FOCUS_HEIGHT_MM, gt=0)
+    receiver_z_mm: float = Field(default=CASSEGRAIN_RECEIVER_Z_MM, gt=0)
+    aperture_radius_mm: float = Field(default=CASSEGRAIN_APERTURE_RADIUS_MM, gt=0)
     window_half_u_mm: float = Field(default=WINDOW_MM, gt=0)
     window_half_v_mm: float = Field(default=WINDOW_MM, gt=0)
 
-    @model_validator(mode="before")
-    @classmethod
-    def _reject_position_fields(cls, data):
-        if isinstance(data, dict):
-            offending = sorted(k for k in data if k in _CASSEGRAIN_FIXED_FIELDS)
-            if offending:
-                raise ValueError(
-                    "cassegrain geometry is fixed: the hyperboloid relay (vertex, "
-                    "vertex radius, conic) was solved for one specific focus/receiver "
-                    "pair, and moving " + ", ".join(offending) + " would need that "
-                    "relay re-solved -- which this app does not do. Only "
-                    "window_half_u_mm and window_half_v_mm are adjustable here."
-                )
-        return data
+    @model_validator(mode="after")
+    def _relay_must_be_solvable(self) -> "CassegrainOptics":
+        # Solve it here rather than at trace time so an impossible tower is
+        # a 422 naming the geometry, not a failure three layers down.
+        try:
+            solve_cassegrain_relay(self.vertex_z_mm, self.focus_height_mm, self.receiver_z_mm)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        return self
+
+    def relay(self) -> tuple[float, float]:
+        """``(vertex_radius_mm, conic)`` for this geometry."""
+        return solve_cassegrain_relay(self.vertex_z_mm, self.focus_height_mm, self.receiver_z_mm)
 
 
 OpticsParams = Union[PrimeFocusOptics, AxiconOptics, CassegrainOptics]
@@ -343,9 +343,11 @@ def _solve_for(
             params.receiver_z_mm,
         )
     if optics == "cassegrain":
-        # F1 is a property of the relay, not of the window, so it stays the
-        # module constant -- CassegrainOptics has no field that could move it.
-        return solve_cassegrain(x_mm, y_mm, solar_az_deg, solar_el_deg, CASSEGRAIN_FOCUS_HEIGHT_MM)
+        # The field aims at the primary focus F1, and the relay is solved to
+        # take that same F1 to the receiver -- so this must be the request's
+        # focus height, not the module default. Reading them from different
+        # places is precisely the drift this module exists to prevent.
+        return solve_cassegrain(x_mm, y_mm, solar_az_deg, solar_el_deg, params.focus_height_mm)
     raise ValueError(f"unknown optics {optics!r}")  # pragma: no cover - Literal restricts this
 
 
@@ -516,12 +518,14 @@ class FermatLayout(BaseModel):
 
     type: Literal["fermat"] = "fermat"
     n: int = Field(default=100, ge=1, le=MAX_FIELD_HELIOSTATS)
-    a_m: float = Field(default=FERMAT_A_M, gt=0)
+    #: Spiral scale, metres. ``None`` means "work it out": with a farthest
+    #: radius given, it is solved so the requested count fits the envelope
+    #: (see :meth:`resolved_a_m`). Without one it falls back to the default,
+    #: so a plain ``{"type": "fermat", "n": N}`` is unchanged.
+    a_m: float | None = Field(default=None, gt=0)
     b: float = Field(default=FERMAT_B, gt=0)
     # Ground-radius bounds: how close to the tower the nearest heliostat may
-    # stand, and how far the farthest may. Both optional -- the bare spiral
-    # is what `heliostat layout fermat` produces, and adding a ring filter
-    # changes which survivors fill the requested n.
+    # stand, and how far the farthest may.
     r_min_m: float | None = Field(default=None, ge=0)
     r_max_m: float | None = Field(default=None, gt=0)
 
@@ -532,16 +536,42 @@ class FermatLayout(BaseModel):
                 raise ValueError("r_max_m must be greater than r_min_m")
         return self
 
-    def _k_for_radius(self, radius_m: float) -> float:
-        """Spiral index at a given ground radius, from ``r = a * k**b``."""
-        return float((radius_m / self.a_m) ** (1.0 / self.b))
+    def _k_for_radius(self, radius_m: float, a_m: float) -> float:
+        """Spiral index at a ground radius, from ``r = a * k**b``."""
+        return float((radius_m / a_m) ** (1.0 / self.b))
+
+    def resolved_a_m(self) -> float:
+        """The spiral scale actually used.
+
+        A Fermat spiral's *density* is fixed by ``a``: the number of
+        positions between two radii is
+        ``(r_max**(1/b) - r_min**(1/b)) / a**(1/b)``, and no amount of
+        generating further out adds any. So asking for 600 heliostats
+        between 30 and 90 m at the default a = 4.5 m is not a matter of
+        searching harder -- only about 200 positions exist there. Rather
+        than refusing a perfectly reasonable field, solve ``a`` so the
+        requested count fits the requested envelope.
+
+        Only done when a farthest radius is given and ``a_m`` was not set
+        explicitly; an explicit ``a_m`` is always honoured, because it is a
+        physical spacing choice and this should not quietly overrule it.
+        """
+        if self.a_m is not None:
+            return self.a_m
+        if self.r_max_m is None:
+            return FERMAT_A_M
+        inv_b = 1.0 / self.b
+        r_min = 0.0 if self.r_min_m is None else self.r_min_m
+        span = self.r_max_m**inv_b - r_min**inv_b
+        if span <= 0:  # pragma: no cover - the validator orders the radii
+            raise ValueError("r_max_m must be greater than r_min_m")
+        return float((span / self.n) ** self.b)
 
     def positions_mm(self) -> np.ndarray:
+        a_m = self.resolved_a_m()
         filters = ()
         oversample = 1.6
         if self.r_min_m is not None or self.r_max_m is not None:
-            # ring_filter wants both bounds; open ends become 0 and "far
-            # enough that nothing is cut", so a caller can set just one.
             filters = (
                 ring_filter(
                     0.0 if self.r_min_m is None else self.r_min_m,
@@ -550,30 +580,46 @@ class FermatLayout(BaseModel):
             )
             # generate() draws n * oversample candidates in spiral order and
             # only then filters, so the default 1.6 keeps nothing at all when
-            # the ring sits outside the first n * 1.6 turns -- asking for 20
-            # heliostats between 40 and 90 m fails outright. Invert the
-            # spiral's own radius law to find how far out the ring reaches
-            # and draw enough candidates to get there.
+            # the ring sits outside the first few turns. Invert the radius
+            # law to find how far out the ring reaches.
             k_needed = float(self.n)
             if self.r_max_m is not None:
-                k_needed = max(k_needed, self._k_for_radius(self.r_max_m))
+                k_needed = max(k_needed, self._k_for_radius(self.r_max_m, a_m))
             if self.r_min_m is not None:
-                k_needed = max(k_needed, self._k_for_radius(self.r_min_m) + self.n)
-            oversample = max(oversample, 1.15 * k_needed / self.n)
+                k_needed = max(k_needed, self._k_for_radius(self.r_min_m, a_m) + self.n)
+            oversample = max(oversample, 1.25 * k_needed / self.n)
         try:
             field = generate(
                 "fermat",
                 self.n,
-                a_m=self.a_m,
+                a_m=a_m,
                 b=self.b,
                 filters=filters,
                 oversample=oversample,
             )
         except ValueError as exc:
-            # generate() names the shortfall; a ring that keeps too few
-            # candidates is a user-fixable request, not a server fault.
-            raise ValueError(f"that layout does not fit {self.n} heliostats: {exc}") from exc
+            raise ValueError(self._capacity_message(a_m, exc)) from exc
         return field.xy_mm
+
+    def _capacity_message(self, a_m: float, exc: Exception) -> str:
+        """Explain a shortfall in terms the caller can act on.
+
+        Reaching here means ``a_m`` was pinned by the caller, since a solved
+        one fits by construction -- so the useful thing to say is which
+        spacing *would* fit.
+        """
+        if self.r_max_m is None:
+            return f"that layout does not fit {self.n} heliostats: {exc}"
+        inv_b = 1.0 / self.b
+        r_min = 0.0 if self.r_min_m is None else self.r_min_m
+        capacity = int((self.r_max_m**inv_b - r_min**inv_b) / a_m**inv_b)
+        fits = float(((self.r_max_m**inv_b - r_min**inv_b) / self.n) ** self.b)
+        return (
+            f"a Fermat spiral with a = {a_m:g} m holds only about {capacity} "
+            f"heliostats between {r_min:g} and {self.r_max_m:g} m, not "
+            f"{self.n}. Use a = {fits:.3g} m to fit {self.n} in that ring, "
+            f"or leave a_m unset and it will be solved for you."
+        )
 
 
 class PositionsLayout(BaseModel):
@@ -822,14 +868,18 @@ def _geometry_for(optics: str, params: OpticsParams | None = None):
             facing="up",
         )
     elif optics == "cassegrain":
+        # The relay surface is solved from the three heights, so a moved
+        # focus or receiver gets the hyperboloid that actually serves it
+        # rather than the one that served the fixture.
+        vertex_radius_mm, conic = params.relay()
         secondary = CassegrainSecondary(
-            vertex_z_mm=CASSEGRAIN_VERTEX_Z_MM,
-            vertex_radius_mm=CASSEGRAIN_VERTEX_RADIUS_MM,
-            conic=CASSEGRAIN_CONIC,
-            aperture_radius_mm=CASSEGRAIN_APERTURE_RADIUS_MM,
+            vertex_z_mm=params.vertex_z_mm,
+            vertex_radius_mm=vertex_radius_mm,
+            conic=conic,
+            aperture_radius_mm=params.aperture_radius_mm,
         )
         receiver = FlatWindowReceiver(
-            z_mm=CASSEGRAIN_RECEIVER_Z_MM,
+            z_mm=params.receiver_z_mm,
             half_u_mm=params.window_half_u_mm,
             half_v_mm=params.window_half_v_mm,
             facing="up",
@@ -978,6 +1028,50 @@ def _clean(x) -> float | None:
     return None if x is None or not np.isfinite(x) else float(x)
 
 
+def _zero_power_note(counters: dict, power_w: float | None) -> str | None:
+    """Why nothing arrived, when nothing arrived.
+
+    A geometry that delivers no light is a legitimate answer -- an aperture
+    too small for the field, a secondary the beam cannot clear -- but an
+    empty flux map does not say which. The tracer's own counters do, so turn
+    them into a sentence rather than leaving the caller to guess at a blank
+    picture.
+    """
+    if power_w is None or power_w > 0.0:
+        return None
+    blocked = int(counters.get("blocked", 0))
+    masked = int(counters.get("masked", 0))
+    hit_mirror = counters.get("hit_mirror")
+    reached = counters.get("reached_receiver")
+    in_window = counters.get("in_window")
+
+    if blocked and not masked:
+        return (
+            "No light reached the receiver: every sample was blocked before it "
+            "got there. For a tower reflector that usually means the secondary "
+            "cannot serve this field -- try a larger aperture radius, or move "
+            "the secondary so the beam clears it."
+        )
+    if masked and not blocked:
+        return (
+            "No light reached the receiver: every sample fell outside the "
+            "receiver window. Try a larger window, or check that the receiver "
+            "is where the beam is aimed."
+        )
+    if reached is not None and in_window is not None and reached > 0 and in_window == 0:
+        return (
+            f"No light landed inside the window: {reached} rays reached the "
+            "receiver plane but all fell outside it. A larger window, or a "
+            "receiver nearer the aim point, would catch them."
+        )
+    if hit_mirror is not None and hit_mirror == 0:
+        return (
+            "No light reached the receiver: no ray even struck the mirror. "
+            "Check the heliostat position and the sun direction."
+        )
+    return "No light reached the receiver with this geometry."
+
+
 def _render_sag_png(design, sol, params, half_x_mm: float, half_y_mm: float) -> bytes:
     """Sag map of the mirror a trace would use, in millimetres.
 
@@ -1030,7 +1124,7 @@ def _render_sag_png(design, sol, params, half_x_mm: float, half_y_mm: float) -> 
         im = ax.imshow(
             sag,
             origin="lower",
-            cmap="viridis",
+            cmap="jet",
             extent=(-half_x_mm, half_x_mm, -half_y_mm, half_y_mm),
             aspect="equal",
         )
@@ -1470,6 +1564,7 @@ def create_app():
             {
                 "power_w": _clean(power_w),
                 "incident_power_w": _clean(incident_power_w),
+                "note": _zero_power_note(counters, _clean(power_w)),
                 "peak_flux_kw_m2": _clean(float(np.max(flux)) / 1000.0),
                 "rms_radius_mm": _clean(rms_mm),
                 "centroid_mm": [_clean(centroid[0]), _clean(centroid[1])],
@@ -1659,6 +1754,7 @@ def create_app():
             {
                 "power_w": _clean(power_w),
                 "incident_power_w": _clean(incident_power_w),
+                "note": _zero_power_note(counters, _clean(power_w)),
                 "peak_flux_kw_m2": _clean(float(np.max(flux)) / 1000.0),
                 "rms_radius_mm": _clean(rms_mm),
                 "centroid_mm": [_clean(centroid[0]), _clean(centroid[1])],

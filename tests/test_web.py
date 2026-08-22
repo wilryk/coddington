@@ -21,12 +21,19 @@ from fastapi.testclient import TestClient  # noqa: E402
 from heliostat import __version__  # noqa: E402
 from heliostat.geometry.design import _petal_at_angle, flower, grid_facets  # noqa: E402
 from heliostat.geometry.heliostat import zernike_sag_and_slopes  # noqa: E402
+from heliostat.geometry.secondary import solve_cassegrain_relay  # noqa: E402
 from heliostat.trace.mc import MIRROR_HALF_X_MM, MIRROR_HALF_Y_MM  # noqa: E402
 from heliostat.web.app import (  # noqa: E402
     AXICON_APERTURE_RADIUS_MM,
     AXICON_APEX_HEIGHT_MM,
     AXICON_HALF_ANGLE_DEG,
     AXICON_RECEIVER_Z_MM,
+    CASSEGRAIN_APERTURE_RADIUS_MM,
+    CASSEGRAIN_CONIC,
+    CASSEGRAIN_FOCUS_HEIGHT_MM,
+    CASSEGRAIN_RECEIVER_Z_MM,
+    CASSEGRAIN_VERTEX_RADIUS_MM,
+    CASSEGRAIN_VERTEX_Z_MM,
     FERMAT_A_M,
     FERMAT_B,
     MAX_FIELD_HELIOSTATS,
@@ -430,7 +437,14 @@ def test_default_rect_matches_the_pinned_legacy_path(client):
         (
             GRID_DESIGN,
             "cassegrain",
-            {"window_half_u_mm": WINDOW_MM, "window_half_v_mm": WINDOW_MM},
+            {
+                "vertex_z_mm": CASSEGRAIN_VERTEX_Z_MM,
+                "focus_height_mm": CASSEGRAIN_FOCUS_HEIGHT_MM,
+                "receiver_z_mm": CASSEGRAIN_RECEIVER_Z_MM,
+                "aperture_radius_mm": CASSEGRAIN_APERTURE_RADIUS_MM,
+                "window_half_u_mm": WINDOW_MM,
+                "window_half_v_mm": WINDOW_MM,
+            },
         ),
     ],
 )
@@ -463,9 +477,20 @@ def test_optics_resolved_echoes_the_defaults(client, optics):
         assert resolved["aperture_radius_mm"] == AXICON_APERTURE_RADIUS_MM
         assert resolved["receiver_z_mm"] == AXICON_RECEIVER_Z_MM
     else:
-        # The relay's own numbers are deliberately not adjustable, so they
-        # are not echoed as if they were.
-        assert set(resolved) == {"window_half_u_mm", "window_half_v_mm"}
+        # The three heights that define the relay, plus its aperture. The
+        # vertex radius and conic are absent because they are solved from
+        # those heights rather than set -- see solve_cassegrain_relay.
+        assert set(resolved) == {
+            "vertex_z_mm",
+            "focus_height_mm",
+            "receiver_z_mm",
+            "aperture_radius_mm",
+            "window_half_u_mm",
+            "window_half_v_mm",
+        }
+        assert resolved["vertex_z_mm"] == CASSEGRAIN_VERTEX_Z_MM
+        assert resolved["focus_height_mm"] == CASSEGRAIN_FOCUS_HEIGHT_MM
+        assert resolved["receiver_z_mm"] == CASSEGRAIN_RECEIVER_Z_MM
 
 
 def test_flat_rect_washes_and_leaves_the_legacy_path(client):
@@ -678,19 +703,67 @@ def test_axicon_optics_params_sanity_is_422(client, params):
 
 
 @pytest.mark.parametrize(
-    "field",
-    ["focus_height_mm", "receiver_z_mm", "apex_height_mm", "vertex_z_mm", "conic", "z_mm"],
+    "params",
+    [
+        {"vertex_z_mm": 25000.0},
+        {"focus_height_mm": 33000.0},
+        {"receiver_z_mm": 5000.0},
+        {"aperture_radius_mm": 16000.0},
+    ],
 )
-def test_cassegrain_position_fields_are_422(client, field):
-    """Moving the Cassegrain receiver or relay would need the hyperboloid
-    re-solved, so the app refuses rather than tracing wrong optics."""
+def test_cassegrain_geometry_is_adjustable(client, params):
+    """The relay is solved for whatever geometry is asked for.
+
+    It used to be refused: the stored vertex radius and conic were solved
+    for one focus/receiver pair, so moving either left constants describing
+    a surface that no longer joined them. Solving the hyperboloid from the
+    three heights removes that limit — see
+    :func:`heliostat.geometry.secondary.solve_cassegrain_relay`.
+    """
+    payload = _trace_payload(RECT_DESIGN, optics="cassegrain")
+    payload["optics_params"] = params
+    resp = client.post("/api/trace", json=payload)
+    assert resp.status_code == 200
+    resolved = resp.json()["optics_resolved"]
+    for key, value in params.items():
+        assert resolved[key] == pytest.approx(value)
+
+
+@pytest.mark.parametrize("field", ["conic", "vertex_radius_mm", "apex_height_mm", "z_mm"])
+def test_cassegrain_rejects_fields_it_does_not_have(client, field):
+    """The relay surface is a *result* of the three heights, so its conic and
+    vertex radius are not inputs; nor are the axicon's fields."""
     payload = _trace_payload(RECT_DESIGN, optics="cassegrain")
     payload["optics_params"] = {field: 12345.0}
+    assert client.post("/api/trace", json=payload).status_code == 422
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"focus_height_mm": 20000.0},  # focus below the vertex
+        {"receiver_z_mm": 30000.0},  # receiver above the vertex
+        {"vertex_z_mm": 26994.0, "focus_height_mm": 34892.0, "receiver_z_mm": 20000.0},
+    ],
+)
+def test_cassegrain_unphysical_geometry_is_422(client, params):
+    """Three heights that describe no hyperboloid are refused, with the
+    reason, rather than traced against a surface that cannot exist."""
+    payload = _trace_payload(RECT_DESIGN, optics="cassegrain")
+    payload["optics_params"] = params
     resp = client.post("/api/trace", json=payload)
     assert resp.status_code == 422
-    detail = str(resp.json()["detail"])
-    assert field in detail
-    assert "relay" in detail
+    assert "vertex" in str(resp.json()["detail"]).lower()
+
+
+def test_cassegrain_relay_solver_round_trips_the_fixture_relay():
+    """The solver must reproduce the constants this package's fixtures were
+    traced with, or every Cassegrain result would shift."""
+    vertex_radius_mm, conic = solve_cassegrain_relay(
+        CASSEGRAIN_VERTEX_Z_MM, CASSEGRAIN_FOCUS_HEIGHT_MM, CASSEGRAIN_RECEIVER_Z_MM
+    )
+    assert vertex_radius_mm == pytest.approx(CASSEGRAIN_VERTEX_RADIUS_MM, rel=1e-9)
+    assert conic == pytest.approx(CASSEGRAIN_CONIC, rel=1e-9)
 
 
 def test_cassegrain_window_size_is_allowed(client):
