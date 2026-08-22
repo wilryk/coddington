@@ -92,6 +92,7 @@ from heliostat.geometry.receiver import FlatWindowReceiver
 from heliostat.geometry.secondary import AxiconSecondary, CassegrainSecondary, NoSecondary
 from heliostat.geometry.shading import (
     MirrorGeometry,
+    min_beam_elevation_deg,
     mirror_basis,
     normal_from_angles,
     polygon_occlusion,
@@ -994,7 +995,10 @@ def _field_occlusion(
     :func:`~heliostat.geometry.shading.build_geometries` would have produced).
     Occluders are limited to a neighbour list sized by
     :func:`~heliostat.geometry.shading.search_radius_for` at this sun
-    elevation, and the secondary is not modelled as a shading body --
+    elevation *and* this field's flattest reflected beam -- the beam term
+    matters, since blocking reach does not shrink as the sun climbs and
+    omitting it loses real blockers at high sun. The secondary is not
+    modelled as a shading body --
     ``polygon_occlusion(secondary=None)``, matching the sweep's own
     ``"traced_secondary": false``.
 
@@ -1028,9 +1032,19 @@ def _field_occlusion(
         mirror_width_mm=2.0 * half_w,
         mirror_height_mm=2.0 * half_h,
     )
-    neighbours = neighbour_pairs(field, search_radius_for(solar_el_deg, 2.0 * half_h, 2.0 * half_w))
+    aims = aim_points_mm(solutions)
+    centres = np.array([g.centre for g in geometries])
+    neighbours = neighbour_pairs(
+        field,
+        search_radius_for(
+            solar_el_deg,
+            2.0 * half_h,
+            2.0 * half_w,
+            beam_elevation_deg=min_beam_elevation_deg(centres, aims),
+        ),
+    )
     eta_shade, eta_block, _eta_secondary, eta_union = polygon_occlusion(
-        geometries, aim_points_mm(solutions), solar_az_deg, solar_el_deg, neighbours
+        geometries, aims, solar_az_deg, solar_el_deg, neighbours
     )
     return eta_shade, eta_block, eta_union, outline
 

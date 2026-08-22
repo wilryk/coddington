@@ -8,7 +8,8 @@ Per timestep, this module:
    vectorised, and 600 of them per timestep is not the cost centre);
 2. builds mirror geometry + aim points and runs
    :func:`~heliostat.geometry.shading.polygon_occlusion` against a
-   precomputed neighbour list to get per-heliostat ``eta_shade``/
+   neighbour list sized for that step's own sun (and beam) elevation,
+   to get per-heliostat ``eta_shade``/
    ``eta_block``/``eta_secondary``/``eta_union`` scalars;
 3. dispatches one ray/cone trace per heliostat across a
    :class:`multiprocessing.Pool` (or serially when ``workers=1``);
@@ -89,7 +90,13 @@ from .geometry.aiming import Solution, solve_axicon, solve_cassegrain, solve_pri
 from .geometry.aiming import aim_points_mm as _aim_points_mm
 from .geometry.receiver import FlatWindowReceiver, Receiver
 from .geometry.secondary import AxiconSecondary, CassegrainSecondary, NoSecondary, Secondary
-from .geometry.shading import MirrorGeometry, build_geometries, polygon_occlusion, search_radius_for
+from .geometry.shading import (
+    MirrorGeometry,
+    build_geometries,
+    min_beam_elevation_deg,
+    polygon_occlusion,
+    search_radius_for,
+)
 from .metrics import spot_metrics
 from .solar import build_time_grid
 from .store import RunStore, TimestepResult, flux_scale
@@ -462,9 +469,7 @@ def _cone_row(
 # ---------------------------------------------------------------------------
 
 
-def _trace_one_timestep(
-    store, field, ids, step, opt, cfg, neighbours, design, trace_mode, n_rays, pool
-):
+def _trace_one_timestep(store, field, ids, step, opt, cfg, design, trace_mode, n_rays, pool):
     n = len(field)
     solutions = [
         opt.aim(float(field.x_mm[i]), float(field.y_mm[i]), step.solar_az_deg, step.solar_el_deg)
@@ -490,6 +495,25 @@ def _trace_one_timestep(
             )
             for i in range(n)
         ]
+
+    # Neighbour list sized for THIS step, not once per run from the day's
+    # lowest sun. The shading reach shrinks as the sun climbs and most of a
+    # day is high sun, so a run-wide radius makes every noon step pay the
+    # horizon's price: on a 643-heliostat field that is 189 candidate
+    # occluders each where 12 suffice, and 24 s of occlusion where 2 s does.
+    # The radius must still cover the blocking reach, which does *not*
+    # shrink with the sun -- see search_radius_for, which measures what
+    # omitting it costs.
+    centres = np.array([g.centre for g in geometries])
+    neighbours = neighbour_pairs(
+        field,
+        search_radius_for(
+            step.solar_el_deg,
+            float(field.mirror_height_mm),
+            float(field.mirror_width_mm),
+            beam_elevation_deg=min_beam_elevation_deg(centres, aims),
+        ),
+    )
 
     eta_shade, eta_block, eta_secondary, eta_union = polygon_occlusion(
         geometries, aims, step.solar_az_deg, step.solar_el_deg, neighbours
@@ -652,10 +676,6 @@ def run_sweep(
         },
     )
 
-    min_el = min(s.solar_el_deg for s in steps)
-    search_r = search_radius_for(min_el, mirror_h, mirror_w)
-    neighbours = neighbour_pairs(field, search_r)
-
     kernel = sunshape_kernel("super_gauss") if trace_mode.backend == "cone" else None
     cone_flux_grid = (GRID_SIZE, GRID_SIZE)
 
@@ -693,7 +713,7 @@ def run_sweep(
     try:
         for si, step in enumerate(steps):
             _trace_one_timestep(
-                store, field, ids, step, opt, cfg, neighbours, design, trace_mode, n_rays_eff, pool
+                store, field, ids, step, opt, cfg, design, trace_mode, n_rays_eff, pool
             )
             elapsed = time.perf_counter() - t_start
             avg = elapsed / (si + 1)

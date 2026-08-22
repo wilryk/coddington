@@ -70,6 +70,7 @@ from heliostat.geometry.shading import (  # noqa: E402
     SecondaryCone,
     SecondaryDisc,
     build_geometries,
+    min_beam_elevation_deg,
     polygon_occlusion,
     search_radius_for,
 )
@@ -581,10 +582,6 @@ def run_config(
         },
     )
 
-    min_el = min(s.solar_el_deg for s in steps)
-    neighbours = neighbour_pairs(
-        field, search_radius_for(min_el, MIRROR_HEIGHT_MM, MIRROR_WIDTH_MM)
-    )
     aperture = radial_mask(cfg, APERTURE_RADIUS_MM)
     edges = cfg.receiver.edges
     bin_area = cfg.receiver.bin_area_m2
@@ -608,6 +605,20 @@ def run_config(
             aim_points_mm(solutions),
             mirror_width_mm=MIRROR_WIDTH_MM,
             mirror_height_mm=MIRROR_HEIGHT_MM,
+        )
+        # Sized for this step rather than once per run from the day's
+        # lowest sun: see heliostat.geometry.shading.search_radius_for,
+        # including why the beam term is not optional.
+        neighbours = neighbour_pairs(
+            field,
+            search_radius_for(
+                step.solar_el_deg,
+                MIRROR_HEIGHT_MM,
+                MIRROR_WIDTH_MM,
+                beam_elevation_deg=min_beam_elevation_deg(
+                    np.array([g.centre for g in geometries]), aims
+                ),
+            ),
         )
         eta_shade, eta_block, eta_secondary, eta_union = polygon_occlusion(
             geometries,

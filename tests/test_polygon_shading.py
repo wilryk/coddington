@@ -30,6 +30,7 @@ import pandas as pd
 import pytest
 
 from heliostat.field import HeliostatField, neighbour_pairs
+from heliostat.geometry.aiming import solve_prime_focus
 from heliostat.geometry.shading import (
     MirrorGeometry,
     SecondaryCone,
@@ -39,8 +40,10 @@ from heliostat.geometry.shading import (
     _sutherland_hodgman,
     block_quad_uv,
     build_geometries,
+    min_beam_elevation_deg,
     occlusion_efficiency,
     polygon_occlusion,
+    search_radius_for,
     shading_blocking,
     shadow_quad_uv,
 )
@@ -336,4 +339,102 @@ def test_block_quad_uv_central_projection_beats_parallel_approximation():
         "central and parallel projections should disagree meaningfully in this "
         "geometry -- if they don't, the test case no longer exercises the "
         "difference it's meant to"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Neighbour-search radius: it must cover blocking as well as shading.
+
+
+def _tower_field(radius_m: float = 94.0, pitch_m: float = 7.0, n_side: int = 5):
+    """A small patch of heliostats far enough out that their beams are flat.
+
+    The defaults are chosen so the patch genuinely blocks: at 94 m from a
+    35 m tower the flattest beam leaves at ~18 deg, giving a blocking reach
+    of ~9 m against a 7 m pitch. A sparser field would block nowhere and the
+    radius tests below would pass vacuously.
+    """
+    offsets = (np.arange(n_side) - (n_side - 1) / 2) * pitch_m * 1000.0
+    xs, ys = np.meshgrid(offsets, offsets + radius_m * 1000.0)
+    return HeliostatField(
+        x_mm=xs.ravel(),
+        y_mm=ys.ravel(),
+        ids=np.arange(xs.size),
+        mirror_width_mm=5000.0,
+        mirror_height_mm=3000.0,
+    )
+
+
+def _etas_with_radius(field, solar_el_deg, radius_mm, tower_z_mm=35335.0):
+    solutions = [
+        solve_prime_focus(float(x), float(y), 180.0, solar_el_deg, tower_z_mm)
+        for x, y in field.xy_mm
+    ]
+    geometries, aims = build_geometries(
+        field,
+        np.array([s.rot_az_deg for s in solutions]),
+        np.array([s.rot_el_deg for s in solutions]),
+        np.array(
+            [[s.extras["aim_x_mm"], s.extras["aim_y_mm"], s.extras["aim_z_mm"]] for s in solutions]
+        ),
+        mirror_width_mm=field.mirror_width_mm,
+        mirror_height_mm=field.mirror_height_mm,
+    )
+    neighbours = neighbour_pairs(field, radius_mm)
+    return polygon_occlusion(geometries, aims, 180.0, solar_el_deg, neighbours), geometries, aims
+
+
+@pytest.mark.parametrize("solar_el_deg", [75.0, 60.0, 40.0, 20.0, 8.0])
+def test_per_step_radius_reproduces_a_whole_field_neighbour_list(solar_el_deg):
+    """Sizing the neighbour query per timestep must not move any eta.
+
+    The point of :func:`search_radius_for` is to be *tight but complete*: a
+    smaller candidate set, identical answers. Compared against a radius large
+    enough to make every heliostat everyone's neighbour.
+    """
+    field = _tower_field()
+    reference, geometries, aims = _etas_with_radius(field, solar_el_deg, 1.0e6)
+    # Guard against a vacuous pass: if nothing occludes at all, any radius
+    # 'reproduces' the reference and this test proves nothing.
+    assert np.any(reference[3] < 1.0), "test field does not occlude at this elevation"
+    tight = search_radius_for(
+        solar_el_deg,
+        field.mirror_height_mm,
+        field.mirror_width_mm,
+        beam_elevation_deg=min_beam_elevation_deg(np.array([g.centre for g in geometries]), aims),
+    )
+    got, _, _ = _etas_with_radius(field, solar_el_deg, tight)
+    for name, ref, val in zip(("shade", "block", "secondary", "union"), reference, got):
+        assert np.array_equal(ref, val), f"eta_{name} changed with the tighter radius"
+
+
+def test_radius_without_the_beam_term_loses_blockers_at_high_sun():
+    """Regression pin for a real defect, not a style preference.
+
+    Shading reach shrinks as the sun climbs; blocking reach does not, because
+    it is set by the reflected beam's angle. A radius sized from the sun alone
+    therefore goes *smaller than the field's own spacing* at high sun and
+    silently drops real blockers. This test fails if someone drops the beam
+    term back out of :func:`search_radius_for` as a simplification.
+    """
+    field = _tower_field()
+    solar_el_deg = 75.0
+    reference, geometries, aims = _etas_with_radius(field, solar_el_deg, 1.0e6)
+    centres = np.array([g.centre for g in geometries])
+
+    sun_only = search_radius_for(solar_el_deg, field.mirror_height_mm, field.mirror_width_mm)
+    with_beam = search_radius_for(
+        solar_el_deg,
+        field.mirror_height_mm,
+        field.mirror_width_mm,
+        beam_elevation_deg=min_beam_elevation_deg(centres, aims),
+    )
+    assert sun_only < with_beam, "the beam term must widen the radius at high sun"
+
+    bad, _, _ = _etas_with_radius(field, solar_el_deg, sun_only)
+    good, _, _ = _etas_with_radius(field, solar_el_deg, with_beam)
+    assert np.array_equal(reference[1], good[1]), "beam-aware radius should be complete"
+    assert not np.array_equal(reference[1], bad[1]), (
+        "expected the sun-only radius to lose blocking; if this now passes, the "
+        "test field no longer exercises the case and needs rebuilding"
     )

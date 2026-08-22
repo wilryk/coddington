@@ -850,19 +850,60 @@ def corner_shadow(geom: MirrorGeometry, direction: np.ndarray, ground_z: float =
     return corners - ((corners[:, 2] - ground_z) / d[2])[:, None] * d
 
 
+def min_beam_elevation_deg(centres_mm: np.ndarray, aim_points_mm: np.ndarray) -> float:
+    """Lowest elevation angle of any heliostat's reflected beam, degrees.
+
+    The beam leaves each mirror toward its aim point, so its elevation is
+    set by the field's geometry — tower height against ground radius — and
+    not by where the sun is. The flattest beam in the field is the one that
+    a neighbour can block from furthest away, which is what
+    :func:`search_radius_for` needs.
+    """
+    centres = np.atleast_2d(np.asarray(centres_mm, dtype=float))
+    aims = np.atleast_2d(np.asarray(aim_points_mm, dtype=float))
+    delta = aims[:, :3] - centres[:, :3]
+    horizontal = np.hypot(delta[:, 0], delta[:, 1])
+    elevations = np.rad2deg(np.arctan2(np.abs(delta[:, 2]), np.maximum(horizontal, 1e-9)))
+    return float(np.min(elevations)) if elevations.size else 90.0
+
+
 def search_radius_for(
-    min_elevation_deg: float,
+    solar_elevation_deg: float,
     mirror_height_mm: float,
     mirror_width_mm: float,
     cap_mm: float = 60000.0,
+    *,
+    beam_elevation_deg: float | None = None,
 ) -> float:
-    """How far a shadow can reach at the lowest traced sun elevation.
+    """How far an occluder can sit and still matter, at one instant.
 
-    Used to size the neighbour query so no plausible occluder is missed
-    while keeping the per-heliostat neighbour list small.
+    Sizes the neighbour query so no plausible occluder is missed while
+    keeping each per-heliostat list small. There are *two* reaches, and the
+    radius has to cover both:
+
+    * **shading** — a neighbour's shadow falls
+      ``mirror_height / tan(solar_elevation)`` downsun, so a low sun
+      lengthens it;
+    * **blocking** — a neighbour intercepts the *reflected* beam, reaching
+      ``mirror_height / tan(beam_elevation)``. That does not shrink as the
+      sun climbs.
+
+    Sizing from the sun alone therefore drops real blockers at high sun: on
+    the companion paper's field, a 60 deg sun gives a 6.7 m radius, less
+    than the field's own spacing, and ``eta_block`` moves by 0.11 —
+    measured, not hypothetical. Pass ``beam_elevation_deg`` (from
+    :func:`min_beam_elevation_deg`) so the blocking reach is covered.
+
+    Omitting it keeps the shading-only radius. That is safe only when the
+    caller knows the sun is low enough to dominate — which is true of a
+    whole-day run sized once from its lowest step, the original use, and
+    false for any single high-sun instant.
     """
-    el = max(float(min_elevation_deg), 1.0)
+    el = max(float(solar_elevation_deg), 1.0)
     reach = mirror_height_mm / np.tan(np.deg2rad(el))
+    if beam_elevation_deg is not None:
+        beam_el = min(max(float(beam_elevation_deg), 1.0), 90.0)
+        reach = max(reach, mirror_height_mm / np.tan(np.deg2rad(beam_el)))
     return float(min(cap_mm, reach + mirror_width_mm))
 
 
