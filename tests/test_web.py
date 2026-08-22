@@ -1179,3 +1179,40 @@ def test_every_heliostat_contributes_rays_whatever_its_shape(client, design_key)
         "/api/field/trace", json=_field_payload(design, layout={"type": "fermat", "n": 5})
     ).json()
     assert len(data["scene"]["rays"]) == 4 * 5
+
+
+def test_field_layout_radius_bounds_are_honoured(client):
+    """Nearest/farthest heliostat are the field-design controls the GUI
+    exposes; a ring far from the tower must actually be reachable."""
+    data = client.post(
+        "/api/field/trace",
+        json=_field_payload(layout={"type": "fermat", "n": 20, "r_min_m": 40, "r_max_m": 90}),
+    ).json()
+    radii = [
+        math.hypot(h["x_mm"], h["y_mm"]) / 1000.0 for h in data["scene"]["field"]["heliostats"]
+    ]
+    assert len(radii) == 20
+    assert min(radii) >= 40.0
+    assert max(radii) <= 90.0
+
+
+def test_far_ring_needs_more_candidates_than_the_default_oversample(client):
+    """Regression pin. ``generate`` draws n * oversample candidates in spiral
+    order and only then filters, so a ring beyond the first few turns kept
+    nothing at all: 20 heliostats between 40 and 90 m returned "only 0 of 20
+    survived". The layout now sizes its own oversample by inverting the
+    spiral's radius law, so this must keep working."""
+    resp = client.post(
+        "/api/field/trace",
+        json=_field_payload(layout={"type": "fermat", "n": 20, "r_min_m": 40, "r_max_m": 90}),
+    )
+    assert resp.status_code == 200
+
+
+def test_reversed_radius_bounds_are_rejected(client):
+    resp = client.post(
+        "/api/field/trace",
+        json=_field_payload(layout={"type": "fermat", "n": 10, "r_min_m": 90, "r_max_m": 40}),
+    )
+    assert resp.status_code == 422
+    assert "r_max_m" in json.dumps(resp.json())

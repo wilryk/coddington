@@ -70,7 +70,7 @@ except ImportError as exc:  # pragma: no cover - exercised only without the extr
 
 from heliostat import __version__
 from heliostat.field import HeliostatField, neighbour_pairs
-from heliostat.field_layouts import generate
+from heliostat.field_layouts import generate, ring_filter
 from heliostat.geometry.aiming import (
     Solution,
     aim_points_mm,
@@ -495,9 +495,62 @@ class FermatLayout(BaseModel):
     n: int = Field(default=100, ge=1, le=MAX_FIELD_HELIOSTATS)
     a_m: float = Field(default=FERMAT_A_M, gt=0)
     b: float = Field(default=FERMAT_B, gt=0)
+    # Ground-radius bounds: how close to the tower the nearest heliostat may
+    # stand, and how far the farthest may. Both optional -- the bare spiral
+    # is what `heliostat layout fermat` produces, and adding a ring filter
+    # changes which survivors fill the requested n.
+    r_min_m: float | None = Field(default=None, ge=0)
+    r_max_m: float | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def _radii_ordered(self) -> "FermatLayout":
+        if self.r_min_m is not None and self.r_max_m is not None:
+            if self.r_max_m <= self.r_min_m:
+                raise ValueError("r_max_m must be greater than r_min_m")
+        return self
+
+    def _k_for_radius(self, radius_m: float) -> float:
+        """Spiral index at a given ground radius, from ``r = a * k**b``."""
+        return float((radius_m / self.a_m) ** (1.0 / self.b))
 
     def positions_mm(self) -> np.ndarray:
-        return generate("fermat", self.n, a_m=self.a_m, b=self.b).xy_mm
+        filters = ()
+        oversample = 1.6
+        if self.r_min_m is not None or self.r_max_m is not None:
+            # ring_filter wants both bounds; open ends become 0 and "far
+            # enough that nothing is cut", so a caller can set just one.
+            filters = (
+                ring_filter(
+                    0.0 if self.r_min_m is None else self.r_min_m,
+                    1.0e9 if self.r_max_m is None else self.r_max_m,
+                ),
+            )
+            # generate() draws n * oversample candidates in spiral order and
+            # only then filters, so the default 1.6 keeps nothing at all when
+            # the ring sits outside the first n * 1.6 turns -- asking for 20
+            # heliostats between 40 and 90 m fails outright. Invert the
+            # spiral's own radius law to find how far out the ring reaches
+            # and draw enough candidates to get there.
+            k_needed = float(self.n)
+            if self.r_max_m is not None:
+                k_needed = max(k_needed, self._k_for_radius(self.r_max_m))
+            if self.r_min_m is not None:
+                k_needed = max(k_needed, self._k_for_radius(self.r_min_m) + self.n)
+            oversample = max(oversample, 1.15 * k_needed / self.n)
+        try:
+            field = generate(
+                "fermat",
+                self.n,
+                a_m=self.a_m,
+                b=self.b,
+                filters=filters,
+                oversample=oversample,
+            )
+        except ValueError as exc:
+            # generate() names the shortfall; a ring that keeps too few
+            # candidates is a user-fixable request, not a server fault.
+            raise ValueError(f"that layout does not fit {self.n} heliostats: {exc}") from exc
+        return field.xy_mm
 
 
 class PositionsLayout(BaseModel):

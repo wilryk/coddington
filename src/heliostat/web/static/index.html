@@ -539,6 +539,10 @@
       </select>
     </div>
     <div class="field-row">
+      <label for="tower-height">Tower height (mm)</label>
+      <input type="number" id="tower-height" value="35335" min="1" step="500" />
+    </div>
+    <div class="field-row">
       <label for="recv-half-u">Receiver half-width (mm)</label>
       <input type="number" id="recv-half-u" value="2000" min="1" step="100" />
     </div>
@@ -614,6 +618,14 @@
       <div class="field-row">
         <label for="field-n">Heliostats</label>
         <input type="number" id="field-n" value="100" min="1" max="600" step="10" />
+      </div>
+      <div class="field-row">
+        <label for="field-rmin">Nearest heliostat (m)</label>
+        <input type="number" id="field-rmin" placeholder="spiral start" min="0" step="5" />
+      </div>
+      <div class="field-row">
+        <label for="field-rmax">Farthest heliostat (m)</label>
+        <input type="number" id="field-rmax" placeholder="unbounded" min="1" step="5" />
       </div>
       <div class="legend-note" id="field-layout-note">
         Fermat spiral, a = 4.5 m, b = 0.55 — the same layout the sweep benchmark measures.
@@ -2005,7 +2017,14 @@
   // unless the inspector has pinned the current positions by moving one.
   function currentLayout() {
     if (fieldState.override) return fieldState.override;
-    return { type: "fermat", n: numOrNull("field-n") ?? 100 };
+    const layout = { type: "fermat", n: numOrNull("field-n") ?? 100 };
+    // Blank means "don't constrain it" rather than zero, so only send a
+    // bound the user actually typed.
+    const rMin = numOrNull("field-rmin");
+    const rMax = numOrNull("field-rmax");
+    if (rMin !== null) layout.r_min_m = rMin;
+    if (rMax !== null) layout.r_max_m = rMax;
+    return layout;
   }
 
   async function runTrace() {
@@ -2036,6 +2055,15 @@
       // -- the panel boxes are what the user can see, so they win over a
       // stale inspector value for the same field.
       const edits = Object.assign({}, opticsEdits[optics]);
+      // "Tower height" is one label over two different numbers: for prime
+      // focus the receiver IS the aim point, for the axicon it is the cone's
+      // apex. The Cassegrain has neither -- its relay was solved for one
+      // fixed geometry -- so the box is disabled there rather than sending a
+      // field the server would reject.
+      const towerField =
+        optics === "prime_focus" ? "focus_height_mm" : optics === "axicon" ? "apex_height_mm" : null;
+      const tower = numOrNull("tower-height");
+      if (towerField && tower !== null) edits[towerField] = tower;
       const halfU = numOrNull("recv-half-u");
       const halfV = numOrNull("recv-half-v");
       if (halfU !== null) edits.window_half_u_mm = halfU;
@@ -2091,6 +2119,14 @@
       // selection both survive, so an Apply reads as the scene changing
       // under a fixed viewpoint rather than as a new picture.
       if (data.optics_resolved) {
+        const resolvedTower =
+          data.optics_resolved.focus_height_mm ?? data.optics_resolved.apex_height_mm;
+        const towerInput = document.getElementById("tower-height");
+        towerInput.disabled = resolvedTower === undefined;
+        towerInput.title = towerInput.disabled
+          ? "fixed by the Cassegrain relay solve"
+          : "";
+        if (resolvedTower !== undefined) towerInput.value = resolvedTower;
         if (data.optics_resolved.window_half_u_mm !== undefined) {
           document.getElementById("recv-half-u").value = data.optics_resolved.window_half_u_mm;
         }
