@@ -60,8 +60,10 @@ from ..geometry.secondary import (
 from ..trace.mc import (
     MIRROR_HALF_X_MM,
     MIRROR_HALF_Y_MM,
+    SOURCE_DIST_MM,
     _mirror_frame,
     _sun_vector,
+    _zernike_sag_and_slopes,
     design_facet_frames,
     trace_heliostat,
 )
@@ -497,39 +499,13 @@ def build_field_scene(
             }
         )
 
-    sources = _field_ray_sources(len(heliostats), n_sources)
-    bundles = []
-    for i in sources:
-        h = heliostats[i]
-        sample = trace_heliostat(
-            h["x_mm"],
-            h["y_mm"],
-            h["rot_az_deg"],
-            h["rot_el_deg"],
-            h["c3"],
-            h["c4"],
-            h["c5"],
-            solar_az_deg,
-            solar_el_deg,
-            secondary,
-            receiver,
-            n_sample_rays,
-            # Per-heliostat stream, deterministically derived from the fixed
-            # scene seed: one seed for all of them would draw the identical
-            # sample pattern on every mirror, which reads as a repeated
-            # stencil rather than as a field.
-            np.random.default_rng(np.random.SeedSequence((SIDE_TRACE_SEED, i))),
-            source_disk_radius_mm="auto",
-            return_paths=True,
-            design=h["design"],
-        )
-        bundles.append(sample["paths"])
-
-    per_source = max(1, max_rays // max(1, len(bundles)))
-    paths = (
-        np.concatenate([_subsample_paths(b, per_source) for b in bundles], axis=2)
-        if bundles
-        else np.zeros((4, 3, 0))
+    # Every heliostat contributes four corner chief rays, so the picture
+    # shows the whole field working. The dense Monte Carlo bundle that used
+    # to stand in for this came from a stride of a dozen mirrors and read as
+    # "only these were traced" -- which is exactly the wrong impression, the
+    # trace covers all of them.
+    corner = field_corner_rays(
+        heliostats, outline_local_mm, solar_az_deg, solar_el_deg, secondary, receiver
     )
 
     profile = _secondary_profile(secondary)
@@ -542,16 +518,154 @@ def build_field_scene(
             "heliostats": table,
             "silhouette_vertices": int(outline.shape[0]),
             "decimated": bool(np.asarray(outline_local_mm).shape[0] > outline.shape[0]),
-            # How many heliostats the drawn bundle actually came from -- the
-            # caption says so rather than letting the picture imply that
-            # every mirror in the field is sending rays.
-            "ray_sources": len(sources),
+            # Every heliostat contributes, so there is no stride to
+            # confess to any more; kept so the caption can say how the
+            # bundle was built.
+            "ray_sources": len(table),
         },
         "secondary": None
         if profile is None
         else {"kind": profile[0], "profile": [[_round(r), _round(z)] for r, z in rings]},
         "receiver": _receiver_dict(receiver),
         "sun": [_round_unit(c) for c in sun],
-        "rays": _rays_payload(paths, max_rays),
-        "rays_source": "mc_sample",
+        "rays": corner,
+        "rays_source": "corner_chief",
     }
+
+
+# ---------------------------------------------------------------------------
+# field corner rays
+
+
+def _outline_sample_points(outline_local_mm: np.ndarray, n_points: int = 4) -> np.ndarray:
+    """``n_points`` spread around a mirror outline, guaranteed on the mirror.
+
+    Vertices of the outline polygon itself, not corners of its bounding box.
+    A bounding box corner is only on the mirror for a rectangle: on a flower
+    it falls in the gap between two petals, where there is nothing to reflect
+    from, and every ray from it is dropped -- which is how this was found.
+
+    Each point is pulled a little toward the outline's centroid so it lands
+    inside the material rather than exactly on its boundary, where a facet
+    membership test is a coin flip.
+    """
+    outline = np.asarray(outline_local_mm, dtype=float)
+    n_outline = outline.shape[0]
+    if n_outline <= n_points:
+        return outline.copy()
+    # Half-offset indices, so the samples do not align with the outline's own
+    # symmetry axes. Evenly spaced ones do: on a 2x2 facet grid the four gaps
+    # run along +-u and +-v, and indices 0, N/4, N/2, 3N/4 land in all four of
+    # them, producing a mirror that draws no rays at all.
+    idx = np.floor((np.arange(n_points) + 0.5) * n_outline / n_points).astype(int) % n_outline
+    return outline[idx]
+
+
+def _normal_at(h: dict, lu: float, lv: float, n, u, v):
+    """Outward normal of one heliostat's surface at local ``(lu, lv)``.
+
+    Carries the figure, which is the whole point: a chief ray reflected off
+    the flat plane would draw a diverging beam for a mirror that actually
+    focuses. For the legacy single-mirror path the figure is the solve's own
+    ``c3``/``c4``/``c5``, negated exactly as
+    :func:`heliostat.trace.mc.trace_heliostat` negates them for its inherited
+    frame convention. For a design, the facet containing the point supplies
+    its own surface and cant; a point that lands on no facet (between a
+    flower's petals, say) returns ``None`` and is simply not drawn, rather
+    than being drawn against a surface that is not there.
+    """
+    design = h.get("design")
+    if design is None:
+        _, dsdx, dsdy = _zernike_sag_and_slopes(
+            np.array([lu]), np.array([lv]), h["c3"], -h["c4"], -h["c5"]
+        )
+        nrm = n - u * float(dsdx[0]) - v * float(dsdy[0])
+        return nrm / np.linalg.norm(nrm), np.array([lu, lv])
+
+    helio = np.array([h["x_mm"], h["y_mm"], 0.0])
+    point = helio + u * lu + v * lv
+    for facet, nf, fu, fv, fcentre in design_facet_frames(design, helio, n, u, v):
+        rel = point - fcentre
+        fu_l, fv_l = float(rel @ fu), float(rel @ fv)
+        if not bool(np.atleast_1d(facet.region.contains(np.array([fu_l]), np.array([fv_l])))[0]):
+            continue
+        _, dsu, dsv = facet.surface.sag_and_slopes(np.array([fu_l]), np.array([fv_l]))
+        nrm = nf - fu * float(dsu[0]) - fv * float(dsv[0])
+        return nrm / np.linalg.norm(nrm), np.array([lu, lv])
+    return None
+
+
+def field_corner_rays(
+    heliostats: list[dict],
+    outline_local_mm: np.ndarray,
+    solar_az_deg: float,
+    solar_el_deg: float,
+    secondary: Secondary,
+    receiver: Receiver,
+) -> list:
+    """One chief ray from each corner of *every* heliostat in the field.
+
+    Deterministic and cheap: four rays per mirror, the sun's centre only (no
+    sunshape), and **no shading or blocking** -- a ray is drawn from every
+    corner whether or not a neighbour would have intercepted it. That is a
+    deliberate choice for the picture. The sampled Monte Carlo bundle it
+    replaces drew a dense spray from a handful of mirrors, which read as
+    "only these heliostats were traced"; four rays from all of them reads as
+    what the trace actually did. The reported power and flux are unaffected
+    either way -- nothing here feeds them.
+
+    The optics are real: each ray reflects off the mirror's own figured
+    surface at that corner, then goes through the same secondary and
+    receiver objects the trace used.
+
+    :returns: polylines ``[source, mirror, secondary, receiver]``, world mm,
+        for the rays that reach the receiver.
+    """
+    s = _sun_vector(solar_az_deg, solar_el_deg)
+    corners = _outline_sample_points(np.asarray(outline_local_mm, dtype=float))
+
+    hits, dirs = [], []
+    for h in heliostats:
+        n, u, v = _mirror_frame(h["rot_az_deg"], h["rot_el_deg"])
+        helio = np.array([h["x_mm"], h["y_mm"], 0.0])
+        for lu, lv in corners:
+            # A sample can still land on backing structure rather than on a
+            # facet -- a gap that reaches the outline, the space between two
+            # petals. Walk it toward the mirror's centre until it finds
+            # material; give up on that corner if nothing does.
+            found = None
+            for shrink in (0.98, 0.9, 0.75, 0.5, 0.25):
+                slu, slv = float(lu) * shrink, float(lv) * shrink
+                found = _normal_at(h, slu, slv, n, u, v)
+                if found is not None:
+                    break
+            if found is None:
+                continue
+            nrm, local = found
+            point = helio + u * float(local[0]) + v * float(local[1])
+            d_out = -s - 2.0 * float((-s) @ nrm) * nrm
+            hits.append(point)
+            dirs.append(d_out)
+
+    if not hits:
+        return []
+
+    hit = np.asarray(hits, dtype=float).T
+    d = np.asarray(dirs, dtype=float).T
+    src = hit + SOURCE_DIST_MM * s[:, None]
+
+    pre, d_out, on_sec = secondary.redirect(hit, d, {})
+    src, mir = src[:, on_sec], hit[:, on_sec]
+    reached, uv = receiver.intersect(pre, d_out)
+    src, mir, pre = src[:, reached], mir[:, reached], pre[:, reached]
+    uv = uv[:, reached]
+
+    rec_z = getattr(receiver, "z_mm", float("nan"))
+    rec = np.vstack([uv[0], uv[1], np.full(uv.shape[1], rec_z)])
+    paths = np.stack([src, mir, pre, rec])
+    finite = np.isfinite(paths).all(axis=(0, 1))
+    paths = paths[:, :, finite]
+    return [
+        [[_round(paths[vtx, axis, i]) for axis in range(3)] for vtx in range(4)]
+        for i in range(paths.shape[2])
+    ]

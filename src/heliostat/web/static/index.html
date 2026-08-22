@@ -1620,8 +1620,9 @@
       scene.rays.length === 0
         ? "no rays reached the receiver"
         : scene.field
-          ? "ray bundle: Monte Carlo sample, " + scene.rays.length + " paths from " +
-            scene.field.ray_sources + " of " + scene.heliostat.length + " heliostats"
+          ? "4 corner rays from each of " + scene.heliostat.length +
+            " heliostats (" + scene.rays.length +
+            " reach the receiver) — sun centre only, drawn without shading or blocking"
           : scene.rays_source === "mc_sample"
             ? "ray bundle: Monte Carlo sample (" + scene.rays.length +
               " paths; cone optics carries no rays of its own)"

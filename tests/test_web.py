@@ -43,8 +43,8 @@ from heliostat.web.app import (  # noqa: E402
 )
 from heliostat.web.scene import (  # noqa: E402
     FIELD_SILHOUETTE_VERTICES,
-    MAX_FIELD_SCENE_RAYS,
     MAX_SCENE_RAYS,
+    _outline_sample_points,
     build_field_scene,
     decimate_outline,
     radial_outline,
@@ -996,9 +996,12 @@ def test_field_scene_is_one_silhouette_per_heliostat(client, design_key):
         assert abs(centre[0] - row["x_mm"]) < _half_diagonal_mm(design)
         assert abs(centre[1] - row["y_mm"]) < _half_diagonal_mm(design)
 
-    assert 0 < len(scene["rays"]) <= MAX_FIELD_SCENE_RAYS
-    assert scene["rays_source"] == "mc_sample"
-    assert scene["field"]["ray_sources"] <= 7
+    # Four chief rays per heliostat, from every heliostat -- not a dense
+    # bundle from a stride of them, which read as "only these were traced".
+    # Rays that miss the receiver are not drawn, so this is an upper bound.
+    assert 0 < len(scene["rays"]) <= 4 * 7
+    assert scene["rays_source"] == "corner_chief"
+    assert scene["field"]["ray_sources"] == 7
 
 
 def test_field_scene_payload_at_600_stays_small():
@@ -1142,3 +1145,37 @@ def test_radial_outline_traces_a_petal_boundary():
     assert pts[:, 0].max() >= uu[mask].max() - 2 * cell
     assert pts[:, 1].min() <= vv[mask].min() + 2 * cell
     assert pts[:, 1].max() >= vv[mask].max() - 2 * cell
+
+
+def test_outline_samples_avoid_the_shape_s_own_symmetry_axes():
+    """Regression pin: evenly spaced outline indices land in the gaps.
+
+    A 2 x 2 facet grid has its gaps along +-u and +-v. Sampling the outline
+    at indices 0, N/4, N/2, 3N/4 puts every sample in a gap, on backing
+    structure rather than on a mirror, and the heliostat draws no rays at
+    all. The half-offset puts them on the diagonals instead.
+    """
+    angles = 2.0 * np.pi * np.arange(24) / 24.0
+    outline = np.column_stack([np.cos(angles), np.sin(angles)]) * 1000.0
+
+    points = _outline_sample_points(outline, 4)
+    sampled = np.rad2deg(np.arctan2(points[:, 1], points[:, 0])) % 360.0
+    for axis_angle in (0.0, 90.0, 180.0, 270.0):
+        assert np.min(np.abs(sampled - axis_angle)) > 10.0, (
+            f"a sample landed on the {axis_angle} deg axis, where a gapped design has no material"
+        )
+
+
+@pytest.mark.parametrize("design_key", sorted(SCENE_DESIGNS))
+def test_every_heliostat_contributes_rays_whatever_its_shape(client, design_key):
+    """Four rays per heliostat for rect, grid and flower alike.
+
+    The shaped designs are the ones that catch a sampling bug: a point that
+    misses the material is silently dropped, so a broken sampler shows up as
+    an empty sky rather than as an error.
+    """
+    design, _n_facets = SCENE_DESIGNS[design_key]
+    data = client.post(
+        "/api/field/trace", json=_field_payload(design, layout={"type": "fermat", "n": 5})
+    ).json()
+    assert len(data["scene"]["rays"]) == 4 * 5
