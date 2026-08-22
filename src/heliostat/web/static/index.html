@@ -1116,6 +1116,7 @@
     opticsResolved: null,
     design: null,
     ghostZ: null,
+    ghostHeliostat: null,   // [x_mm, y_mm] while an edit is pending
     isField: false,
   };
 
@@ -1533,6 +1534,32 @@
     ctx.restore();
   }
 
+  // Where the selected heliostat would sit if the pending edit were
+  // applied. Dashed and unfilled, like the receiver ghost: it is a preview,
+  // not a trace. The rays deliberately do not move -- retracing on every
+  // keystroke would be unusable, and the whole point is to see the geometry
+  // before paying for the trace.
+  function drawGhostHeliostat(ctx, scene, basis, vw) {
+    const ghost = sceneState.ghostHeliostat;
+    if (!ghost || sel.kind !== "heliostat") return;
+    const polys = scene.heliostat || [];
+    const poly = sel.index === null ? polys[0] : polys[sel.index];
+    if (!poly) return;
+    const from = polyCentroid(poly);
+    const shifted = poly.map((p) => [p[0] + ghost[0] - from[0], p[1] + ghost[1] - from[1], p[2]]);
+    ctx.save();
+    ctx.setLineDash([6, 4]);
+    strokePath(ctx, shifted.concat([shifted[0]]), basis, vw, COL.ghost, 1.8);
+    strokePath(ctx, [from, [ghost[0], ghost[1], from[2]]], basis, vw, COL.ghost, 1.2);
+    ctx.restore();
+  }
+
+  function polyCentroid(poly) {
+    let x = 0, y = 0, z = 0;
+    for (const p of poly) { x += p[0]; y += p[1]; z += p[2]; }
+    return [x / poly.length, y / poly.length, z / poly.length];
+  }
+
   // Real traced paths: source disk -> mirror -> secondary -> receiver. Drawn
   // after the solid faces and translucent, so overlapping rays accumulate
   // into brightness the way a beam does.
@@ -1616,6 +1643,7 @@
     drawSun(ctx, scene, basis, vw);
     drawSelection(ctx, scene, basis, vw);
     drawGhostReceiver(ctx, scene, basis, vw);
+    drawGhostHeliostat(ctx, scene, basis, vw);
   }
 
   // Called once per trace response. `meta` carries the request context the
@@ -1624,6 +1652,7 @@
   function setScene(scene, meta) {
     sceneState.data = scene || null;
     sceneState.ghostZ = null;
+    sceneState.ghostHeliostat = null;
     if (meta) {
       sceneState.optics = meta.optics;
       sceneState.opticsResolved = meta.opticsResolved;
@@ -1800,7 +1829,37 @@
         input.addEventListener("input", () => (target.value = input.value));
       }
     }
+    wireGhostPreview();
     inspector.hidden = false;
+  }
+
+  // Typing a new value shows where it lands, before Apply pays for a trace.
+  // Deliberately geometry only -- the rays stay exactly where the last trace
+  // put them, so what moves on screen is what the edit moves.
+  function wireGhostPreview() {
+    if (sel.kind === "receiver") {
+      const input = inspectorInput(receiverHeightField());
+      if (!input) return;
+      input.addEventListener("input", () => {
+        const z = parseFloat(input.value);
+        sceneState.ghostZ = Number.isFinite(z) ? z : null;
+        renderScene();
+      });
+      return;
+    }
+    if (sel.kind === "heliostat") {
+      const xIn = inspectorInput("heliostat_x_mm");
+      const yIn = inspectorInput("heliostat_y_mm");
+      if (!xIn || !yIn) return;
+      const update = () => {
+        const x = parseFloat(xIn.value);
+        const y = parseFloat(yIn.value);
+        sceneState.ghostHeliostat = Number.isFinite(x) && Number.isFinite(y) ? [x, y] : null;
+        renderScene();
+      };
+      xIn.addEventListener("input", update);
+      yIn.addEventListener("input", update);
+    }
   }
 
   // Trace-panel position inputs push into the inspector when it is showing
@@ -1820,6 +1879,7 @@
     sel.kind = pick ? pick.kind : null;
     sel.index = pick && pick.index !== undefined ? pick.index : null;
     sceneState.ghostZ = null;
+    sceneState.ghostHeliostat = null;
     renderInspector();
     renderScene();
   }
@@ -1964,6 +2024,7 @@
         if (input) input.value = Math.round(sceneState.ghostZ);
       }
       sceneState.ghostZ = null;
+    sceneState.ghostHeliostat = null;
       renderScene();
       return;
     }
