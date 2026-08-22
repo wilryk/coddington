@@ -45,20 +45,34 @@ says which, and what this package changed about each.
 
 ### Performance, measured
 
-These are wall times actually recorded on an 8-core laptop, not targets:
+Wall times actually recorded on an idle 8-core laptop, for a 600-heliostat
+field over one full day (13 timesteps), plus the web app's own field trace:
 
 | Job | Time |
 | --- | --- |
-| 600-heliostat field, one full day (13 timesteps), ultra-fast mode | ~12 min |
-| the same sweep, Monte Carlo at 20,000 rays/heliostat | ~3 min |
-| 100-heliostat field, single instant, ultra-fast, in the web app | ~4 s |
+| 600 heliostats x 13 steps, Monte Carlo at 20,000 rays | **1.0 min** |
+| 600 heliostats x 13 steps, ultra-fast cone optics | 7.0 min |
+| 600 heliostats x 13 steps, Monte Carlo at 120,000 rays | 6.1 min |
+| 100-heliostat field, single instant, ultra-fast, in the web app | 3.6 s |
 
-The ultra-fast sweep being *slower* than Monte Carlo is a known problem, not
-a property of the tracer: per-timestep field bookkeeping (aiming and polygon
-occlusion) dominates that number and scales superlinearly with field size. A
-performance pass toward a 2-minute full-day sweep is in progress;
-`scripts/sweep_benchmark.py` is the yardstick. Annual energy, by contrast,
-is already instant — it interpolates traced timesteps rather than re-tracing.
+`scripts/sweep_benchmark.py` produces this table; run it yourself rather
+than trusting these numbers on a different machine. Measure on an idle one
+— an earlier run of this table overlapped with the test suite and reported
+a mode getting *slower* after a change that could only have made it faster.
+
+**Reading the two backends against each other.** Ultra-fast being slower
+than a 20,000-ray Monte Carlo is not a defect; the two are not producing
+the same answer. Monte Carlo's error falls as 1/sqrt(rays), so 20,000 rays
+is a noisy estimate, while the cone backends carry no shot noise at all and
+agree with a high-count Monte Carlo to about ±0.2% on power and rms radius.
+The fair comparison is against the 120,000-ray row: comparable cost, and
+the cone result is the smoother of the two. Pick Monte Carlo when you want
+a reference answer with a known noise model, and cone optics when you want
+a clean flux map.
+
+Annual energy is separate and effectively instant: it interpolates traced
+timesteps rather than re-tracing, so a year costs a surface evaluation, not
+a sweep.
 
 ## Run it
 

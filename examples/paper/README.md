@@ -102,27 +102,42 @@ python check.py --out runs/paper --csv comparison.csv
 written per configuration and skipped on a re-run unless you pass
 `--rebuild`, so this can be done a configuration at a time.
 
+> These timings were measured before the neighbour-search fix that cut
+> occlusion work by roughly 3.8x over a full day, so they are now
+> **conservative** — expect faster. They are left as measured rather than
+> rescaled, because a derived number is not a measured one.
+
 That comes from a direct profile of one timestep of the real thing, 643
 heliostats, not from scaling the cheap number:
 
-| Per timestep | |
-| --- | --- |
-| Monte Carlo trace, 120,000 rays × 643 heliostats | **43 s** (67 ms each) |
-| Occlusion, full-grid neighbour list | **27 s** |
-| **Total** | **~70 s** × 94 timesteps = 1 h 50 min |
+| Per timestep | as first measured | now |
+| --- | --- | --- |
+| Monte Carlo trace, 120,000 rays × 643 heliostats | **43 s** (67 ms each) | 43 s |
+| Occlusion | **27 s** | **~8 s** |
+| **Total** | ~70 s | ~51 s |
 
-**Why the occlusion costs 27 s here and 1.4 s in the single-instant run
-above**, for the same field and the same code. The neighbour list is sized
-once per run, from the *lowest* sun elevation anywhere in it
-(`heliostat.geometry.shading.search_radius_for`), because that is when
-shadows reach furthest. A lone 09:06 instant sits at 40.6° elevation, where a
-mirror's shadow reaches 8.5 m — 5.6 plausible occluders per heliostat. The
-full grid runs from 1.8° to 83°, and at 1.8° a shadow outruns the 60 m cap,
-so every heliostat is tested against every neighbour within 60 m — **189 of
-them on average** — at every timestep, all day. That is the real price of
-tracing the true sunrise and sunset edges rather than snapping to whole
-hours, not an inefficiency to tune away, and it is worth knowing before you
-extrapolate the instant-only figure.
+**The occlusion column changed, and it is worth knowing why**, because the
+first version of this file explained the 27 s as a cost worth paying rather
+than an inefficiency. It was both. The neighbour list used to be sized once
+per run from the *lowest* sun elevation anywhere in it, because that is when
+shadows reach furthest: the full grid runs from 1.8° to 83°, and at 1.8° a
+shadow outruns the 60 m cap, so every heliostat was tested against every
+neighbour within 60 m — **189 of them on average** — at every timestep, all
+day, including noon, where 12 would have done.
+
+Sizing that radius per timestep instead cuts occlusion over a full day by
+about 3.8x (measured on this field: 47.5 min to 12.5 min). It is not simply
+a smaller radius: shading reach shrinks as the sun climbs, but *blocking*
+reach does not — it is set by the reflected beam's angle — so a radius taken
+from the sun alone drops real blockers at high sun, moving `eta_block` by
+0.11. The radius covers both reaches, and
+`tests/test_polygon_shading.py` pins that it reproduces a whole-field
+neighbour list exactly at every elevation.
+
+So a full configuration should now come in nearer **1 h 20 min** than 1 h
+50 min. That figure is derived from the two measurements above rather than
+timed end to end, which is why the headline number in this file is still the
+one that was actually clocked.
 
 Dropping `--rays` to 20,000 cuts the trace to 6 s per timestep (33 s total,
 ~52 min per configuration). Shot noise on a whole-field total at 643 × 20,000
