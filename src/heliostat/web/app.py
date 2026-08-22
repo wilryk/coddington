@@ -103,6 +103,13 @@ from heliostat.trace.cone import sunshape_kernel, trace_heliostat_cone
 from heliostat.trace.mc import MIRROR_HALF_X_MM, MIRROR_HALF_Y_MM, trace_heliostat
 from heliostat.trace.modes import MODES, TraceMode
 from heliostat.web.scene import build_field_scene, build_scene
+from heliostat.web.setups import (
+    SetupError,
+    delete_setup,
+    list_setups,
+    load_setup,
+    save_setup,
+)
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -414,6 +421,21 @@ class FlowerParams(_DesignBase):
 
 
 DesignParams = Annotated[Union[RectParams, GridParams, FlowerParams], Field(discriminator="type")]
+
+
+class SetupRequest(BaseModel):
+    """A named snapshot of the GUI's controls.
+
+    ``document`` is deliberately unvalidated free-form JSON: it is the
+    client's own state, and pinning a schema here would mean this module
+    needs editing every time the panel gains a control. It is stored and
+    handed back verbatim.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=64)
+    document: dict
 
 
 class SunRequest(BaseModel):
@@ -1146,6 +1168,35 @@ def create_app():
     @app.get("/api/health")
     def health() -> JSONResponse:
         return JSONResponse({"version": __version__})
+
+    @app.get("/api/setups")
+    def setups_list() -> JSONResponse:
+        return JSONResponse({"setups": list_setups()})
+
+    @app.post("/api/setups")
+    def setups_save(body: SetupRequest) -> JSONResponse:
+        try:
+            saved = save_setup(body.name, body.document)
+        except SetupError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except OSError as exc:  # full disk, permissions, read-only home
+            raise HTTPException(status_code=500, detail=f"could not save: {exc}") from exc
+        return JSONResponse(saved)
+
+    @app.get("/api/setups/{name}")
+    def setups_load(name: str) -> JSONResponse:
+        try:
+            return JSONResponse(load_setup(name))
+        except SetupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.delete("/api/setups/{name}")
+    def setups_delete(name: str) -> JSONResponse:
+        try:
+            delete_setup(name)
+        except SetupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return JSONResponse({"deleted": name})
 
     @app.post("/api/sun")
     def sun(body: SunRequest) -> JSONResponse:

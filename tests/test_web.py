@@ -1216,3 +1216,66 @@ def test_reversed_radius_bounds_are_rejected(client):
     )
     assert resp.status_code == 422
     assert "r_max_m" in json.dumps(resp.json())
+
+
+# -- saved setups -----------------------------------------------------------
+
+
+@pytest.fixture
+def setups_dir(tmp_path, monkeypatch):
+    """Point the setups store at a temp dir, never the real home directory."""
+    monkeypatch.setenv("HELIOSTAT_SETUPS_DIR", str(tmp_path / "setups"))
+    return tmp_path / "setups"
+
+
+def test_setup_round_trips(client, setups_dir):
+    doc = {"version": 1, "values": {"sun-el": "37.5"}, "designType": "rect"}
+    assert client.get("/api/setups").json() == {"setups": []}
+
+    saved = client.post("/api/setups", json={"name": "My Tower", "document": doc})
+    assert saved.status_code == 200
+    assert saved.json()["name"] == "My Tower"
+
+    listed = client.get("/api/setups").json()["setups"]
+    assert [e["name"] for e in listed] == ["My Tower"]
+
+    loaded = client.get("/api/setups/My Tower").json()
+    assert loaded["document"] == doc
+
+    assert client.delete("/api/setups/My Tower").status_code == 200
+    assert client.get("/api/setups").json() == {"setups": []}
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "../escape",
+        "sub/dir",
+        r"back\slash",
+        ".hidden",
+        "CON",
+        "lpt1",
+        "x" * 65,
+    ],
+)
+def test_unsafe_setup_names_are_refused(client, setups_dir, name):
+    """A setup name becomes a filename, so it must never be able to leave the
+    setups directory or collide with a reserved device name."""
+    resp = client.post("/api/setups", json={"name": name, "document": {}})
+    assert resp.status_code == 422
+    assert not list(setups_dir.glob("**/*.json")) if setups_dir.exists() else True
+
+
+def test_saving_the_same_name_twice_overwrites(client, setups_dir):
+    client.post("/api/setups", json={"name": "dup", "document": {"n": 1}})
+    client.post("/api/setups", json={"name": "dup", "document": {"n": 2}})
+    assert client.get("/api/setups/dup").json()["document"] == {"n": 2}
+    assert len(client.get("/api/setups").json()["setups"]) == 1
+
+
+def test_unreadable_setup_file_is_skipped_not_fatal(client, setups_dir):
+    """One hand-edited file must not make the whole list unreadable."""
+    client.post("/api/setups", json={"name": "good", "document": {"ok": True}})
+    (setups_dir / "broken.json").write_text("{not json", encoding="utf-8")
+    listed = client.get("/api/setups").json()["setups"]
+    assert [e["name"] for e in listed] == ["good"]

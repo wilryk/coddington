@@ -525,6 +525,25 @@
   <section class="panel" id="trace-panel">
     <h2>Trace</h2>
 
+    <details id="setups-block">
+      <summary>Saved setups</summary>
+      <div class="field-row">
+        <label for="setup-name">Name</label>
+        <input type="text" id="setup-name" placeholder="my tower" maxlength="64" />
+      </div>
+      <div class="field-row">
+        <button type="button" id="setup-save">Save current</button>
+        <button type="button" id="setup-delete">Delete</button>
+      </div>
+      <div class="field-row">
+        <label for="setup-list">Load</label>
+        <select id="setup-list"><option value="">—</option></select>
+      </div>
+      <div class="legend-note" id="setup-note">
+        Everything on both panels, stored as JSON under your home directory.
+      </div>
+    </details>
+
     <div class="type-tabs" id="trace-mode-tabs">
       <button data-tracemode="single" class="active">Single</button>
       <button data-tracemode="field">Field</button>
@@ -2150,6 +2169,142 @@
   }
 
   traceBtn.addEventListener("click", runTrace);
+
+  // -- saved setups ---------------------------------------------------------
+  //
+  // One list of control ids is the whole contract: a setup is those inputs
+  // plus which tabs are active. Adding a control to the panel means adding
+  // its id here and nothing else -- the server stores the document without
+  // interpreting it.
+
+  const SETUP_INPUT_IDS = [
+    "rect-width", "rect-height",
+    "grid-nu", "grid-nv", "grid-fw", "grid-fh", "grid-gap", "grid-cant",
+    "optics", "tower-height", "recv-half-u", "recv-half-v",
+    "sun-az", "sun-el",
+    "site-lat", "site-lon", "site-tz", "site-date", "site-hour",
+    "helio-x", "helio-y",
+    "field-n", "field-rmin", "field-rmax",
+  ];
+
+  const setupNote = document.getElementById("setup-note");
+  const setupList = document.getElementById("setup-list");
+
+  function captureSetup() {
+    const values = {};
+    for (const id of SETUP_INPUT_IDS) {
+      const el = document.getElementById(id);
+      if (el) values[id] = el.value;
+    }
+    return {
+      version: 1,
+      values: values,
+      designType: designType,
+      surface: surfaceMode,
+      mode: mode,
+      traceMode: traceMode,
+      opticsEdits: opticsEdits,
+    };
+  }
+
+  function applySetup(doc) {
+    if (!doc || !doc.values) throw new Error("that setup has no controls in it");
+    for (const [id, value] of Object.entries(doc.values)) {
+      const el = document.getElementById(id);
+      if (el) el.value = value;
+    }
+    // Tabs are buttons, so replay them as clicks rather than setting state
+    // directly -- that way every side effect (captions, which fieldset is
+    // visible, the preview refresh) happens exactly as if a person clicked.
+    clickTab("#type-tabs", "data-type", doc.designType);
+    clickTab("#surface-tabs", "data-surface", doc.surface);
+    clickTab("#mode-tabs", "data-mode", doc.mode);
+    clickTab("#trace-mode-tabs", "data-tracemode", doc.traceMode);
+    if (doc.opticsEdits) {
+      for (const key of Object.keys(opticsEdits)) delete opticsEdits[key];
+      Object.assign(opticsEdits, doc.opticsEdits);
+    }
+    fieldState.override = null;
+    runPreview();
+  }
+
+  function clickTab(containerSel, attr, value) {
+    if (!value) return;
+    const btn = document.querySelector(containerSel + " button[" + attr + '="' + value + '"]');
+    if (btn) btn.click();
+  }
+
+  async function refreshSetupList(selected) {
+    try {
+      const resp = await fetch("/api/setups");
+      if (!resp.ok) return;
+      const data = await resp.json();
+      setupList.innerHTML = '<option value="">—</option>';
+      for (const entry of data.setups) {
+        const opt = document.createElement("option");
+        opt.value = entry.name;
+        opt.textContent = entry.name;
+        setupList.appendChild(opt);
+      }
+      if (selected) setupList.value = selected;
+    } catch (err) {
+      /* listing is a convenience; a failure here must not break tracing */
+    }
+  }
+
+  document.getElementById("setup-save").addEventListener("click", async () => {
+    const name = document.getElementById("setup-name").value.trim();
+    if (!name) {
+      setupNote.textContent = "Give the setup a name first.";
+      return;
+    }
+    try {
+      const resp = await fetch("/api/setups", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name, document: captureSetup() }),
+      });
+      if (!resp.ok) {
+        setupNote.textContent = "Could not save: " + (await parseErrorDetail(resp));
+        return;
+      }
+      setupNote.textContent = "Saved “" + name + "”.";
+      await refreshSetupList(name);
+    } catch (err) {
+      setupNote.textContent = "Could not save: " + err.message;
+    }
+  });
+
+  setupList.addEventListener("change", async () => {
+    const name = setupList.value;
+    if (!name) return;
+    try {
+      const resp = await fetch("/api/setups/" + encodeURIComponent(name));
+      if (!resp.ok) {
+        setupNote.textContent = "Could not load: " + (await parseErrorDetail(resp));
+        return;
+      }
+      const payload = await resp.json();
+      applySetup(payload.document);
+      document.getElementById("setup-name").value = payload.name;
+      setupNote.textContent =
+        "Loaded “" + payload.name + "” — press Trace to run it.";
+    } catch (err) {
+      setupNote.textContent = "Could not load: " + err.message;
+    }
+  });
+
+  document.getElementById("setup-delete").addEventListener("click", async () => {
+    const name = document.getElementById("setup-name").value.trim();
+    if (!name) return;
+    const resp = await fetch("/api/setups/" + encodeURIComponent(name), { method: "DELETE" });
+    setupNote.textContent = resp.ok
+      ? "Deleted “" + name + "”."
+      : "Could not delete: " + (await parseErrorDetail(resp));
+    await refreshSetupList();
+  });
+
+  refreshSetupList();
 
   // initial preview
   updateSurfaceCaption();
