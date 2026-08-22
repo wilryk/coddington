@@ -82,16 +82,27 @@ stable; see the status note in the README.
 
 **Web app** (`pip install heliostat[web]`, then `heliostat`)
 
-- Design panel: rectangle, facet grid and flower layouts, with a twisting /
-  spherical / flat surface selector and separate facet canting.
-- Trace panel: three optical layouts, three fidelity modes, an editable sun
-  position and editable tower geometry, returning a flux map and spot
-  metrics.
+- One-word launch: `heliostat` with no arguments starts the app, waits for
+  the port, opens a browser and prints its own off switch. `heliostat
+  shortcut` puts a double-clickable launcher on the Desktop.
+- Design panel: rectangle and facet-grid mirrors with a twisting / spherical
+  / flat surface selector and separate facet canting.
+- Trace panel: three optical layouts, three fidelity modes, tower height and
+  receiver window size, and a sun position typed directly or computed from a
+  latitude, longitude, date and clock time (`/api/sun`, the same NOAA code
+  the sweep uses).
+- Flux maps in kW/m², with peak flux in the metrics table.
 - Interactive 3-D scene rendered from the trace that just ran — real traced
   ray paths, orbit and zoom, click-to-inspect and edit the receiver,
-  secondary or a heliostat, and drag the receiver along the tower axis.
+  secondary or a heliostat, drag the receiver along the tower axis, and a
+  dashed preview of a pending edit before it is applied.
 - Field mode: trace a whole layout at once, with each mirror tinted by its
-  own efficiency.
+  own efficiency, four chief rays drawn from *every* heliostat, and
+  nearest/farthest-heliostat controls for shaping the layout.
+- Mirror sag view: the figure that actually gets traced, in millimetres,
+  with peak-to-valley and contours.
+- Saved setups: name the whole panel state and load it back, stored as
+  readable JSON under `~/.heliostat/setups`.
 
 **Examples**
 
@@ -111,3 +122,20 @@ stable; see the status note in the README.
 - Documentation: concepts guide, API reference and a "Reproducing the paper"
   page, built with MkDocs.
 - CI lints `examples/` alongside `src/` and `tests/`.
+- `REFERENCES.md` at the repository root: every model, algorithm and
+  dataset this package borrows, what was changed about each, and which
+  attributions still need confirming. `CITATION.cff` for the repository
+  itself.
+
+### Fixed
+
+- Neighbour searches for shading and blocking were sized once per run
+  from the day's lowest sun. Blocking reach does not shrink as the sun
+  climbs, so a high-sun instant lost real blockers — `eta_block` moved by
+  0.11 on a 643-heliostat field. The radius now covers both reaches and
+  is sized per timestep, which is also 3.8x less occlusion work over a
+  full day.
+- Re-tracing into an existing run directory appended duplicate summary
+  rows, silently doubling annual totals.
+- `pip install -e .[dev,web]` did not bring `httpx`, so the 134 web tests
+  could not be collected in a fresh environment or in CI.

@@ -117,10 +117,27 @@ Alongside the flux map is an interactive **3-D scene** drawn from the trace
 that just ran: the facets as they were traced, the secondary revolved from
 its own equations, the receiver, the sun, and real traced ray paths. Orbit
 and zoom it, click the receiver, the secondary or a heliostat to inspect and
-edit it, and drag the receiver along the tower axis. In **field mode** the
-same panel traces a whole layout at once, tinting each mirror by its own
-efficiency so shaded and blocked regions of the field are visible at a
-glance.
+edit it, and drag the receiver along the tower axis. Typing a new position
+or height draws a dashed preview of where it would land before you apply it;
+the rays stay where the last trace put them, so what moves is what the edit
+moves.
+
+In **field mode** the same panel traces a whole layout at once, tinting each
+mirror by its own efficiency so shaded and blocked regions of the field are
+visible at a glance. Four chief rays are drawn from *every* heliostat rather
+than a dense bundle from a few, so the picture shows the whole field
+working; they are sun-centre rays drawn without shading or blocking, which
+is what makes them cheap enough to draw for all of them. The nearest and
+farthest heliostat radii shape the layout itself.
+
+A third view, **mirror sag**, shows the figure doing the focusing —
+millimetres of departure from flat across the aperture, with peak-to-valley
+and contours. It is invisible in the 3-D scene, which draws facets flat for
+exactly that reason.
+
+**Saved setups** name the whole panel state — both panels, every tab, and
+any geometry edited in the 3-D inspector — and load it back later. They are
+plain JSON under `~/.heliostat/setups`, one file per setup.
 
 ## Validation
 
