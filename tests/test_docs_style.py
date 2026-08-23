@@ -31,6 +31,12 @@ BUDGETS = {
     "docs/paper.md": 700,
     # Mostly mkdocstrings directives rather than prose.
     "docs/api.md": 800,
+    # Not user documentation: the signed-off build contract for the workspace
+    # UI restructure (screens, fields, validation behavior). It is long
+    # because it is the spec — implementation checks against it — and it
+    # freezes at sign-off rather than growing. Delete the entry when the
+    # restructure ships and the spec's content moves into guide.md.
+    "docs/ui-spec.md": 4000,
     "examples/paper/README.md": 1600,
     "packaging/desktop/README.md": 400,
 }
