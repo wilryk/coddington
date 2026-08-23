@@ -1,0 +1,1987 @@
+<meta charset="utf-8">
+<title>Coddington Workspace</title>
+<style>
+  :root {
+    --bg: #f2f4f7;
+    --panel: #ffffff;
+    --text: #1f2933;
+    --muted: #5b6b7c;
+    --accent: #45739e;
+    --accent-dark: #345a80;
+    --border: #d8dee5;
+    --note-bg: #fdf6e7;
+    --note-border: #e4c96b;
+    --note-text: #6b5310;
+  }
+  :root:not([data-theme="light"]) {
+    /* placeholder so the guard pattern below is complete */
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #161b22;
+      --panel: #1f2630;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --accent: #7ba3c9;
+      --accent-dark: #a8c6e0;
+      --border: #323b47;
+      --note-bg: #2b2515;
+      --note-border: #7a6420;
+      --note-text: #e0c86a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #161b22;
+    --panel: #1f2630;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --accent: #7ba3c9;
+    --accent-dark: #a8c6e0;
+    --border: #323b47;
+    --note-bg: #2b2515;
+    --note-border: #7a6420;
+    --note-text: #e0c86a;
+  }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.55;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 40px 24px 80px 24px; }
+  header.intro { margin-bottom: 8px; }
+  .eyebrow { text-transform: uppercase; letter-spacing: 0.08em; font-size: 12px; font-weight: 600; color: var(--muted); }
+  h1 { font-size: 30px; margin: 6px 0 10px 0; font-weight: 650; letter-spacing: -0.01em; text-wrap: balance; }
+  .lede { color: var(--muted); max-width: 62ch; margin: 0 0 6px 0; }
+  .lede strong { color: var(--text); font-weight: 600; }
+  h2 { font-size: 19px; margin: 56px 0 4px 0; font-weight: 650; letter-spacing: -0.005em; }
+  h2 .num { color: var(--accent); font-variant-numeric: tabular-nums; margin-right: 8px; }
+  .screennote { color: var(--muted); max-width: 72ch; margin: 0 0 14px 0; }
+  .screennote strong { color: var(--text); font-weight: 600; }
+  .stage { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: #f7f8fa; box-shadow: 0 2px 10px rgba(15, 23, 42, 0.06); }
+  .mock { transform-origin: top left; width: 1440px; height: 900px; }
+  .checknote { font-size: 13px; color: var(--note-text); background: var(--note-bg); border: 1px solid var(--note-border); border-radius: 8px; padding: 9px 13px; margin-top: 12px; max-width: 72ch; }
+  .checknote strong { font-weight: 650; }
+  section.text { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 24px 28px; margin-top: 56px; }
+  section.text h2 { margin-top: 0; }
+  ul { padding-left: 20px; margin: 10px 0; }
+  li { margin: 6px 0; }
+  li strong { font-weight: 600; }
+  .qs li { margin: 10px 0; }
+  .checklist { list-style: none; padding-left: 0; }
+  .checklist li { display: flex; gap: 10px; align-items: baseline; }
+  .checklist li::before { content: ""; flex: 0 0 13px; height: 13px; border: 1.5px solid var(--muted); border-radius: 3px; transform: translateY(2px); }
+  footer { margin-top: 48px; color: var(--muted); font-size: 13px; }
+  code { background: var(--panel); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; font-size: 0.9em; }
+</style>
+<div class="wrap">
+  <header class="intro">
+    <div class="eyebrow">For sign-off · restructure phase 1 · rev 5 · Aug 22, 2026</div>
+    <h1>Coddington Workspace</h1>
+    <p class="lede">Seven screens of the proposed 3D-first restructure, drawn in the app's own visual language. The idea in one line: <strong>the 3D scene is the workspace, not a results viewer</strong> — geometry and corner rays are live from the moment the app opens, and every parameter is editable from a sidebar stage <em>and</em> by clicking the object in the scene, always in sync.</p>
+    <p class="lede"><strong>Rev 5 changes from your fourth review:</strong> optical-error defaults corrected to the manuscript (90 % reflectance, no slope or specularity error); the receiver is now a real design — type per layout (flat everywhere; cylindrical and frustum under prime focus) plus the paper's <strong>entrance aperture with an offset receiver behind it</strong> (screen 4's sidebar); degenerate geometries (axicon half angle 0°, Cassegrain R → ∞) are legal and trace as flat mirrors with an info badge; a <strong>Year estimate</strong> joins Analysis (sample days across the year, DNI-weighted interpolation, MWh/yr); and branding is placed — a quiet Ryker Optics lockup at the bottom of the sidebar with an About link, and a dashed placeholder where the Coddington logo will go.</p>
+    <p class="lede">The companion spec is <code>docs/ui-spec.md</code> in the repo. Nothing gets built until you approve both.</p>
+  </header>
+
+  <h2><span class="num">1</span>The Workspace — live field, no trace needed</h2>
+  <p class="screennote">Left: the four design stages in workflow order — <strong>Heliostat → Field → Receiver &amp; Tower → Sun</strong>. Center: the always-live 3D viewport with auto-refreshing corner rays. Bottom: fidelity, Run, and the latest results with a trace timestamp.</p>
+  <div class="stage"><div class="mock"><template shadowrootmode="open"><style>
+    :host { display: block;  margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 14px; color: #1f2933; background: #f7f8fa; }
+    a { color: #45739e; } a:hover { color: #345a80; }
+    .topbar { display: flex; align-items: center; gap: 10px; padding: 0 20px; height: 52px; background: #ffffff; border-bottom: 1px solid #d8dee5; }
+    .topbar h1 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: 0.02em; }
+    .tag { color: #64748b; font-size: 12px; }
+    .apptabs { display: flex; gap: 6px; margin-left: 28px; }
+    .apptabs .tab { padding: 7px 14px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; cursor: pointer; }
+    .apptabs .tab.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .topbar .right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+    .btn { padding: 7px 12px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; cursor: pointer; }
+    .btn.primary { background: #45739e; border-color: #345a80; color: #ffffff; font-weight: 600; }
+    .savestate { color: #64748b; font-size: 12px; display: flex; align-items: center; gap: 5px; }
+    .shell { display: flex; height: 738px; }
+    .sidebar { flex: 0 0 300px; background: #ffffff; border-right: 1px solid #d8dee5; overflow: hidden; display: flex; flex-direction: column; }
+    .stage { border-bottom: 1px solid #d8dee5; padding: 8px 16px; }
+    .stagehead { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+    .stagehead h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: #64748b; margin: 0; font-weight: 600; flex: 1 1 auto; }
+    .chev { flex: 0 0 auto; color: #64748b; }
+    .summary { color: #64748b; font-size: 12.5px; margin-top: 6px; }
+    .summary strong { color: #1f2933; font-weight: 600; }
+    .stage:host { display: block;  margin-top: 10px; }
+    .seg { display: flex; gap: 6px; margin-bottom: 10px; }
+    .seg button { flex: 1 1 auto; padding: 6px 8px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12px; cursor: pointer; }
+    .seg button.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .frow { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .frow label { flex: 0 0 128px; color: #64748b; font-size: 12.5px; }
+    .frow .val { flex: 1 1 auto; padding: 5px 8px; border: 1px solid #d8dee5; border-radius: 5px; background: #ffffff; font-size: 13px; font-variant-numeric: tabular-nums; }
+    .hint { color: #64748b; font-size: 11.5px; margin-top: 4px; }
+    .stageactions { display: flex; gap: 6px; margin-top: 10px; }
+    .stageactions .btn { font-size: 11.5px; padding: 5px 9px; }
+    .viewport { flex: 1 1 auto; position: relative; overflow: hidden; }
+    .chip { position: absolute; left: 14px; bottom: 14px; background: rgba(255,255,255,0.85); border: 1px solid #d8dee5; border-radius: 6px; padding: 5px 10px; font-size: 11.5px; color: #64748b; }
+    .viewhint { position: absolute; right: 14px; bottom: 14px; background: rgba(255,255,255,0.7); border: 1px solid #d8dee5; border-radius: 6px; padding: 5px 10px; font-size: 11.5px; color: #64748b; }
+    .runbar { display: flex; align-items: center; gap: 16px; padding: 12px 20px; background: #ffffff; border-top: 1px solid #d8dee5; height: 86px; }
+    .runbar .seg { margin-bottom: 0; flex: 0 0 auto; }
+    .runbar .seg button { flex: 0 0 auto; padding: 7px 12px; }
+    .results { display: flex; align-items: center; gap: 18px; margin-left: auto; }
+    .metric { text-align: right; }
+    .metric .num { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .metric .lbl { font-size: 11px; color: #64748b; }
+    .fluxthumb { width: 58px; height: 58px; border: 1px solid #d8dee5; border-radius: 6px; overflow: hidden; }
+    .stamp { color: #64748b; font-size: 11px; }
+  </style><div style="width: 1440px; height: 900px; display: flex; flex-direction: column; background: #f7f8fa; overflow: hidden">
+
+  <div class="topbar">
+    <div style="width: 26px; height: 26px; border: 1.5px dashed #45739e; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: #45739e; font-size: 11px; font-weight: 700">C</div>
+    <h1>Coddington</h1>
+    <span class="tag">Manuscript baseline — axicon</span>
+    <div class="apptabs">
+      <div class="tab active">Workspace</div>
+      <div class="tab">Heliostat Shape</div>
+      <div class="tab">Analysis</div>
+    </div>
+    <div class="right">
+      <div class="btn">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="#1f2933" stroke-width="1.5" style="vertical-align: -2px"><path d="M2.5 3.5h11v10h-11z"></path><path d="M2.5 6.5h11M6 6.5v7"></path></svg>
+        Library
+      </div>
+      <span class="savestate">
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#64748b" stroke-width="1.8"><path d="M2.5 8.5l3.5 3.5 7-7.5"></path></svg>
+        Saved
+      </span>
+    </div>
+  </div>
+
+  <div class="shell">
+    <div class="sidebar">
+
+      <div class="stage">
+        <div class="stagehead">
+          <span class="chev"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="#64748b" stroke-width="2"><path d="M5 3l6 5-6 5"></path></svg></span>
+          <h2>Heliostat</h2>
+          <a style="font-size: 11.5px">Edit shape…</a>
+        </div>
+        <div class="summary"><strong>Manuscript 5 × 3 m</strong> — rectangle, twisting figure</div>
+      </div>
+
+      <div class="stage">
+        <div class="stagehead">
+          <span class="chev"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="#64748b" stroke-width="2"><path d="M3 5l5 6 5-6"></path></svg></span>
+          <h2>Field</h2>
+        </div>
+        <div class="stagebody">
+          <div class="seg">
+            <button>Single heliostat</button>
+            <button class="active">Field</button>
+          </div>
+          <div class="frow"><label>Layout</label><div class="val">Fermat spiral</div></div>
+          <div class="frow"><label>Heliostats</label><div class="val">643</div></div>
+          <div class="frow"><label>Nearest radius (m)</label><div class="val">30</div></div>
+          <div class="frow"><label>Farthest radius (m)</label><div class="val">90</div></div>
+          <div class="hint">Viewing up to 10,000 · tracing up to 1,000</div>
+        </div>
+      </div>
+
+      <div class="stage">
+        <div class="stagehead">
+          <span class="chev"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="#64748b" stroke-width="2"><path d="M3 5l5 6 5-6"></path></svg></span>
+          <h2>Receiver &amp; Tower</h2>
+        </div>
+        <div class="stagebody">
+          <div class="seg">
+            <button>Prime focus</button>
+            <button class="active">Axicon</button>
+            <button>Cassegrain</button>
+          </div>
+          <div class="frow"><label>Apex height (mm)</label><div class="val">27 000</div></div>
+          <div class="frow"><label>Half angle (°)</label><div class="val">20.0</div></div>
+          <div class="frow"><label>Aperture radius (mm)</label><div class="val">14 000</div></div>
+          <div class="frow"><label>Receiver height (mm)</label><div class="val">7 000</div></div>
+          <div class="frow"><label>Window ½ w / ½ h (mm)</label><div class="val">2 000 / 2 000</div></div>
+          <div class="stageactions">
+            <div class="btn">Save config…</div>
+            <div class="btn">Swap from library…</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="stage">
+        <div class="stagehead">
+          <span class="chev"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="#64748b" stroke-width="2"><path d="M5 3l6 5-6 5"></path></svg></span>
+          <h2>Sun</h2>
+        </div>
+        <div class="summary"><strong>Az 165.2° · El 61.4°</strong> — from site &amp; time, Mar 21 12:30</div>
+      </div>
+
+      <div style="margin-top: auto; border-top: 1px solid #d8dee5; padding: 5px 16px; display: flex; align-items: center; gap: 8px">
+        <svg viewBox="0 0 540 100" width="86" height="16" opacity="0.9"><g transform="translate(28.5 50) scale(0.8182)"><path d="M -19.85,-44 L -13.85,-44 Q 16.15,0 -13.85,44 L -19.85,44 Q -49.85,0 -19.85,-44 Z" fill="#00AEEF"></path><path d="M 4.85,-44 L 34.85,-44 L 34.85,44 L 4.85,44 Q 34.85,0 4.85,-44 Z" fill="#000000"></path></g><text x="72" y="73" font-family="'Segoe UI', sans-serif" font-size="64" font-weight="600"><tspan fill="#00AEEF">Ryker</tspan><tspan fill="#1f2933">Optics</tspan></text></svg>
+        <a style="font-size: 11px; margin-left: auto">About</a>
+      </div>
+    </div>
+
+    <div class="viewport">      <svg viewBox="0 0 1140 738" width="100%" height="100%" preserveAspectRatio="xMidYMid slice">
+        <defs>
+          <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#f4f7fb"></stop>
+            <stop offset="1" stop-color="#dbe4ee"></stop>
+          </linearGradient>
+        </defs>
+        <rect width="1140" height="738" fill="url(#sky)"></rect>
+
+        <g stroke="rgba(110,130,150,0.13)" stroke-width="1">
+          <line x1="570" y1="310" x2="-340" y2="738"></line>
+          <line x1="570" y1="310" x2="-60" y2="738"></line>
+          <line x1="570" y1="310" x2="180" y2="738"></line>
+          <line x1="570" y1="310" x2="400" y2="738"></line>
+          <line x1="570" y1="310" x2="570" y2="738" stroke="rgba(110,130,150,0.26)"></line>
+          <line x1="570" y1="310" x2="740" y2="738"></line>
+          <line x1="570" y1="310" x2="960" y2="738"></line>
+          <line x1="570" y1="310" x2="1200" y2="738"></line>
+          <line x1="570" y1="310" x2="1480" y2="738"></line>
+          <line x1="0" y1="340" x2="1140" y2="340"></line>
+          <line x1="0" y1="385" x2="1140" y2="385"></line>
+          <line x1="0" y1="445" x2="1140" y2="445" stroke="rgba(110,130,150,0.26)"></line>
+          <line x1="0" y1="525" x2="1140" y2="525"></line>
+          <line x1="0" y1="630" x2="1140" y2="630"></line>
+        </g>
+
+        <g stroke="rgba(255,146,54,0.30)" stroke-width="1.5" fill="none">
+          <path d="M188 590 L495 187 L566 470"></path>
+          <path d="M300 590 L512 203 L568 470"></path>
+          <path d="M868 585 L640 195 L574 470"></path>
+          <path d="M985 588 L662 180 L576 470"></path>
+          <path d="M240 480 L502 192 L567 470"></path>
+          <path d="M905 478 L650 188 L575 470"></path>
+          <path d="M400 415 L528 218 L569 470"></path>
+          <path d="M745 412 L618 214 L573 470"></path>
+        </g>
+
+        <line x1="570" y1="470" x2="570" y2="266" stroke="#7b8794" stroke-width="5"></line>
+        <path d="M570 268 L455 150 L685 150 Z" fill="rgba(126,158,196,0.30)" stroke="rgba(52,90,128,0.55)" stroke-width="1.5"></path>
+        <ellipse cx="570" cy="150" rx="115" ry="20" fill="rgba(126,158,196,0.18)" stroke="rgba(52,90,128,0.55)" stroke-width="1.5"></ellipse>
+
+        <path d="M534 466 L606 466 L626 486 L554 486 Z" fill="rgba(217,123,41,0.55)" stroke="#a8551a" stroke-width="1.5"></path>
+
+        <g fill="rgba(196,218,238,0.96)" stroke="#33455c" stroke-width="1.2">
+          <path d="M130 560 L250 552 L262 606 L142 616 Z"></path>
+          <path d="M290 556 L400 550 L410 600 L300 608 Z"></path>
+          <path d="M760 550 L870 556 L860 608 L748 600 Z"></path>
+          <path d="M925 552 L1040 560 L1028 616 L912 606 Z"></path>
+          <path d="M190 462 L275 458 L282 494 L196 498 Z"></path>
+          <path d="M330 458 L410 454 L416 488 L336 492 Z"></path>
+          <path d="M755 454 L838 458 L830 492 L748 488 Z"></path>
+          <path d="M880 458 L962 462 L954 498 L872 494 Z"></path>
+          <path d="M235 402 L295 400 L299 426 L239 428 Z"></path>
+          <path d="M355 398 L412 396 L415 421 L358 423 Z"></path>
+          <path d="M460 396 L512 394 L514 418 L462 420 Z"></path>
+          <path d="M640 394 L692 396 L690 420 L638 418 Z"></path>
+          <path d="M735 396 L792 398 L789 423 L732 421 Z"></path>
+          <path d="M845 400 L905 402 L901 428 L841 426 Z"></path>
+          <path d="M300 362 L342 360 L344 378 L302 380 Z"></path>
+          <path d="M395 358 L434 357 L436 374 L397 376 Z"></path>
+          <path d="M480 356 L516 355 L517 371 L481 372 Z"></path>
+          <path d="M630 355 L666 356 L665 372 L629 371 Z"></path>
+          <path d="M712 357 L751 358 L749 376 L710 374 Z"></path>
+          <path d="M805 360 L847 362 L844 380 L802 378 Z"></path>
+        </g>
+
+        <g>
+          <circle cx="985" cy="88" r="17" fill="#f0b429"></circle>
+          <g stroke="#f0b429" stroke-width="2.5">
+            <line x1="985" y1="58" x2="985" y2="66"></line>
+            <line x1="985" y1="110" x2="985" y2="118"></line>
+            <line x1="955" y1="88" x2="963" y2="88"></line>
+            <line x1="1007" y1="88" x2="1015" y2="88"></line>
+            <line x1="964" y1="67" x2="970" y2="73"></line>
+            <line x1="1000" y1="103" x2="1006" y2="109"></line>
+            <line x1="1006" y1="67" x2="1000" y2="73"></line>
+            <line x1="970" y1="103" x2="964" y2="109"></line>
+          </g>
+        </g>
+      </svg>
+      <div class="chip">Corner chief rays — viewing aid, no shading · 643 heliostats</div>
+      <div class="viewhint">drag to orbit · right-drag to pan · scroll to zoom · click an object to edit it</div>
+    </div>
+  </div>
+
+  <div class="runbar">
+    <div class="seg">
+      <button>Ultra fast</button>
+      <button class="active">Fast accurate</button>
+      <button>Monte Carlo</button>
+    </div>
+    <div class="btn primary">
+      <svg width="11" height="11" viewBox="0 0 16 16" fill="#ffffff" style="vertical-align: -1px"><path d="M4 2.5l9 5.5-9 5.5z"></path></svg>
+      Run trace
+    </div>
+    <div class="results">
+      <div class="metric"><div class="num">612 kW/m²</div><div class="lbl">peak flux</div></div>
+      <div class="metric"><div class="num">148 kW/m²</div><div class="lbl">mean flux</div></div>
+      <div class="metric"><div class="num">87.4 %</div><div class="lbl">intercept</div></div>
+      <div class="fluxthumb">
+        <svg viewBox="0 0 58 58" width="58" height="58">
+          <rect width="58" height="58" fill="#20124d"></rect>
+          <circle cx="29" cy="29" r="20" fill="#7a1fa2"></circle>
+          <circle cx="29" cy="29" r="13" fill="#e4572e"></circle>
+          <circle cx="29" cy="29" r="7" fill="#f9c22e"></circle>
+          <circle cx="29" cy="29" r="3" fill="#fff8e1"></circle>
+        </svg>
+      </div>
+      <div>
+        <div class="stamp">traced 12:38:04 · fast accurate</div>
+        <a style="font-size: 12px">Export flux CSV</a>
+      </div>
+    </div>
+  </div>
+
+</div></template></div></div>
+  <div class="checknote"><strong>Rev 5:</strong> the dashed square in the top bar is the placeholder for the Coddington logo; the Ryker Optics lockup sits quietly at the bottom of the sidebar with the About link.</div>
+
+  <h2><span class="num">2</span>Click the cone — one source of truth, with warnings</h2>
+  <p class="screennote">Selecting the axicon secondary opens a floating inspector showing <strong>exactly the same fields as the sidebar stage, always in sync</strong> — no hidden overrides, no separate Apply. Here the half angle was raised to 22.5°: the solution is still legal, so the <strong>aperture radius shows an amber warning</strong> — "needs ≥ 15 800 mm" — with dashed red rays where the outer field misses the cone. Rev 3 adds your near-field case: <strong>a heliostat so close its aim point can't reach the cone at all is highlighted red</strong>, its miss ray dashed, and the warning counts it. Nothing is grown automatically. An impossible geometry shows <em>red at the field</em> instead, and the scene keeps the last valid shape.</p>
+  <div class="stage"><div class="mock"><template shadowrootmode="open"><style>
+    :host { display: block;  margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 14px; color: #1f2933; background: #f7f8fa; }
+    a { color: #45739e; } a:hover { color: #345a80; }
+    .topbar { display: flex; align-items: center; gap: 10px; padding: 0 20px; height: 52px; background: #ffffff; border-bottom: 1px solid #d8dee5; }
+    .topbar h1 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: 0.02em; }
+    .tag { color: #64748b; font-size: 12px; }
+    .apptabs { display: flex; gap: 6px; margin-left: 28px; }
+    .apptabs .tab { padding: 7px 14px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; cursor: pointer; }
+    .apptabs .tab.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .topbar .right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+    .btn { padding: 7px 12px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; cursor: pointer; }
+    .btn.primary { background: #45739e; border-color: #345a80; color: #ffffff; font-weight: 600; }
+    .savestate { color: #64748b; font-size: 12px; display: flex; align-items: center; gap: 5px; }
+    .shell { display: flex; height: 738px; }
+    .sidebar { flex: 0 0 300px; background: #ffffff; border-right: 1px solid #d8dee5; overflow: hidden; display: flex; flex-direction: column; }
+    .stage { border-bottom: 1px solid #d8dee5; padding: 8px 16px; }
+    .stage.selectedstage { background: #f2f7fd; box-shadow: inset 3px 0 0 #0b5fd0; }
+    .stagehead { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+    .stagehead h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: #64748b; margin: 0; font-weight: 600; flex: 1 1 auto; }
+    .chev { flex: 0 0 auto; color: #64748b; }
+    .summary { color: #64748b; font-size: 12.5px; margin-top: 6px; }
+    .summary strong { color: #1f2933; font-weight: 600; }
+    .stage:host { display: block;  margin-top: 10px; }
+    .seg { display: flex; gap: 6px; margin-bottom: 10px; }
+    .seg button { flex: 1 1 auto; padding: 6px 8px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12px; cursor: pointer; }
+    .seg button.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .frow { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .frow label { flex: 0 0 128px; color: #64748b; font-size: 12.5px; }
+    .frow .val { flex: 1 1 auto; padding: 5px 8px; border: 1px solid #d8dee5; border-radius: 5px; background: #ffffff; font-size: 13px; font-variant-numeric: tabular-nums; }
+    .frow .val.editing { border-color: #0b5fd0; box-shadow: 0 0 0 2px rgba(11,95,208,0.15); }
+    .frow .val.invalid { border-color: #e0554a; background: #fdeceb; color: #8a2c22; }
+    .frow .val.warn { border-color: #d97b29; background: #fdf3e7; color: #8a4d12; }
+    .fielderr { color: #8a2c22; background: #fdeceb; border: 1px solid #e0554a; border-radius: 5px; font-size: 11.5px; padding: 5px 8px; margin: -2px 0 8px 136px; }
+    .fieldwarn { color: #8a4d12; background: #fdf3e7; border: 1px solid #d97b29; border-radius: 5px; font-size: 11.5px; padding: 5px 8px; margin: -2px 0 8px 136px; }
+    .hint { color: #64748b; font-size: 11.5px; margin-top: 4px; }
+    .viewport { flex: 1 1 auto; position: relative; overflow: hidden; }
+    .chip { position: absolute; left: 14px; bottom: 14px; background: rgba(255,255,255,0.85); border: 1px solid #d8dee5; border-radius: 6px; padding: 5px 10px; font-size: 11.5px; color: #64748b; }
+    .inspector { position: absolute; left: 660px; top: 60px; width: 268px; background: rgba(255,255,255,0.97); border: 1px solid #d8dee5; border-radius: 10px; box-shadow: 0 6px 22px rgba(31,41,51,0.14); padding: 12px 14px; }
+    .inspector h3 { margin: 0 0 2px 0; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 7px; }
+    .inspector .sub { color: #64748b; font-size: 11.5px; margin-bottom: 10px; }
+    .inspector .close { position: absolute; top: 8px; right: 10px; color: #64748b; font-size: 14px; cursor: pointer; }
+    .inspector .frow label { flex: 0 0 118px; }
+    .inspector .fielderr { margin-left: 0; }
+    .inspector .foot { color: #64748b; font-size: 11px; border-top: 1px solid #d8dee5; padding-top: 8px; margin-top: 4px; }
+    .runbar { display: flex; align-items: center; gap: 16px; padding: 12px 20px; background: #ffffff; border-top: 1px solid #d8dee5; height: 86px; }
+    .runbar .seg { margin-bottom: 0; flex: 0 0 auto; }
+    .runbar .seg button { flex: 0 0 auto; padding: 7px 12px; }
+    .results { display: flex; align-items: center; gap: 18px; margin-left: auto; }
+    .results.stale { opacity: 0.45; }
+    .metric { text-align: right; }
+    .metric .num { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .metric .lbl { font-size: 11px; color: #64748b; }
+    .fluxthumb { width: 58px; height: 58px; border: 1px solid #d8dee5; border-radius: 6px; overflow: hidden; }
+    .stalechip { border: 1px solid #d8dee5; background: #f7f8fa; color: #64748b; border-radius: 6px; padding: 5px 10px; font-size: 11.5px; }
+  </style><div style="width: 1440px; height: 900px; display: flex; flex-direction: column; background: #f7f8fa; overflow: hidden">
+
+  <div class="topbar">
+    <div style="width: 26px; height: 26px; border: 1.5px dashed #45739e; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: #45739e; font-size: 11px; font-weight: 700">C</div>
+    <h1>Coddington</h1>
+    <span class="tag">Manuscript baseline — axicon</span>
+    <div class="apptabs">
+      <div class="tab active">Workspace</div>
+      <div class="tab">Heliostat Shape</div>
+      <div class="tab">Analysis</div>
+    </div>
+    <div class="right">
+      <div class="btn">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="#1f2933" stroke-width="1.5" style="vertical-align: -2px"><path d="M2.5 3.5h11v10h-11z"></path><path d="M2.5 6.5h11M6 6.5v7"></path></svg>
+        Library
+      </div>
+      <span class="savestate">Unsaved changes</span>
+    </div>
+  </div>
+
+  <div class="shell">
+    <div class="sidebar">
+
+      <div class="stage">
+        <div class="stagehead">
+          <span class="chev"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="#64748b" stroke-width="2"><path d="M5 3l6 5-6 5"></path></svg></span>
+          <h2>Heliostat</h2>
+          <a style="font-size: 11.5px">Edit shape…</a>
+        </div>
+        <div class="summary"><strong>Manuscript 5 × 3 m</strong> — rectangle, twisting figure</div>
+      </div>
+
+      <div class="stage">
+        <div class="stagehead">
+          <span class="chev"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="#64748b" stroke-width="2"><path d="M5 3l6 5-6 5"></path></svg></span>
+          <h2>Field</h2>
+        </div>
+        <div class="summary"><strong>Fermat spiral · 643</strong> — 30 m to 90 m</div>
+      </div>
+
+      <div class="stage selectedstage">
+        <div class="stagehead">
+          <span class="chev"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="#64748b" stroke-width="2"><path d="M3 5l5 6 5-6"></path></svg></span>
+          <h2>Receiver &amp; Tower</h2>
+          <span style="font-size: 10.5px; color: #0b5fd0; font-weight: 600">SELECTED IN SCENE</span>
+        </div>
+        <div class="stagebody">
+          <div class="seg">
+            <button>Prime focus</button>
+            <button class="active">Axicon</button>
+            <button>Cassegrain</button>
+          </div>
+          <div class="frow"><label>Apex height (mm)</label><div class="val">27 000</div></div>
+          <div class="frow"><label>Half angle (°)</label><div class="val editing">22.5</div></div>
+          <div class="frow"><label>Aperture radius (mm)</label><div class="val warn">14 000</div></div>
+          <div class="fieldwarn">Too small for a 22.5° half angle — the outer field misses the cone (needs ≥ 15 800 mm; not grown automatically), and 1 near heliostat cannot hit it at all (highlighted red).</div>
+          <div class="frow"><label>Receiver height (mm)</label><div class="val">7 000</div></div>
+          <div class="frow"><label>Window ½ w / ½ h (mm)</label><div class="val">2 000 / 2 000</div></div>
+          <div class="hint">Warnings leave the geometry live; a hard error (impossible geometry) shows red and the scene keeps the last valid shape.</div>
+        </div>
+      </div>
+
+      <div class="stage">
+        <div class="stagehead">
+          <span class="chev"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="#64748b" stroke-width="2"><path d="M5 3l6 5-6 5"></path></svg></span>
+          <h2>Sun</h2>
+        </div>
+        <div class="summary"><strong>Az 165.2° · El 61.4°</strong> — from site &amp; time, Mar 21 12:30</div>
+      </div>
+
+      <div style="margin-top: auto; border-top: 1px solid #d8dee5; padding: 5px 16px; display: flex; align-items: center; gap: 8px">
+        <svg viewBox="0 0 540 100" width="86" height="16" opacity="0.9"><g transform="translate(28.5 50) scale(0.8182)"><path d="M -19.85,-44 L -13.85,-44 Q 16.15,0 -13.85,44 L -19.85,44 Q -49.85,0 -19.85,-44 Z" fill="#00AEEF"></path><path d="M 4.85,-44 L 34.85,-44 L 34.85,44 L 4.85,44 Q 34.85,0 4.85,-44 Z" fill="#000000"></path></g><text x="72" y="73" font-family="'Segoe UI', sans-serif" font-size="64" font-weight="600"><tspan fill="#00AEEF">Ryker</tspan><tspan fill="#1f2933">Optics</tspan></text></svg>
+        <a style="font-size: 11px; margin-left: auto">About</a>
+      </div>
+    </div>
+
+    <div class="viewport">      <svg viewBox="0 0 1140 738" width="100%" height="100%" preserveAspectRatio="xMidYMid slice">
+        <defs>
+          <linearGradient id="sky2" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#f4f7fb"></stop>
+            <stop offset="1" stop-color="#dbe4ee"></stop>
+          </linearGradient>
+        </defs>
+        <rect width="1140" height="738" fill="url(#sky2)"></rect>
+
+        <g stroke="rgba(110,130,150,0.13)" stroke-width="1">
+          <line x1="570" y1="310" x2="-340" y2="738"></line>
+          <line x1="570" y1="310" x2="-60" y2="738"></line>
+          <line x1="570" y1="310" x2="180" y2="738"></line>
+          <line x1="570" y1="310" x2="400" y2="738"></line>
+          <line x1="570" y1="310" x2="570" y2="738" stroke="rgba(110,130,150,0.26)"></line>
+          <line x1="570" y1="310" x2="740" y2="738"></line>
+          <line x1="570" y1="310" x2="960" y2="738"></line>
+          <line x1="570" y1="310" x2="1200" y2="738"></line>
+          <line x1="570" y1="310" x2="1480" y2="738"></line>
+          <line x1="0" y1="340" x2="1140" y2="340"></line>
+          <line x1="0" y1="385" x2="1140" y2="385"></line>
+          <line x1="0" y1="445" x2="1140" y2="445" stroke="rgba(110,130,150,0.26)"></line>
+          <line x1="0" y1="525" x2="1140" y2="525"></line>
+          <line x1="0" y1="630" x2="1140" y2="630"></line>
+        </g>
+
+        <g stroke="rgba(255,146,54,0.30)" stroke-width="1.5" fill="none">
+          <path d="M300 590 L512 203 L568 470"></path>
+          <path d="M868 585 L640 195 L574 470"></path>
+          <path d="M240 480 L502 192 L567 470"></path>
+          <path d="M905 478 L650 188 L575 470"></path>
+        </g>
+        <g stroke="rgba(224,85,74,0.55)" stroke-width="1.5" fill="none" stroke-dasharray="6 5">
+          <path d="M188 590 L448 143 L390 40"></path>
+          <path d="M985 588 L694 142 L760 38"></path>
+          <path d="M487 405 L552 118 L562 36"></path>
+        </g>
+        <path d="M460 396 L512 394 L514 418 L462 420 Z" fill="rgba(224,85,74,0.30)" stroke="#e0554a" stroke-width="1.4"></path>
+
+        <line x1="570" y1="470" x2="570" y2="266" stroke="#7b8794" stroke-width="5"></line>
+        <path d="M570 268 L455 150 L685 150 Z" fill="rgba(126,158,196,0.42)" stroke="#0b5fd0" stroke-width="2.5"></path>
+        <ellipse cx="570" cy="150" rx="115" ry="20" fill="rgba(126,158,196,0.22)" stroke="#0b5fd0" stroke-width="2.5"></ellipse>
+        <path d="M570 268 L455 150 L685 150 Z" fill="none" stroke="rgba(11,95,208,0.25)" stroke-width="7"></path>
+
+        <path d="M534 466 L606 466 L626 486 L554 486 Z" fill="rgba(217,123,41,0.55)" stroke="#a8551a" stroke-width="1.5"></path>
+
+        <g fill="rgba(196,218,238,0.96)" stroke="#33455c" stroke-width="1.2">
+          <path d="M130 560 L250 552 L262 606 L142 616 Z"></path>
+          <path d="M290 556 L400 550 L410 600 L300 608 Z"></path>
+          <path d="M760 550 L870 556 L860 608 L748 600 Z"></path>
+          <path d="M925 552 L1040 560 L1028 616 L912 606 Z"></path>
+          <path d="M190 462 L275 458 L282 494 L196 498 Z"></path>
+          <path d="M330 458 L410 454 L416 488 L336 492 Z"></path>
+          <path d="M755 454 L838 458 L830 492 L748 488 Z"></path>
+          <path d="M880 458 L962 462 L954 498 L872 494 Z"></path>
+          <path d="M235 402 L295 400 L299 426 L239 428 Z"></path>
+          <path d="M355 398 L412 396 L415 421 L358 423 Z"></path>
+          <path d="M640 394 L692 396 L690 420 L638 418 Z"></path>
+          <path d="M735 396 L792 398 L789 423 L732 421 Z"></path>
+          <path d="M845 400 L905 402 L901 428 L841 426 Z"></path>
+        </g>
+
+        <g>
+          <circle cx="985" cy="88" r="17" fill="#f0b429"></circle>
+          <g stroke="#f0b429" stroke-width="2.5">
+            <line x1="985" y1="58" x2="985" y2="66"></line>
+            <line x1="985" y1="110" x2="985" y2="118"></line>
+            <line x1="955" y1="88" x2="963" y2="88"></line>
+            <line x1="1007" y1="88" x2="1015" y2="88"></line>
+            <line x1="964" y1="67" x2="970" y2="73"></line>
+            <line x1="1000" y1="103" x2="1006" y2="109"></line>
+            <line x1="1006" y1="67" x2="1000" y2="73"></line>
+            <line x1="970" y1="103" x2="964" y2="109"></line>
+          </g>
+        </g>
+      </svg>
+
+      <div class="inspector">
+        <div class="close">×</div>
+        <h3>
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="#0b5fd0" stroke-width="1.6"><path d="M8 2l5 10H3z"></path></svg>
+          Axicon secondary
+        </h3>
+        <div class="sub">Selected in scene · same fields as Receiver &amp; Tower</div>
+        <div class="frow"><label>Apex height (mm)</label><div class="val">27 000</div></div>
+        <div class="frow"><label>Half angle (°)</label><div class="val editing">22.5</div></div>
+        <div class="frow"><label>Aperture radius (mm)</label><div class="val warn">14 000</div></div>
+        <div class="fieldwarn">Needs ≥ 15 800 mm for 22.5° — outer field misses (dashed); 1 near heliostat can’t hit the cone at all (red).</div>
+        <div class="frow"><label>Receiver height (mm)</label><div class="val">7 000</div></div>
+        <div class="foot">Edits apply live and sync with the sidebar — there is no separate Apply.</div>
+      </div>
+
+      <div class="chip">Corner chief rays — viewing aid, no shading · dashed red rays miss the aperture</div>
+    </div>
+  </div>
+
+  <div class="runbar">
+    <div class="seg">
+      <button>Ultra fast</button>
+      <button class="active">Fast accurate</button>
+      <button>Monte Carlo</button>
+    </div>
+    <div class="btn primary">
+      <svg width="11" height="11" viewBox="0 0 16 16" fill="#ffffff" style="vertical-align: -1px"><path d="M4 2.5l9 5.5-9 5.5z"></path></svg>
+      Run trace
+    </div>
+    <div class="stalechip">Edited since last run — results below are stale</div>
+    <div class="results stale">
+      <div class="metric"><div class="num">612 kW/m²</div><div class="lbl">peak flux</div></div>
+      <div class="metric"><div class="num">148 kW/m²</div><div class="lbl">mean flux</div></div>
+      <div class="metric"><div class="num">87.4 %</div><div class="lbl">intercept</div></div>
+      <div class="fluxthumb">
+        <svg viewBox="0 0 58 58" width="58" height="58">
+          <rect width="58" height="58" fill="#20124d"></rect>
+          <circle cx="29" cy="29" r="20" fill="#7a1fa2"></circle>
+          <circle cx="29" cy="29" r="13" fill="#e4572e"></circle>
+          <circle cx="29" cy="29" r="7" fill="#f9c22e"></circle>
+          <circle cx="29" cy="29" r="3" fill="#fff8e1"></circle>
+        </svg>
+      </div>
+      <div>
+        <div style="color: #64748b; font-size: 11px">traced 12:38:04 · fast accurate</div>
+      </div>
+    </div>
+  </div>
+
+</div></template></div></div>
+  <div class="checknote"><strong>Rev 3:</strong> near-heliostat total-miss flagged (red mirror + counted in the warning). Same treatment applies whatever caused it — half angle, apex height, or a heliostat dragged too close in plan view.</div>
+
+  <h2><span class="num">3</span>Field plan view — opens with the Field stage</h2>
+  <p class="screennote">Expanding the <strong>Field</strong> stage switches the viewport to a top-down plan: rings at the layout radii, the receiver and axicon aperture at center, every heliostat visible relative to them. <strong>Drag a heliostat to move it</strong> (an override, counted with a reset), double-click empty ground to add one. Rev 4: the <strong>layout picker</strong> now includes honeycomb (Fermat spiral default; radial staggered, grid, honeycomb, imported CSV), and roads take <strong>any form</strong>: here an 8 m access road on the South half only — preserving the high-performance North field — plus a 6 m ring road at 60 m, together cutting 62 heliostats.</p>
+  <div class="stage"><div class="mock"><template shadowrootmode="open"><style>
+    :host { display: block;  margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 14px; color: #1f2933; background: #f7f8fa; }
+    a { color: #45739e; } a:hover { color: #345a80; }
+    .topbar { display: flex; align-items: center; gap: 10px; padding: 0 20px; height: 52px; background: #ffffff; border-bottom: 1px solid #d8dee5; }
+    .topbar h1 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: 0.02em; }
+    .tag { color: #64748b; font-size: 12px; }
+    .apptabs { display: flex; gap: 6px; margin-left: 28px; }
+    .apptabs .tab { padding: 7px 14px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; cursor: pointer; }
+    .apptabs .tab.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .topbar .right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+    .btn { padding: 7px 12px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; cursor: pointer; }
+    .shell { display: flex; height: 762px; }
+    .sidebar { flex: 0 0 300px; background: #ffffff; border-right: 1px solid #d8dee5; overflow: hidden; display: flex; flex-direction: column; }
+    .stage { border-bottom: 1px solid #d8dee5; padding: 12px 16px; }
+    .stage.selectedstage { background: #f2f7fd; box-shadow: inset 3px 0 0 #0b5fd0; }
+    .stagehead { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+    .stagehead h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: #64748b; margin: 0; font-weight: 600; flex: 1 1 auto; }
+    .chev { flex: 0 0 auto; color: #64748b; }
+    .modechip { font-size: 10.5px; color: #0b5fd0; font-weight: 600; }
+    .summary { color: #64748b; font-size: 12.5px; margin-top: 6px; }
+    .summary strong { color: #1f2933; font-weight: 600; }
+    .stage:host { display: block;  margin-top: 10px; }
+    .seg { display: flex; gap: 6px; margin-bottom: 10px; }
+    .seg button { flex: 1 1 auto; padding: 6px 8px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12px; cursor: pointer; }
+    .seg button.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .frow { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .frow label { flex: 0 0 128px; color: #64748b; font-size: 12.5px; }
+    .frow .val { flex: 1 1 auto; padding: 5px 8px; border: 1px solid #d8dee5; border-radius: 5px; background: #ffffff; font-size: 13px; font-variant-numeric: tabular-nums; }
+    .hint { color: #64748b; font-size: 11.5px; margin-top: 4px; }
+    .overrides { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 11.5px; color: #64748b; }
+    .overrides .btn { padding: 4px 9px; font-size: 11.5px; }
+    .viewport { flex: 1 1 auto; position: relative; overflow: hidden; background: #fdfdfe; }
+    .chip { position: absolute; left: 14px; bottom: 14px; background: rgba(255,255,255,0.9); border: 1px solid #d8dee5; border-radius: 6px; padding: 5px 10px; font-size: 11.5px; color: #64748b; }
+    .viewpill { position: absolute; right: 14px; top: 14px; background: #ffffff; border: 1px solid #d8dee5; border-radius: 6px; padding: 5px 10px; font-size: 11.5px; color: #1f2933; display: flex; gap: 8px; align-items: center; }
+    .viewpill .mode { font-weight: 600; color: #0b5fd0; }
+    .viewpill a { font-size: 11.5px; }
+  </style><div style="width: 1440px; height: 900px; display: flex; flex-direction: column; background: #f7f8fa; overflow: hidden">
+
+  <div class="topbar">
+    <div style="width: 26px; height: 26px; border: 1.5px dashed #45739e; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: #45739e; font-size: 11px; font-weight: 700">C</div>
+    <h1>Coddington</h1>
+    <span class="tag">Manuscript baseline — axicon</span>
+    <div class="apptabs">
+      <div class="tab active">Workspace</div>
+      <div class="tab">Heliostat Shape</div>
+      <div class="tab">Analysis</div>
+    </div>
+    <div class="right">
+      <div class="btn">Library</div>
+      <span class="tag">Unsaved changes</span>
+    </div>
+  </div>
+
+  <div class="shell">
+    <div class="sidebar">
+
+      <div class="stage">
+        <div class="stagehead">
+          <span class="chev"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="#64748b" stroke-width="2"><path d="M5 3l6 5-6 5"></path></svg></span>
+          <h2>Heliostat</h2>
+          <a style="font-size: 11.5px">Edit shape…</a>
+        </div>
+        <div class="summary"><strong>Manuscript 5 × 3 m</strong> — rectangle, twisting figure</div>
+      </div>
+
+      <div class="stage selectedstage">
+        <div class="stagehead">
+          <span class="chev"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="#64748b" stroke-width="2"><path d="M3 5l5 6 5-6"></path></svg></span>
+          <h2>Field</h2>
+          <span class="modechip">PLAN VIEW</span>
+        </div>
+        <div class="stagebody">
+          <div class="seg">
+            <button>Single heliostat</button>
+            <button class="active">Field</button>
+          </div>
+          <div class="frow"><label>Layout</label><div class="val">Fermat spiral ▾</div></div>
+          <div class="hint" style="margin: -4px 0 8px 136px">also: radial staggered · grid · honeycomb · imported CSV</div>
+          <div class="frow"><label>Heliostats</label><div class="val">581</div></div>
+          <div class="frow"><label>Nearest radius (m)</label><div class="val">30</div></div>
+          <div class="frow"><label>Farthest radius (m)</label><div class="val">90</div></div>
+          <div class="frow"><label>Roads</label><div class="val">2 — S access 8 m · ring 6 m @ 60 m</div></div>
+          <div class="hint">Roads take any angle, extent, or ring form and cut the heliostats they cross (−62 here) — the North field stays intact</div>
+          <div class="hint">Viewing up to 10,000 · tracing up to 1,000</div>
+          <div class="overrides">
+            <span><strong style="color: #1f2933">1</strong> moved heliostat</span>
+            <div class="btn">Reset overrides</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="stage">
+        <div class="stagehead">
+          <span class="chev"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="#64748b" stroke-width="2"><path d="M5 3l6 5-6 5"></path></svg></span>
+          <h2>Receiver &amp; Tower</h2>
+        </div>
+        <div class="summary"><strong>Axicon 27 m / 20° / 14 m</strong> — receiver at 7 m</div>
+      </div>
+
+      <div class="stage">
+        <div class="stagehead">
+          <span class="chev"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="#64748b" stroke-width="2"><path d="M5 3l6 5-6 5"></path></svg></span>
+          <h2>Sun</h2>
+        </div>
+        <div class="summary"><strong>Az 165.2° · El 61.4°</strong> — from site &amp; time, Mar 21 12:30</div>
+      </div>
+
+      <div style="margin-top: auto; border-top: 1px solid #d8dee5; padding: 5px 16px; display: flex; align-items: center; gap: 8px">
+        <svg viewBox="0 0 540 100" width="86" height="16" opacity="0.9"><g transform="translate(28.5 50) scale(0.8182)"><path d="M -19.85,-44 L -13.85,-44 Q 16.15,0 -13.85,44 L -19.85,44 Q -49.85,0 -19.85,-44 Z" fill="#00AEEF"></path><path d="M 4.85,-44 L 34.85,-44 L 34.85,44 L 4.85,44 Q 34.85,0 4.85,-44 Z" fill="#000000"></path></g><text x="72" y="73" font-family="'Segoe UI', sans-serif" font-size="64" font-weight="600"><tspan fill="#00AEEF">Ryker</tspan><tspan fill="#1f2933">Optics</tspan></text></svg>
+        <a style="font-size: 11px; margin-left: auto">About</a>
+      </div>
+    </div>
+
+    <div class="viewport">      <svg viewBox="0 0 1140 762" width="100%" height="100%" preserveAspectRatio="xMidYMid slice">
+        <rect width="1140" height="762" fill="#fdfdfe"></rect>
+
+        <g fill="none" stroke="rgba(110,130,150,0.28)" stroke-width="1">
+          <circle cx="570" cy="380" r="110"></circle>
+          <circle cx="570" cy="380" r="220" stroke-dasharray="3 5"></circle>
+          <circle cx="570" cy="380" r="330"></circle>
+          <line x1="570" y1="30" x2="570" y2="742" stroke-dasharray="2 6"></line>
+          <line x1="210" y1="380" x2="930" y2="380" stroke-dasharray="2 6"></line>
+        </g>
+        <text x="652" y="303" font-size="11" fill="#64748b">30 m</text>
+        <text x="731" y="226" font-size="11" fill="#64748b">60 m</text>
+        <text x="809" y="148" font-size="11" fill="#64748b">90 m</text>
+
+        <g>
+          <rect x="555" y="380" width="30" height="362" fill="rgba(123,135,148,0.10)"></rect>
+          <line x1="555" y1="380" x2="555" y2="742" stroke="rgba(123,135,148,0.55)" stroke-width="1.2" stroke-dasharray="10 6"></line>
+          <line x1="585" y1="380" x2="585" y2="742" stroke="rgba(123,135,148,0.55)" stroke-width="1.2" stroke-dasharray="10 6"></line>
+          <text x="592" y="700" font-size="10.5" fill="#64748b">S access road · 8 m</text>
+        </g>
+        <g fill="none">
+          <circle cx="570" cy="380" r="220" stroke="rgba(123,135,148,0.14)" stroke-width="22"></circle>
+          <circle cx="570" cy="380" r="209" stroke="rgba(123,135,148,0.55)" stroke-width="1.2" stroke-dasharray="10 6"></circle>
+          <circle cx="570" cy="380" r="231" stroke="rgba(123,135,148,0.55)" stroke-width="1.2" stroke-dasharray="10 6"></circle>
+          <text x="405" y="222" font-size="10.5" fill="#64748b">ring road · 6 m</text>
+        </g>
+
+        <g fill="rgba(196,218,238,0.96)" stroke="#33455c" stroke-width="0.8">
+<rect x="672" y="349" width="10" height="6" transform="rotate(76 677 352)"></rect>
+<rect x="504" y="470" width="10" height="6" transform="rotate(213 509 473)"></rect>
+<rect x="547" y="267" width="10" height="6" transform="rotate(-9 552 270)"></rect>
+<rect x="654" y="446" width="10" height="6" transform="rotate(128 659 449)"></rect>
+<rect x="452" y="386" width="10" height="6" transform="rotate(266 457 389)"></rect>
+<rect x="643" y="293" width="10" height="6" transform="rotate(43 648 296)"></rect>
+<rect x="488" y="291" width="10" height="6" transform="rotate(-42 493 294)"></rect>
+<rect x="681" y="388" width="10" height="6" transform="rotate(96 686 391)"></rect>
+<rect x="471" y="448" width="10" height="6" transform="rotate(233 476 451)"></rect>
+<rect x="587" y="261" width="10" height="6" transform="rotate(11 592 264)"></rect>
+<rect x="628" y="478" width="10" height="6" transform="rotate(148 633 481)"></rect>
+<rect x="450" y="345" width="10" height="6" transform="rotate(-74 455 348)"></rect>
+<rect x="673" y="322" width="10" height="6" transform="rotate(63 678 325)"></rect>
+<rect x="522" y="491" width="10" height="6" transform="rotate(201 527 494)"></rect>
+<rect x="520" y="264" width="10" height="6" transform="rotate(-22 525 267)"></rect>
+<rect x="676" y="430" width="10" height="6" transform="rotate(116 681 433)"></rect>
+<rect x="447" y="413" width="10" height="6" transform="rotate(253 452 416)"></rect>
+<rect x="628" y="270" width="10" height="6" transform="rotate(31 633 273)"></rect>
+<rect x="591" y="499" width="10" height="6" transform="rotate(168 596 502)"></rect>
+<rect x="463" y="304" width="10" height="6" transform="rotate(-54 468 307)"></rect>
+<rect x="691" y="362" width="10" height="6" transform="rotate(83 696 365)"></rect>
+<rect x="482" y="474" width="10" height="6" transform="rotate(221 487 477)"></rect>
+<rect x="561" y="249" width="10" height="6" transform="rotate(-2 566 252)"></rect>
+<rect x="655" y="469" width="10" height="6" transform="rotate(136 660 472)"></rect>
+<rect x="436" y="370" width="10" height="6" transform="rotate(-87 441 373)"></rect>
+<rect x="666" y="295" width="10" height="6" transform="rotate(51 671 298)"></rect>
+<rect x="546" y="506" width="10" height="6" transform="rotate(188 551 509)"></rect>
+<rect x="491" y="268" width="10" height="6" transform="rotate(-34 496 271)"></rect>
+<rect x="694" y="407" width="10" height="6" transform="rotate(103 699 410)"></rect>
+<rect x="449" y="442" width="10" height="6" transform="rotate(241 454 445)"></rect>
+<rect x="607" y="250" width="10" height="6" transform="rotate(18 612 253)"></rect>
+<rect x="620" y="499" width="10" height="6" transform="rotate(156 625 502)"></rect>
+<rect x="441" y="324" width="10" height="6" transform="rotate(-67 446 327)"></rect>
+<rect x="693" y="332" width="10" height="6" transform="rotate(71 698 335)"></rect>
+<rect x="500" y="497" width="10" height="6" transform="rotate(208 505 500)"></rect>
+<rect x="531" y="244" width="10" height="6" transform="rotate(-14 536 247)"></rect>
+<rect x="680" y="453" width="10" height="6" transform="rotate(123 685 456)"></rect>
+<rect x="428" y="399" width="10" height="6" transform="rotate(261 433 402)"></rect>
+<rect x="651" y="268" width="10" height="6" transform="rotate(38 656 271)"></rect>
+<rect x="463" y="281" width="10" height="6" transform="rotate(-47 468 284)"></rect>
+<rect x="706" y="379" width="10" height="6" transform="rotate(91 711 382)"></rect>
+<rect x="459" y="471" width="10" height="6" transform="rotate(228 464 474)"></rect>
+<rect x="580" y="235" width="10" height="6" transform="rotate(6 585 238)"></rect>
+<rect x="650" y="492" width="10" height="6" transform="rotate(143 655 495)"></rect>
+<rect x="424" y="350" width="10" height="6" transform="rotate(-79 429 353)"></rect>
+<rect x="688" y="301" width="10" height="6" transform="rotate(58 693 304)"></rect>
+<rect x="525" y="516" width="10" height="6" transform="rotate(196 530 519)"></rect>
+<rect x="500" y="247" width="10" height="6" transform="rotate(-27 505 250)"></rect>
+<rect x="702" y="429" width="10" height="6" transform="rotate(111 707 432)"></rect>
+<rect x="429" y="431" width="10" height="6" transform="rotate(248 434 434)"></rect>
+<rect x="629" y="244" width="10" height="6" transform="rotate(26 634 247)"></rect>
+<rect x="607" y="519" width="10" height="6" transform="rotate(163 612 522)"></rect>
+<rect x="438" y="301" width="10" height="6" transform="rotate(-59 443 304)"></rect>
+<rect x="711" y="347" width="10" height="6" transform="rotate(78 716 350)"></rect>
+<rect x="477" y="498" width="10" height="6" transform="rotate(216 482 501)"></rect>
+<rect x="548" y="228" width="10" height="6" transform="rotate(-7 553 231)"></rect>
+<rect x="679" y="476" width="10" height="6" transform="rotate(131 684 479)"></rect>
+<rect x="413" y="381" width="10" height="6" transform="rotate(268 418 384)"></rect>
+<rect x="675" y="271" width="10" height="6" transform="rotate(46 680 274)"></rect>
+<rect x="468" y="258" width="10" height="6" transform="rotate(-39 473 261)"></rect>
+<rect x="717" y="400" width="10" height="6" transform="rotate(99 722 403)"></rect>
+<rect x="437" y="463" width="10" height="6" transform="rotate(236 442 466)"></rect>
+<rect x="601" y="226" width="10" height="6" transform="rotate(14 606 229)"></rect>
+<rect x="641" y="513" width="10" height="6" transform="rotate(151 646 516)"></rect>
+<rect x="417" y="327" width="10" height="6" transform="rotate(-71 422 330)"></rect>
+<rect x="709" y="313" width="10" height="6" transform="rotate(66 714 316)"></rect>
+<rect x="502" y="522" width="10" height="6" transform="rotate(204 507 525)"></rect>
+<rect x="514" y="227" width="10" height="6" transform="rotate(-19 519 230)"></rect>
+<rect x="704" y="453" width="10" height="6" transform="rotate(119 709 456)"></rect>
+<rect x="410" y="415" width="10" height="6" transform="rotate(256 415 418)"></rect>
+<rect x="653" y="244" width="10" height="6" transform="rotate(34 658 247)"></rect>
+<rect x="590" y="536" width="10" height="6" transform="rotate(171 595 539)"></rect>
+<rect x="439" y="277" width="10" height="6" transform="rotate(-51 444 280)"></rect>
+<rect x="726" y="366" width="10" height="6" transform="rotate(86 731 369)"></rect>
+<rect x="453" y="494" width="10" height="6" transform="rotate(224 458 497)"></rect>
+<rect x="568" y="214" width="10" height="6" transform="rotate(1 573 217)"></rect>
+<rect x="673" y="500" width="10" height="6" transform="rotate(139 678 503)"></rect>
+<rect x="402" y="359" width="10" height="6" transform="rotate(-84 407 362)"></rect>
+<rect x="697" y="279" width="10" height="6" transform="rotate(54 702 282)"></rect>
+<rect x="533" y="539" width="10" height="6" transform="rotate(191 538 542)"></rect>
+<rect x="479" y="236" width="10" height="6" transform="rotate(-31 484 239)"></rect>
+<rect x="725" y="423" width="10" height="6" transform="rotate(106 730 426)"></rect>
+<rect x="416" y="451" width="10" height="6" transform="rotate(244 421 454)"></rect>
+<rect x="625" y="221" width="10" height="6" transform="rotate(21 630 224)"></rect>
+<rect x="626" y="533" width="10" height="6" transform="rotate(159 631 536)"></rect>
+<rect x="414" y="303" width="10" height="6" transform="rotate(-64 419 306)"></rect>
+<rect x="727" y="330" width="10" height="6" transform="rotate(74 732 333)"></rect>
+<rect x="477" y="522" width="10" height="6" transform="rotate(211 482 525)"></rect>
+<rect x="532" y="210" width="10" height="6" transform="rotate(-11 537 213)"></rect>
+<rect x="703" y="478" width="10" height="6" transform="rotate(126 708 481)"></rect>
+<rect x="395" y="396" width="10" height="6" transform="rotate(264 400 399)"></rect>
+<rect x="678" y="248" width="10" height="6" transform="rotate(41 683 251)"></rect>
+<rect x="446" y="252" width="10" height="6" transform="rotate(-44 451 255)"></rect>
+<rect x="738" y="388" width="10" height="6" transform="rotate(94 743 391)"></rect>
+<rect x="429" y="486" width="10" height="6" transform="rotate(231 434 489)"></rect>
+<rect x="592" y="205" width="10" height="6" transform="rotate(9 597 208)"></rect>
+<rect x="662" y="522" width="10" height="6" transform="rotate(146 667 525)"></rect>
+<rect x="395" y="335" width="10" height="6" transform="rotate(-76 400 338)"></rect>
+<rect x="719" y="293" width="10" height="6" transform="rotate(61 724 296)"></rect>
+<rect x="508" y="544" width="10" height="6" transform="rotate(199 513 547)"></rect>
+<rect x="494" y="215" width="10" height="6" transform="rotate(-24 499 218)"></rect>
+<rect x="727" y="449" width="10" height="6" transform="rotate(114 732 452)"></rect>
+<rect x="396" y="434" width="10" height="6" transform="rotate(251 401 437)"></rect>
+<rect x="651" y="221" width="10" height="6" transform="rotate(29 656 224)"></rect>
+<rect x="607" y="551" width="10" height="6" transform="rotate(166 612 554)"></rect>
+<rect x="416" y="277" width="10" height="6" transform="rotate(-56 421 280)"></rect>
+<rect x="743" y="350" width="10" height="6" transform="rotate(81 748 353)"></rect>
+<rect x="452" y="518" width="10" height="6" transform="rotate(219 457 521)"></rect>
+<rect x="554" y="196" width="10" height="6" transform="rotate(-4 559 199)"></rect>
+<rect x="696" y="503" width="10" height="6" transform="rotate(134 701 506)"></rect>
+<rect x="383" y="373" width="10" height="6" transform="rotate(-89 388 376)"></rect>
+<rect x="703" y="257" width="10" height="6" transform="rotate(49 708 260)"></rect>
+<rect x="545" y="559" width="10" height="6" transform="rotate(186 550 562)"></rect>
+<rect x="457" y="229" width="10" height="6" transform="rotate(-36 462 232)"></rect>
+<rect x="745" y="413" width="10" height="6" transform="rotate(101 750 416)"></rect>
+<rect x="407" y="472" width="10" height="6" transform="rotate(239 412 475)"></rect>
+<rect x="617" y="200" width="10" height="6" transform="rotate(16 622 203)"></rect>
+<rect x="646" y="544" width="10" height="6" transform="rotate(154 651 547)"></rect>
+<rect x="392" y="309" width="10" height="6" transform="rotate(-69 397 312)"></rect>
+<rect x="739" y="310" width="10" height="6" transform="rotate(69 744 313)"></rect>
+<rect x="482" y="544" width="10" height="6" transform="rotate(206 487 547)"></rect>
+<rect x="513" y="197" width="10" height="6" transform="rotate(-16 518 200)"></rect>
+<rect x="725" y="475" width="10" height="6" transform="rotate(121 730 478)"></rect>
+<rect x="380" y="413" width="10" height="6" transform="rotate(259 385 416)"></rect>
+<rect x="677" y="225" width="10" height="6" transform="rotate(37 682 228)"></rect>
+<rect x="585" y="565" width="10" height="6" transform="rotate(174 590 568)"></rect>
+<rect x="423" y="251" width="10" height="6" transform="rotate(-48 428 254)"></rect>
+<rect x="755" y="374" width="10" height="6" transform="rotate(89 760 377)"></rect>
+<rect x="426" y="508" width="10" height="6" transform="rotate(227 431 511)"></rect>
+<rect x="579" y="186" width="10" height="6" transform="rotate(4 584 189)"></rect>
+<rect x="684" y="527" width="10" height="6" transform="rotate(142 689 530)"></rect>
+<rect x="375" y="347" width="10" height="6" transform="rotate(-81 380 350)"></rect>
+<rect x="726" y="271" width="10" height="6" transform="rotate(57 731 274)"></rect>
+<rect x="518" y="564" width="10" height="6" transform="rotate(194 523 567)"></rect>
+<rect x="473" y="207" width="10" height="6" transform="rotate(-28 478 210)"></rect>
+<rect x="749" y="441" width="10" height="6" transform="rotate(109 754 444)"></rect>
+<rect x="386" y="454" width="10" height="6" transform="rotate(247 391 457)"></rect>
+<rect x="645" y="199" width="10" height="6" transform="rotate(24 650 202)"></rect>
+<rect x="627" y="563" width="10" height="6" transform="rotate(162 632 566)"></rect>
+<rect x="394" y="282" width="10" height="6" transform="rotate(-61 399 285)"></rect>
+<rect x="756" y="332" width="10" height="6" transform="rotate(77 761 335)"></rect>
+<rect x="454" y="540" width="10" height="6" transform="rotate(214 459 543)"></rect>
+<rect x="536" y="182" width="10" height="6" transform="rotate(-8 541 185)"></rect>
+<rect x="719" y="502" width="10" height="6" transform="rotate(129 724 505)"></rect>
+<rect x="367" y="389" width="10" height="6" transform="rotate(267 372 392)"></rect>
+<rect x="704" y="234" width="10" height="6" transform="rotate(44 709 237)"></rect>
+<rect x="434" y="226" width="10" height="6" transform="rotate(-41 439 229)"></rect>
+<rect x="764" y="400" width="10" height="6" transform="rotate(97 769 403)"></rect>
+<rect x="402" y="494" width="10" height="6" transform="rotate(234 407 497)"></rect>
+<rect x="606" y="180" width="10" height="6" transform="rotate(12 611 183)"></rect>
+<rect x="668" y="550" width="10" height="6" transform="rotate(149 673 553)"></rect>
+<rect x="371" y="319" width="10" height="6" transform="rotate(-73 376 322)"></rect>
+<rect x="747" y="289" width="10" height="6" transform="rotate(64 752 292)"></rect>
+<rect x="490" y="566" width="10" height="6" transform="rotate(202 495 569)"></rect>
+<rect x="493" y="187" width="10" height="6" transform="rotate(-21 498 190)"></rect>
+<rect x="747" y="469" width="10" height="6" transform="rotate(117 752 472)"></rect>
+<rect x="368" y="432" width="10" height="6" transform="rotate(254 373 435)"></rect>
+<rect x="673" y="203" width="10" height="6" transform="rotate(32 678 206)"></rect>
+<rect x="603" y="579" width="10" height="6" transform="rotate(169 608 582)"></rect>
+<rect x="400" y="254" width="10" height="6" transform="rotate(-53 405 257)"></rect>
+<rect x="770" y="356" width="10" height="6" transform="rotate(84 775 359)"></rect>
+<rect x="427" y="531" width="10" height="6" transform="rotate(222 432 534)"></rect>
+<rect x="563" y="170" width="10" height="6" transform="rotate(-1 568 173)"></rect>
+<rect x="707" y="528" width="10" height="6" transform="rotate(137 712 531)"></rect>
+<rect x="358" y="361" width="10" height="6" transform="rotate(-86 363 364)"></rect>
+<rect x="729" y="248" width="10" height="6" transform="rotate(52 734 251)"></rect>
+<rect x="531" y="583" width="10" height="6" transform="rotate(189 536 586)"></rect>
+<rect x="336" y="348" width="10" height="6" transform="rotate(-83 341 351)"></rect>
+<rect x="754" y="243" width="10" height="6" transform="rotate(55 759 246)"></rect>
+<rect x="516" y="604" width="10" height="6" transform="rotate(192 521 607)"></rect>
+<rect x="448" y="176" width="10" height="6" transform="rotate(-30 453 179)"></rect>
+<rect x="787" y="446" width="10" height="6" transform="rotate(107 792 449)"></rect>
+<rect x="354" y="476" width="10" height="6" transform="rotate(245 359 479)"></rect>
+<rect x="654" y="161" width="10" height="6" transform="rotate(22 659 164)"></rect>
+<rect x="646" y="596" width="10" height="6" transform="rotate(160 651 599)"></rect>
+<rect x="357" y="270" width="10" height="6" transform="rotate(-63 362 273)"></rect>
+<rect x="791" y="316" width="10" height="6" transform="rotate(75 796 319)"></rect>
+<rect x="439" y="576" width="10" height="6" transform="rotate(212 444 579)"></rect>
+<rect x="523" y="145" width="10" height="6" transform="rotate(-10 528 148)"></rect>
+<rect x="752" y="520" width="10" height="6" transform="rotate(127 757 523)"></rect>
+<rect x="330" y="398" width="10" height="6" transform="rotate(265 335 401)"></rect>
+<rect x="724" y="202" width="10" height="6" transform="rotate(42 729 205)"></rect>
+<rect x="404" y="202" width="10" height="6" transform="rotate(-43 409 205)"></rect>
+<rect x="802" y="397" width="10" height="6" transform="rotate(95 807 400)"></rect>
+<rect x="376" y="522" width="10" height="6" transform="rotate(232 381 525)"></rect>
+<rect x="606" y="142" width="10" height="6" transform="rotate(10 611 145)"></rect>
+<rect x="694" y="578" width="10" height="6" transform="rotate(147 699 581)"></rect>
+<rect x="334" y="315" width="10" height="6" transform="rotate(-75 339 318)"></rect>
+<rect x="777" y="266" width="10" height="6" transform="rotate(62 782 269)"></rect>
+<rect x="483" y="603" width="10" height="6" transform="rotate(200 488 606)"></rect>
+<rect x="473" y="155" width="10" height="6" transform="rotate(-23 478 158)"></rect>
+<rect x="783" y="479" width="10" height="6" transform="rotate(115 788 482)"></rect>
+<rect x="335" y="450" width="10" height="6" transform="rotate(252 340 453)"></rect>
+<rect x="686" y="168" width="10" height="6" transform="rotate(30 691 171)"></rect>
+<rect x="617" y="613" width="10" height="6" transform="rotate(167 622 616)"></rect>
+<rect x="366" y="238" width="10" height="6" transform="rotate(-55 371 241)"></rect>
+<rect x="806" y="345" width="10" height="6" transform="rotate(82 811 348)"></rect>
+<rect x="409" y="563" width="10" height="6" transform="rotate(220 414 566)"></rect>
+<rect x="554" y="134" width="10" height="6" transform="rotate(-2 559 137)"></rect>
+<rect x="737" y="549" width="10" height="6" transform="rotate(135 742 552)"></rect>
+<rect x="321" y="366" width="10" height="6" transform="rotate(-87 326 369)"></rect>
+<rect x="752" y="220" width="10" height="6" transform="rotate(50 757 223)"></rect>
+<rect x="533" y="620" width="10" height="6" transform="rotate(188 538 623)"></rect>
+<rect x="424" y="176" width="10" height="6" transform="rotate(-35 429 179)"></rect>
+<rect x="805" y="430" width="10" height="6" transform="rotate(103 810 433)"></rect>
+<rect x="352" y="500" width="10" height="6" transform="rotate(240 357 503)"></rect>
+<rect x="639" y="142" width="10" height="6" transform="rotate(18 644 145)"></rect>
+<rect x="669" y="601" width="10" height="6" transform="rotate(155 674 604)"></rect>
+<rect x="337" y="282" width="10" height="6" transform="rotate(-67 342 285)"></rect>
+<rect x="798" y="293" width="10" height="6" transform="rotate(70 803 296)"></rect>
+<rect x="450" y="597" width="10" height="6" transform="rotate(208 455 600)"></rect>
+<rect x="501" y="137" width="10" height="6" transform="rotate(-15 506 140)"></rect>
+<rect x="774" y="511" width="10" height="6" transform="rotate(123 779 514)"></rect>
+<rect x="320" y="420" width="10" height="6" transform="rotate(260 325 423)"></rect>
+<rect x="717" y="179" width="10" height="6" transform="rotate(38 722 182)"></rect>
+<rect x="586" y="626" width="10" height="6" transform="rotate(175 591 629)"></rect>
+<rect x="381" y="208" width="10" height="6" transform="rotate(-47 386 211)"></rect>
+<rect x="816" y="378" width="10" height="6" transform="rotate(90 821 381)"></rect>
+<rect x="380" y="546" width="10" height="6" transform="rotate(228 385 549)"></rect>
+<rect x="588" y="127" width="10" height="6" transform="rotate(5 593 130)"></rect>
+<rect x="718" y="577" width="10" height="6" transform="rotate(143 723 580)"></rect>
+<rect x="317" y="332" width="10" height="6" transform="rotate(-80 322 335)"></rect>
+<rect x="778" y="242" width="10" height="6" transform="rotate(58 783 245)"></rect>
+<rect x="499" y="621" width="10" height="6" transform="rotate(195 504 624)"></rect>
+<rect x="449" y="152" width="10" height="6" transform="rotate(-27 454 155)"></rect>
+<rect x="803" y="465" width="10" height="6" transform="rotate(110 808 468)"></rect>
+<rect x="330" y="473" width="10" height="6" transform="rotate(248 335 476)"></rect>
+<rect x="673" y="147" width="10" height="6" transform="rotate(25 678 150)"></rect>
+<rect x="641" y="620" width="10" height="6" transform="rotate(163 646 623)"></rect>
+<rect x="345" y="249" width="10" height="6" transform="rotate(-60 350 252)"></rect>
+<rect x="814" y="323" width="10" height="6" transform="rotate(78 819 326)"></rect>
+<rect x="417" y="586" width="10" height="6" transform="rotate(215 422 589)"></rect>
+<rect x="533" y="123" width="10" height="6" transform="rotate(-7 538 126)"></rect>
+<rect x="761" y="543" width="10" height="6" transform="rotate(130 766 546)"></rect>
+<rect x="308" y="387" width="10" height="6" transform="rotate(268 313 390)"></rect>
+<rect x="748" y="196" width="10" height="6" transform="rotate(45 753 199)"></rect>
+<rect x="400" y="179" width="10" height="6" transform="rotate(-40 405 182)"></rect>
+<rect x="821" y="412" width="10" height="6" transform="rotate(98 826 415)"></rect>
+<rect x="352" y="524" width="10" height="6" transform="rotate(235 357 527)"></rect>
+<rect x="622" y="125" width="10" height="6" transform="rotate(13 627 128)"></rect>
+<rect x="693" y="602" width="10" height="6" transform="rotate(150 698 605)"></rect>
+<rect x="318" y="297" width="10" height="6" transform="rotate(-72 323 300)"></rect>
+<rect x="801" y="269" width="10" height="6" transform="rotate(65 806 272)"></rect>
+<rect x="464" y="617" width="10" height="6" transform="rotate(203 469 620)"></rect>
+<rect x="477" y="132" width="10" height="6" transform="rotate(-20 482 135)"></rect>
+<rect x="796" y="499" width="10" height="6" transform="rotate(118 801 502)"></rect>
+<rect x="312" y="443" width="10" height="6" transform="rotate(255 317 446)"></rect>
+<rect x="707" y="157" width="10" height="6" transform="rotate(33 712 160)"></rect>
+<rect x="609" y="635" width="10" height="6" transform="rotate(170 614 638)"></rect>
+<rect x="358" y="216" width="10" height="6" transform="rotate(-52 363 219)"></rect>
+<rect x="827" y="356" width="10" height="6" transform="rotate(85 832 359)"></rect>
+<rect x="386" y="570" width="10" height="6" transform="rotate(223 391 573)"></rect>
+<rect x="567" y="114" width="10" height="6" transform="rotate(0 572 117)"></rect>
+<rect x="742" y="573" width="10" height="6" transform="rotate(138 747 576)"></rect>
+<rect x="302" y="352" width="10" height="6" transform="rotate(-85 307 355)"></rect>
+<rect x="776" y="218" width="10" height="6" transform="rotate(53 781 221)"></rect>
+<rect x="517" y="637" width="10" height="6" transform="rotate(190 522 640)"></rect>
+<rect x="424" y="152" width="10" height="6" transform="rotate(-32 429 155)"></rect>
+<rect x="821" y="448" width="10" height="6" transform="rotate(105 826 451)"></rect>
+<rect x="328" y="498" width="10" height="6" transform="rotate(243 333 501)"></rect>
+<rect x="658" y="128" width="10" height="6" transform="rotate(20 663 131)"></rect>
+<rect x="665" y="624" width="10" height="6" transform="rotate(158 670 627)"></rect>
+<rect x="324" y="262" width="10" height="6" transform="rotate(-64 329 265)"></rect>
+<rect x="821" y="299" width="10" height="6" transform="rotate(73 826 302)"></rect>
+<rect x="429" y="608" width="10" height="6" transform="rotate(211 434 611)"></rect>
+<rect x="509" y="115" width="10" height="6" transform="rotate(-12 514 118)"></rect>
+<rect x="783" y="533" width="10" height="6" transform="rotate(126 788 536)"></rect>
+<rect x="298" y="410" width="10" height="6" transform="rotate(263 303 413)"></rect>
+<rect x="740" y="173" width="10" height="6" transform="rotate(41 745 176)"></rect>
+<rect x="376" y="184" width="10" height="6" transform="rotate(-44 381 187)"></rect>
+<rect x="835" y="391" width="10" height="6" transform="rotate(93 840 394)"></rect>
+<rect x="356" y="549" width="10" height="6" transform="rotate(231 361 552)"></rect>
+<rect x="603" y="109" width="10" height="6" transform="rotate(8 608 112)"></rect>
+<rect x="718" y="601" width="10" height="6" transform="rotate(146 723 604)"></rect>
+<rect x="301" y="315" width="10" height="6" transform="rotate(-77 306 318)"></rect>
+<rect x="802" y="244" width="10" height="6" transform="rotate(61 807 247)"></rect>
+<rect x="480" y="636" width="10" height="6" transform="rotate(198 485 639)"></rect>
+<rect x="453" y="129" width="10" height="6" transform="rotate(-24 458 132)"></rect>
+<rect x="816" y="484" width="10" height="6" transform="rotate(113 821 487)"></rect>
+<rect x="307" y="467" width="10" height="6" transform="rotate(251 312 470)"></rect>
+<rect x="694" y="136" width="10" height="6" transform="rotate(28 699 139)"></rect>
+<rect x="633" y="642" width="10" height="6" transform="rotate(166 638 645)"></rect>
+<rect x="336" y="227" width="10" height="6" transform="rotate(-57 341 230)"></rect>
+<rect x="836" y="333" width="10" height="6" transform="rotate(81 841 336)"></rect>
+<rect x="395" y="593" width="10" height="6" transform="rotate(218 400 596)"></rect>
+<rect x="544" y="103" width="10" height="6" transform="rotate(-4 549 106)"></rect>
+<rect x="766" y="566" width="10" height="6" transform="rotate(133 771 569)"></rect>
+<rect x="289" y="374" width="10" height="6" transform="rotate(-89 294 377)"></rect>
+<rect x="771" y="193" width="10" height="6" transform="rotate(48 776 196)"></rect>
+<rect x="537" y="652" width="10" height="6" transform="rotate(186 542 655)"></rect>
+<rect x="399" y="155" width="10" height="6" transform="rotate(-37 404 158)"></rect>
+<rect x="837" y="429" width="10" height="6" transform="rotate(101 842 432)"></rect>
+<rect x="329" y="523" width="10" height="6" transform="rotate(238 334 526)"></rect>
+<rect x="640" y="110" width="10" height="6" transform="rotate(16 645 113)"></rect>
+<rect x="690" y="625" width="10" height="6" transform="rotate(153 695 628)"></rect>
+<rect x="305" y="278" width="10" height="6" transform="rotate(-69 310 281)"></rect>
+<rect x="824" y="274" width="10" height="6" transform="rotate(68 829 277)"></rect>
+<rect x="444" y="628" width="10" height="6" transform="rotate(206 449 631)"></rect>
+<rect x="485" y="109" width="10" height="6" transform="rotate(-17 490 112)"></rect>
+<rect x="805" y="520" width="10" height="6" transform="rotate(121 810 523)"></rect>
+<rect x="291" y="434" width="10" height="6" transform="rotate(258 296 437)"></rect>
+<rect x="729" y="150" width="10" height="6" transform="rotate(36 734 153)"></rect>
+<rect x="598" y="656" width="10" height="6" transform="rotate(173 603 659)"></rect>
+<rect x="352" y="193" width="10" height="6" transform="rotate(-49 357 196)"></rect>
+<rect x="846" y="369" width="10" height="6" transform="rotate(88 851 372)"></rect>
+<rect x="363" y="573" width="10" height="6" transform="rotate(226 368 576)"></rect>
+<rect x="581" y="96" width="10" height="6" transform="rotate(3 586 99)"></rect>
+<rect x="743" y="596" width="10" height="6" transform="rotate(141 748 599)"></rect>
+<rect x="285" y="336" width="10" height="6" transform="rotate(-82 290 339)"></rect>
+<rect x="799" y="218" width="10" height="6" transform="rotate(56 804 221)"></rect>
+<rect x="499" y="653" width="10" height="6" transform="rotate(193 504 656)"></rect>
+<rect x="427" y="129" width="10" height="6" transform="rotate(-29 432 132)"></rect>
+<rect x="834" y="467" width="10" height="6" transform="rotate(108 839 470)"></rect>
+<rect x="306" y="493" width="10" height="6" transform="rotate(246 311 496)"></rect>
+<rect x="678" y="116" width="10" height="6" transform="rotate(23 683 119)"></rect>
+<rect x="658" y="646" width="10" height="6" transform="rotate(161 663 649)"></rect>
+<rect x="314" y="241" width="10" height="6" transform="rotate(-62 319 244)"></rect>
+<rect x="842" y="308" width="10" height="6" transform="rotate(76 847 311)"></rect>
+<rect x="407" y="616" width="10" height="6" transform="rotate(213 412 619)"></rect>
+<rect x="520" y="94" width="10" height="6" transform="rotate(-9 525 97)"></rect>
+<rect x="789" y="555" width="10" height="6" transform="rotate(128 794 558)"></rect>
+<rect x="279" y="397" width="10" height="6" transform="rotate(266 284 400)"></rect>
+<rect x="763" y="169" width="10" height="6" transform="rotate(43 768 172)"></rect>
+<rect x="374" y="161" width="10" height="6" transform="rotate(-42 379 164)"></rect>
+<rect x="852" y="407" width="10" height="6" transform="rotate(96 857 410)"></rect>
+<rect x="333" y="549" width="10" height="6" transform="rotate(234 338 552)"></rect>
+<rect x="620" y="94" width="10" height="6" transform="rotate(11 625 97)"></rect>
+<rect x="716" y="624" width="10" height="6" transform="rotate(149 721 627)"></rect>
+<rect x="287" y="297" width="10" height="6" transform="rotate(-74 292 300)"></rect>
+<rect x="824" y="248" width="10" height="6" transform="rotate(64 829 251)"></rect>
+<rect x="461" y="648" width="10" height="6" transform="rotate(201 466 651)"></rect>
+<rect x="459" y="107" width="10" height="6" transform="rotate(-21 464 110)"></rect>
+<rect x="826" y="505" width="10" height="6" transform="rotate(116 831 508)"></rect>
+<rect x="286" y="459" width="10" height="6" transform="rotate(254 291 462)"></rect>
+<rect x="715" y="128" width="10" height="6" transform="rotate(31 720 131)"></rect>
+<rect x="623" y="663" width="10" height="6" transform="rotate(169 628 666)"></rect>
+<rect x="329" y="205" width="10" height="6" transform="rotate(-54 334 208)"></rect>
+<rect x="855" y="344" width="10" height="6" transform="rotate(84 860 347)"></rect>
+<rect x="373" y="597" width="10" height="6" transform="rotate(221 378 600)"></rect>
+<rect x="558" y="84" width="10" height="6" transform="rotate(-1 563 87)"></rect>
+<rect x="768" y="588" width="10" height="6" transform="rotate(136 773 591)"></rect>
+<rect x="272" y="358" width="10" height="6" transform="rotate(-86 277 361)"></rect>
+<rect x="794" y="193" width="10" height="6" transform="rotate(51 799 196)"></rect>
+<rect x="521" y="668" width="10" height="6" transform="rotate(189 526 671)"></rect>
+<rect x="401" y="132" width="10" height="6" transform="rotate(-34 406 135)"></rect>
+<rect x="851" y="447" width="10" height="6" transform="rotate(104 856 450)"></rect>
+<rect x="307" y="519" width="10" height="6" transform="rotate(241 312 522)"></rect>
+<rect x="660" y="97" width="10" height="6" transform="rotate(19 665 100)"></rect>
+<rect x="684" y="648" width="10" height="6" transform="rotate(156 689 651)"></rect>
+<rect x="294" y="258" width="10" height="6" transform="rotate(-66 299 261)"></rect>
+<rect x="845" y="282" width="10" height="6" transform="rotate(71 850 285)"></rect>
+<rect x="423" y="637" width="10" height="6" transform="rotate(209 428 640)"></rect>
+<rect x="494" y="89" width="10" height="6" transform="rotate(-14 499 92)"></rect>
+<rect x="812" y="542" width="10" height="6" transform="rotate(124 817 545)"></rect>
+<rect x="271" y="422" width="10" height="6" transform="rotate(261 276 425)"></rect>
+<rect x="751" y="145" width="10" height="6" transform="rotate(39 756 148)"></rect>
+<rect x="585" y="675" width="10" height="6" transform="rotate(176 590 678)"></rect>
+<rect x="349" y="171" width="10" height="6" transform="rotate(-46 354 174)"></rect>
+<rect x="864" y="384" width="10" height="6" transform="rotate(91 869 387)"></rect>
+<rect x="340" y="574" width="10" height="6" transform="rotate(229 345 577)"></rect>
+<rect x="598" y="79" width="10" height="6" transform="rotate(6 603 82)"></rect>
+<rect x="742" y="619" width="10" height="6" transform="rotate(144 747 622)"></rect>
+<rect x="271" y="318" width="10" height="6" transform="rotate(-79 276 321)"></rect>
+<rect x="822" y="221" width="10" height="6" transform="rotate(59 827 224)"></rect>
+<rect x="481" y="666" width="10" height="6" transform="rotate(196 486 669)"></rect>
+<rect x="432" y="107" width="10" height="6" transform="rotate(-26 437 110)"></rect>
+<rect x="846" y="487" width="10" height="6" transform="rotate(111 851 490)"></rect>
+<rect x="284" y="486" width="10" height="6" transform="rotate(249 289 489)"></rect>
+<rect x="699" y="107" width="10" height="6" transform="rotate(26 704 110)"></rect>
+<rect x="649" y="667" width="10" height="6" transform="rotate(164 654 670)"></rect>
+<rect x="307" y="220" width="10" height="6" transform="rotate(-59 312 223)"></rect>
+<rect x="862" y="319" width="10" height="6" transform="rotate(79 867 322)"></rect>
+<rect x="385" y="621" width="10" height="6" transform="rotate(216 390 624)"></rect>
+<rect x="533" y="75" width="10" height="6" transform="rotate(-6 538 78)"></rect>
+<rect x="793" y="578" width="10" height="6" transform="rotate(131 798 581)"></rect>
+<rect x="261" y="383" width="10" height="6" transform="rotate(269 266 386)"></rect>
+<rect x="785" y="167" width="10" height="6" transform="rotate(46 790 170)"></rect>
+<rect x="544" y="681" width="10" height="6" transform="rotate(184 549 684)"></rect>
+<rect x="375" y="139" width="10" height="6" transform="rotate(-39 380 142)"></rect>
+<rect x="866" y="424" width="10" height="6" transform="rotate(99 871 427)"></rect>
+<rect x="310" y="546" width="10" height="6" transform="rotate(236 315 549)"></rect>
+<rect x="639" y="80" width="10" height="6" transform="rotate(14 644 83)"></rect>
+<rect x="711" y="646" width="10" height="6" transform="rotate(151 716 649)"></rect>
+<rect x="275" y="277" width="10" height="6" transform="rotate(-71 280 280)"></rect>
+<rect x="846" y="255" width="10" height="6" transform="rotate(66 851 258)"></rect>
+<rect x="440" y="657" width="10" height="6" transform="rotate(204 445 660)"></rect>
+<rect x="467" y="86" width="10" height="6" transform="rotate(-19 472 89)"></rect>
+<rect x="834" y="526" width="10" height="6" transform="rotate(119 839 529)"></rect>
+<rect x="266" y="449" width="10" height="6" transform="rotate(256 271 452)"></rect>
+<rect x="737" y="122" width="10" height="6" transform="rotate(34 742 125)"></rect>
+<rect x="611" y="682" width="10" height="6" transform="rotate(172 616 685)"></rect>
+<rect x="325" y="183" width="10" height="6" transform="rotate(-51 330 186)"></rect>
+<rect x="874" y="358" width="10" height="6" transform="rotate(87 879 361)"></rect>
+<rect x="350" y="599" width="10" height="6" transform="rotate(224 355 602)"></rect>
+<rect x="573" y="67" width="10" height="6" transform="rotate(2 578 70)"></rect>
+<rect x="768" y="611" width="10" height="6" transform="rotate(139 773 614)"></rect>
+<rect x="257" y="342" width="10" height="6" transform="rotate(-83 262 345)"></rect>
+<rect x="816" y="195" width="10" height="6" transform="rotate(54 821 198)"></rect>
+<rect x="503" y="682" width="10" height="6" transform="rotate(192 508 685)"></rect>
+<rect x="405" y="110" width="10" height="6" transform="rotate(-31 410 113)"></rect>
+        </g>
+
+        <circle cx="570" cy="380" r="51" fill="none" stroke="rgba(52,90,128,0.55)" stroke-width="1.5" stroke-dasharray="6 4"></circle>
+        <text x="570" y="322" font-size="11" fill="#345a80" text-anchor="middle">axicon aperture r = 14 m</text>
+        <rect x="558" y="368" width="24" height="24" fill="rgba(217,123,41,0.7)" stroke="#a8551a" stroke-width="1.5"></rect>
+
+        <g>
+          <rect x="762" y="243" width="14" height="9" fill="#dbeafe" stroke="#0b5fd0" stroke-width="1.6" transform="rotate(28 769 247)"></rect>
+          <circle cx="769" cy="247" r="16" fill="none" stroke="rgba(11,95,208,0.5)" stroke-width="1.2" stroke-dasharray="3 3"></circle>
+          <line x1="769" y1="247" x2="570" y2="380" stroke="rgba(11,95,208,0.35)" stroke-width="1" stroke-dasharray="4 3"></line>
+        </g>
+        <g transform="translate(800, 210)">
+          <rect x="0" y="0" width="150" height="36" rx="6" fill="#ffffff" stroke="#d8dee5"></rect>
+          <text x="10" y="15" font-size="11" fill="#1f2933" font-weight="600">H-214 · moved</text>
+          <text x="10" y="28" font-size="10.5" fill="#64748b">x 41.2 m · y −18.6 m · r 45.2 m</text>
+        </g>
+
+        <g transform="translate(60, 50)">
+          <circle cx="0" cy="0" r="16" fill="none" stroke="#64748b" stroke-width="1.2"></circle>
+          <path d="M0 -12 L4 4 L0 1 L-4 4 Z" fill="#64748b"></path>
+          <text x="0" y="32" font-size="11" fill="#64748b" text-anchor="middle">N</text>
+        </g>
+
+        <g transform="translate(940, 700)">
+          <line x1="0" y1="0" x2="110" y2="0" stroke="#64748b" stroke-width="1.5"></line>
+          <line x1="0" y1="-4" x2="0" y2="4" stroke="#64748b" stroke-width="1.5"></line>
+          <line x1="110" y1="-4" x2="110" y2="4" stroke="#64748b" stroke-width="1.5"></line>
+          <text x="55" y="16" font-size="11" fill="#64748b" text-anchor="middle">30 m</text>
+        </g>
+
+        <g transform="translate(120, 690)">
+          <circle cx="0" cy="0" r="10" fill="#f0b429"></circle>
+          <line x1="14" y1="-4" x2="46" y2="-13" stroke="#f0b429" stroke-width="2.5"></line>
+          <path d="M50 -14 L38 -18 L42 -8 Z" fill="#f0b429"></path>
+          <text x="0" y="26" font-size="10.5" fill="#64748b" text-anchor="middle">sun az 165°</text>
+        </g>
+      </svg>
+
+      <div class="chip">Plan view — drag a heliostat to move it (overrides the spiral) · double-click empty ground to add one</div>
+      <div class="viewpill"><span class="mode">Plan</span><span style="color: #64748b">·</span><a>back to 3D</a></div>
+    </div>
+  </div>
+
+</div></template></div></div>
+  <div class="checknote"><strong>Rev 4:</strong> roads support arbitrary angle, partial extent (e.g. South-only), and rings; the sidebar counts what they cut.</div>
+
+  <h2><span class="num">4</span>Tower elevation — opens with the Receiver &amp; Tower stage</h2>
+  <p class="screennote">Expanding <strong>Receiver &amp; Tower</strong> switches to a to-scale side elevation with SolidWorks-style dimensions. Rev 3: <strong>all heights reference the heliostat plane</strong> — the dash-dot datum line through the pivots — not the ground, and a <strong>ground offset</strong> (heliostat plane above ground) is its own dimension and sidebar field. Apex height, receiver height, aperture radius, and half angle are editable value boxes tied to the same fields as the sidebar.</p>
+  <div class="stage"><div class="mock"><template shadowrootmode="open"><style>
+    :host { display: block;  margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 14px; color: #1f2933; background: #f7f8fa; }
+    a { color: #45739e; } a:hover { color: #345a80; }
+    .topbar { display: flex; align-items: center; gap: 10px; padding: 0 20px; height: 52px; background: #ffffff; border-bottom: 1px solid #d8dee5; }
+    .topbar h1 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: 0.02em; }
+    .tag { color: #64748b; font-size: 12px; }
+    .apptabs { display: flex; gap: 6px; margin-left: 28px; }
+    .apptabs .tab { padding: 7px 14px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; cursor: pointer; }
+    .apptabs .tab.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .topbar .right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+    .btn { padding: 7px 12px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; cursor: pointer; }
+    .shell { display: flex; height: 762px; }
+    .sidebar { flex: 0 0 300px; background: #ffffff; border-right: 1px solid #d8dee5; overflow: hidden; display: flex; flex-direction: column; }
+    .stage { border-bottom: 1px solid #d8dee5; padding: 12px 16px; }
+    .stage.selectedstage { background: #f2f7fd; box-shadow: inset 3px 0 0 #0b5fd0; }
+    .stagehead { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+    .stagehead h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: #64748b; margin: 0; font-weight: 600; flex: 1 1 auto; }
+    .chev { flex: 0 0 auto; color: #64748b; }
+    .modechip { font-size: 10.5px; color: #0b5fd0; font-weight: 600; }
+    .summary { color: #64748b; font-size: 12.5px; margin-top: 6px; }
+    .summary strong { color: #1f2933; font-weight: 600; }
+    .stage:host { display: block;  margin-top: 10px; }
+    .seg { display: flex; gap: 6px; margin-bottom: 10px; }
+    .seg button { flex: 1 1 auto; padding: 6px 8px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12px; cursor: pointer; }
+    .seg button.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .frow { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .frow label { flex: 0 0 128px; color: #64748b; font-size: 12.5px; }
+    .frow .val { flex: 1 1 auto; padding: 5px 8px; border: 1px solid #d8dee5; border-radius: 5px; background: #ffffff; font-size: 13px; font-variant-numeric: tabular-nums; }
+    .hint { color: #64748b; font-size: 11.5px; margin-top: 4px; }
+    .stageactions { display: flex; gap: 6px; margin-top: 10px; }
+    .stageactions .btn { font-size: 11.5px; padding: 5px 9px; }
+    .viewport { flex: 1 1 auto; position: relative; overflow: hidden; background: #fdfdfe; }
+    .chip { position: absolute; left: 14px; bottom: 14px; background: rgba(255,255,255,0.9); border: 1px solid #d8dee5; border-radius: 6px; padding: 5px 10px; font-size: 11.5px; color: #64748b; }
+    .viewpill { position: absolute; right: 14px; top: 14px; background: #ffffff; border: 1px solid #d8dee5; border-radius: 6px; padding: 5px 10px; font-size: 11.5px; color: #1f2933; display: flex; gap: 8px; align-items: center; }
+    .viewpill .mode { font-weight: 600; color: #0b5fd0; }
+    .viewpill a { font-size: 11.5px; }
+  </style><div style="width: 1440px; height: 900px; display: flex; flex-direction: column; background: #f7f8fa; overflow: hidden">
+
+  <div class="topbar">
+    <div style="width: 26px; height: 26px; border: 1.5px dashed #45739e; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: #45739e; font-size: 11px; font-weight: 700">C</div>
+    <h1>Coddington</h1>
+    <span class="tag">Manuscript baseline — axicon</span>
+    <div class="apptabs">
+      <div class="tab active">Workspace</div>
+      <div class="tab">Heliostat Shape</div>
+      <div class="tab">Analysis</div>
+    </div>
+    <div class="right">
+      <div class="btn">Library</div>
+      <span class="tag">Saved</span>
+    </div>
+  </div>
+
+  <div class="shell">
+    <div class="sidebar">
+
+      <div class="stage">
+        <div class="stagehead">
+          <span class="chev"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="#64748b" stroke-width="2"><path d="M5 3l6 5-6 5"></path></svg></span>
+          <h2>Heliostat</h2>
+          <a style="font-size: 11.5px">Edit shape…</a>
+        </div>
+        <div class="summary"><strong>Manuscript 5 × 3 m</strong> — rectangle, twisting figure</div>
+      </div>
+
+      <div class="stage">
+        <div class="stagehead">
+          <span class="chev"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="#64748b" stroke-width="2"><path d="M5 3l6 5-6 5"></path></svg></span>
+          <h2>Field</h2>
+        </div>
+        <div class="summary"><strong>Fermat spiral · 643</strong> — 30 m to 90 m</div>
+      </div>
+
+      <div class="stage selectedstage">
+        <div class="stagehead">
+          <span class="chev"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="#64748b" stroke-width="2"><path d="M3 5l5 6 5-6"></path></svg></span>
+          <h2>Receiver &amp; Tower</h2>
+          <span class="modechip">ELEVATION</span>
+        </div>
+        <div class="stagebody">
+          <div class="seg">
+            <button>Prime focus</button>
+            <button class="active">Axicon</button>
+            <button>Cassegrain</button>
+          </div>
+          <div class="frow"><label>Apex height (mm)</label><div class="val">27 000</div></div>
+          <div class="frow"><label>Half angle (°)</label><div class="val">20.0</div></div>
+          <div class="frow"><label>Aperture radius (mm)</label><div class="val">14 000</div></div>
+          <div class="frow"><label>Receiver height (mm)</label><div class="val">7 000</div></div>
+          <div class="frow"><label>Ground offset (mm)</label><div class="val">2 500</div></div>
+          <div style="font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; font-weight: 600; margin: 12px 0 8px 0">Receiver</div>
+          <div class="frow"><label>Type</label><div class="val">Flat window ▾</div></div>
+          <div class="hint">Cylindrical &amp; frustum: prime focus only.</div>
+          <div class="frow"><label>Window ½ w / ½ h (mm)</label><div class="val">2 000 / 2 000</div></div>
+          <div class="frow"><label>Aperture → receiver (mm)</label><div class="val">0</div></div>
+          <div class="hint">0 = receiver at the entrance aperture.</div>
+        </div>
+      </div>
+
+      <div class="stage">
+        <div class="stagehead">
+          <span class="chev"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="#64748b" stroke-width="2"><path d="M5 3l6 5-6 5"></path></svg></span>
+          <h2>Sun</h2>
+        </div>
+        <div class="summary"><strong>Az 165.2° · El 61.4°</strong> — from site &amp; time, Mar 21 12:30</div>
+      </div>
+
+      <div style="margin-top: auto; border-top: 1px solid #d8dee5; padding: 5px 16px; display: flex; align-items: center; gap: 8px">
+        <svg viewBox="0 0 540 100" width="86" height="16" opacity="0.9"><g transform="translate(28.5 50) scale(0.8182)"><path d="M -19.85,-44 L -13.85,-44 Q 16.15,0 -13.85,44 L -19.85,44 Q -49.85,0 -19.85,-44 Z" fill="#00AEEF"></path><path d="M 4.85,-44 L 34.85,-44 L 34.85,44 L 4.85,44 Q 34.85,0 4.85,-44 Z" fill="#000000"></path></g><text x="72" y="73" font-family="'Segoe UI', sans-serif" font-size="64" font-weight="600"><tspan fill="#00AEEF">Ryker</tspan><tspan fill="#1f2933">Optics</tspan></text></svg>
+        <a style="font-size: 11px; margin-left: auto">About</a>
+      </div>
+    </div>
+
+    <div class="viewport">      <svg viewBox="0 0 1140 762" width="100%" height="100%" preserveAspectRatio="xMidYMid slice">
+        <rect width="1140" height="762" fill="#fdfdfe"></rect>
+
+        <line x1="40" y1="650" x2="1100" y2="650" stroke="#7b8794" stroke-width="2"></line>
+        <g stroke="rgba(110,130,150,0.35)" stroke-width="1">
+          <line x1="60" y1="650" x2="52" y2="660"></line><line x1="120" y1="650" x2="112" y2="660"></line><line x1="180" y1="650" x2="172" y2="660"></line><line x1="240" y1="650" x2="232" y2="660"></line><line x1="300" y1="650" x2="292" y2="660"></line><line x1="360" y1="650" x2="352" y2="660"></line><line x1="420" y1="650" x2="412" y2="660"></line><line x1="480" y1="650" x2="472" y2="660"></line><line x1="540" y1="650" x2="532" y2="660"></line><line x1="600" y1="650" x2="592" y2="660"></line><line x1="660" y1="650" x2="652" y2="660"></line><line x1="720" y1="650" x2="712" y2="660"></line><line x1="780" y1="650" x2="772" y2="660"></line><line x1="840" y1="650" x2="832" y2="660"></line><line x1="900" y1="650" x2="892" y2="660"></line><line x1="960" y1="650" x2="952" y2="660"></line><line x1="1020" y1="650" x2="1012" y2="660"></line><line x1="1080" y1="650" x2="1072" y2="660"></line>
+        </g>
+
+        <line x1="570" y1="650" x2="570" y2="92" stroke="rgba(110,130,150,0.5)" stroke-width="1" stroke-dasharray="8 4 2 4"></line>
+
+        <line x1="60" y1="622" x2="1080" y2="622" stroke="rgba(52,90,128,0.45)" stroke-width="1" stroke-dasharray="14 5 3 5"></line>
+        <text x="66" y="614" font-size="10.5" fill="#345a80">heliostat plane (datum for all heights)</text>
+
+        <line x1="570" y1="650" x2="570" y2="190" stroke="#7b8794" stroke-width="5"></line>
+
+        <g stroke="rgba(255,146,54,0.35)" stroke-width="1.5" fill="none">
+          <path d="M905 610 L668 144 L595 510"></path>
+          <path d="M985 614 L710 124 L600 510"></path>
+          <path d="M215 612 L468 140 L545 510"></path>
+        </g>
+
+        <path d="M346 108 L570 190 L794 108" fill="rgba(126,158,196,0.30)" stroke="rgba(52,90,128,0.75)" stroke-width="2"></path>
+        <line x1="346" y1="108" x2="794" y2="108" stroke="rgba(52,90,128,0.45)" stroke-width="1.2"></line>
+
+        <rect x="538" y="504" width="64" height="10" fill="rgba(217,123,41,0.65)" stroke="#a8551a" stroke-width="1.5"></rect>
+
+        <g fill="rgba(196,218,238,0.96)" stroke="#33455c" stroke-width="1.2">
+          <path d="M150 616 L212 600 L216 610 L154 626 Z"></path>
+          <line x1="183" y1="618" x2="183" y2="648" stroke="#33455c" stroke-width="2.5"></line>
+          <path d="M258 612 L318 598 L322 608 L262 622 Z"></path>
+          <line x1="290" y1="616" x2="290" y2="648" stroke="#33455c" stroke-width="2.5"></line>
+          <path d="M822 598 L882 612 L878 622 L818 608 Z"></path>
+          <line x1="850" y1="616" x2="850" y2="648" stroke="#33455c" stroke-width="2.5"></line>
+          <path d="M928 600 L990 616 L986 626 L924 610 Z"></path>
+          <line x1="957" y1="618" x2="957" y2="648" stroke="#33455c" stroke-width="2.5"></line>
+        </g>
+
+        <g stroke="#64748b" stroke-width="1" fill="none">
+          <line x1="560" y1="190" x2="430" y2="190"></line>
+          <line x1="440" y1="622" x2="440" y2="190"></line>
+          <path d="M440 200 L436 212 L444 212 Z" fill="#64748b"></path>
+          <path d="M440 612 L436 600 L444 600 Z" fill="#64748b"></path>
+        </g>
+        <g transform="translate(398, 400)">
+          <rect x="0" y="0" width="84" height="24" rx="5" fill="#ffffff" stroke="#d8dee5"></rect>
+          <text x="42" y="16" font-size="12" fill="#1f2933" text-anchor="middle" font-weight="600">27 000</text>
+          <text x="42" y="38" font-size="10" fill="#64748b" text-anchor="middle">apex height</text>
+        </g>
+
+        <g stroke="#64748b" stroke-width="1" fill="none">
+          <line x1="610" y1="509" x2="700" y2="509"></line>
+          <line x1="690" y1="622" x2="690" y2="509"></line>
+          <path d="M690 519 L686 531 L694 531 Z" fill="#64748b"></path>
+          <path d="M690 612 L686 600 L694 600 Z" fill="#64748b"></path>
+        </g>
+        <g transform="translate(706, 550)">
+          <rect x="0" y="0" width="76" height="24" rx="5" fill="#ffffff" stroke="#d8dee5"></rect>
+          <text x="38" y="16" font-size="12" fill="#1f2933" text-anchor="middle" font-weight="600">7 000</text>
+          <text x="38" y="38" font-size="10" fill="#64748b" text-anchor="middle">receiver height</text>
+        </g>
+
+        <g stroke="#64748b" stroke-width="1" fill="none">
+          <line x1="980" y1="622" x2="1060" y2="622"></line>
+          <line x1="980" y1="650" x2="1060" y2="650"></line>
+          <line x1="1050" y1="622" x2="1050" y2="650"></line>
+          <path d="M1050 622 L1046 612 L1054 612 Z" fill="#64748b" transform="translate(0, 10)"></path>
+        </g>
+        <g transform="translate(1000, 585)">
+          <rect x="0" y="0" width="66" height="22" rx="5" fill="#ffffff" stroke="#d8dee5"></rect>
+          <text x="33" y="15" font-size="11.5" fill="#1f2933" text-anchor="middle" font-weight="600">2 500</text>
+          <text x="33" y="-5" font-size="10" fill="#64748b" text-anchor="middle">ground offset</text>
+        </g>
+
+        <g stroke="#64748b" stroke-width="1" fill="none">
+          <line x1="570" y1="102" x2="570" y2="68"></line>
+          <line x1="794" y1="102" x2="794" y2="68"></line>
+          <line x1="570" y1="76" x2="794" y2="76"></line>
+          <path d="M580 76 L592 72 L592 80 Z" fill="#64748b"></path>
+          <path d="M784 76 L772 72 L772 80 Z" fill="#64748b"></path>
+        </g>
+        <g transform="translate(640, 34)">
+          <rect x="0" y="0" width="84" height="24" rx="5" fill="#ffffff" stroke="#d8dee5"></rect>
+          <text x="42" y="16" font-size="12" fill="#1f2933" text-anchor="middle" font-weight="600">14 000</text>
+          <text x="42" y="-6" font-size="10" fill="#64748b" text-anchor="middle">aperture radius</text>
+        </g>
+
+        <g fill="none" stroke="#64748b" stroke-width="1">
+          <path d="M570 148 A46 46 0 0 1 610 172"></path>
+        </g>
+        <g transform="translate(614, 148)">
+          <rect x="0" y="0" width="52" height="22" rx="5" fill="#ffffff" stroke="#d8dee5"></rect>
+          <text x="26" y="15" font-size="12" fill="#1f2933" text-anchor="middle" font-weight="600">20.0°</text>
+        </g>
+
+        <g>
+          <circle cx="1010" cy="80" r="15" fill="#f0b429"></circle>
+          <g stroke="#f0b429" stroke-width="2.2">
+            <line x1="1010" y1="54" x2="1010" y2="61"></line>
+            <line x1="1010" y1="99" x2="1010" y2="106"></line>
+            <line x1="984" y1="80" x2="991" y2="80"></line>
+            <line x1="1029" y1="80" x2="1036" y2="80"></line>
+          </g>
+        </g>
+      </svg>
+
+      <div class="chip">Elevation — dimensions are live and referenced to the heliostat plane; drag the receiver or cone along the mast</div>
+      <div class="viewpill"><span class="mode">Elevation</span><span style="color: #64748b">·</span><a>back to 3D</a></div>
+    </div>
+  </div>
+
+</div></template></div></div>
+  <div class="checknote"><strong>Rev 5:</strong> the sidebar gains a <strong>Receiver</strong> section — type (flat window here; cylindrical and frustum offered under prime focus), window size, and the paper's <strong>aperture → receiver offset</strong> (0 = receiver at the entrance aperture, today's behavior). Also encoded: half angle 0° or an infinite-radius Cassegrain are <em>legal</em> and trace as flat mirrors with an info badge, never an error.</div>
+
+  <h2><span class="num">5</span>The Library — swap receivers, keep the field</h2>
+  <p class="screennote">Three collections: heliostat designs, receiver configs, projects. <strong>Built-ins are the manuscript's numbers, locked</strong> — duplicate one to tweak it. "Use" swaps the receiver config while the field and heliostat design stay put: the compare-receivers workflow. New in rev 2: <strong>Import / Export for SolTrace and SolarPILOT</strong> (plus plain positions CSV) — a project can round-trip for cross-checking in either tool. Old saved setups arrive under Projects as imports.</p>
+  <div class="stage"><div class="mock"><template shadowrootmode="open"><style>
+    :host { display: block;  margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 14px; color: #1f2933; background: #f7f8fa; }
+    a { color: #45739e; } a:hover { color: #345a80; }
+    .topbar { display: flex; align-items: center; gap: 10px; padding: 0 20px; height: 52px; background: #ffffff; border-bottom: 1px solid #d8dee5; }
+    .topbar h1 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: 0.02em; }
+    .tag { color: #64748b; font-size: 12px; }
+    .apptabs { display: flex; gap: 6px; margin-left: 28px; }
+    .apptabs .tab { padding: 7px 14px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; cursor: pointer; }
+    .apptabs .tab.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .topbar .right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+    .btn { padding: 7px 12px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; cursor: pointer; }
+    .btn.small { padding: 4px 9px; font-size: 11.5px; }
+    .btn.primary { background: #45739e; border-color: #345a80; color: #ffffff; font-weight: 600; }
+    .stagearea { position: relative; height: 848px; overflow: hidden; }
+    .dim { position: absolute; inset: 0; background: rgba(31,41,51,0.28); }
+    .drawer { position: absolute; top: 0; right: 0; bottom: 0; width: 470px; background: #ffffff; border-left: 1px solid #d8dee5; box-shadow: -10px 0 30px rgba(31,41,51,0.15); padding: 18px 20px; display: flex; flex-direction: column; }
+    .drawer h2 { font-size: 15px; margin: 0; font-weight: 600; }
+    .drawer .close { position: absolute; top: 14px; right: 16px; color: #64748b; font-size: 16px; cursor: pointer; }
+    .libtabs { display: flex; gap: 6px; margin: 14px 0; }
+    .libtabs button { flex: 1 1 auto; padding: 7px 10px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; cursor: pointer; }
+    .libtabs button.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .card { border: 1px solid #d8dee5; border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; }
+    .card.current { border-color: #45739e; box-shadow: 0 0 0 2px rgba(69,115,158,0.18); }
+    .cardhead { display: flex; align-items: center; gap: 8px; }
+    .cardhead .name { font-weight: 600; font-size: 13.5px; }
+    .badge { font-size: 10.5px; border-radius: 4px; padding: 2px 6px; font-weight: 600; letter-spacing: 0.03em; }
+    .badge.builtin { background: #f7f8fa; border: 1px solid #d8dee5; color: #64748b; }
+    .badge.inuse { background: #45739e; color: #ffffff; }
+    .badge.import { background: #fdf3e7; border: 1px solid #d97b29; color: #8a4d12; }
+    .cardsub { color: #64748b; font-size: 12px; margin-top: 4px; font-variant-numeric: tabular-nums; }
+    .cardactions { display: flex; gap: 6px; margin-top: 10px; }
+    .sectionlabel { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em; color: #64748b; font-weight: 600; margin: 10px 0 8px 0; }
+    .drawerfoot { margin-top: auto; border-top: 1px solid #d8dee5; padding-top: 10px; color: #64748b; font-size: 11.5px; }
+    .lock { vertical-align: -1px; }
+  </style><div style="width: 1440px; height: 900px; display: flex; flex-direction: column; background: #f7f8fa; overflow: hidden">
+
+  <div class="topbar">
+    <div style="width: 26px; height: 26px; border: 1.5px dashed #45739e; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: #45739e; font-size: 11px; font-weight: 700">C</div>
+    <h1>Coddington</h1>
+    <span class="tag">Manuscript baseline — axicon</span>
+    <div class="apptabs">
+      <div class="tab active">Workspace</div>
+      <div class="tab">Heliostat Shape</div>
+      <div class="tab">Analysis</div>
+    </div>
+    <div class="right">
+      <div class="btn primary">Library</div>
+      <span class="tag">Saved</span>
+    </div>
+  </div>
+
+  <div class="stagearea">
+    <svg viewBox="0 0 1440 848" width="100%" height="100%" preserveAspectRatio="xMidYMid slice">
+      <defs>
+        <linearGradient id="sky3" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#f4f7fb"></stop>
+          <stop offset="1" stop-color="#dbe4ee"></stop>
+        </linearGradient>
+      </defs>
+      <rect width="1440" height="848" fill="url(#sky3)"></rect>
+      <g stroke="rgba(110,130,150,0.30)" stroke-width="1">
+        <line x1="640" y1="360" x2="-300" y2="848"></line>
+        <line x1="640" y1="360" x2="120" y2="848"></line>
+        <line x1="640" y1="360" x2="440" y2="848"></line>
+        <line x1="640" y1="360" x2="640" y2="848" stroke="rgba(110,130,150,0.60)"></line>
+        <line x1="640" y1="360" x2="860" y2="848"></line>
+        <line x1="640" y1="360" x2="1160" y2="848"></line>
+        <line x1="640" y1="360" x2="1500" y2="848"></line>
+        <line x1="0" y1="400" x2="1440" y2="400"></line>
+        <line x1="0" y1="455" x2="1440" y2="455"></line>
+        <line x1="0" y1="530" x2="1440" y2="530" stroke="rgba(110,130,150,0.60)"></line>
+        <line x1="0" y1="640" x2="1440" y2="640"></line>
+      </g>
+      <line x1="640" y1="545" x2="640" y2="306" stroke="#7b8794" stroke-width="5"></line>
+      <path d="M640 308 L510 180 L770 180 Z" fill="rgba(126,158,196,0.30)" stroke="rgba(52,90,128,0.55)" stroke-width="1.5"></path>
+      <ellipse cx="640" cy="180" rx="130" ry="22" fill="rgba(126,158,196,0.18)" stroke="rgba(52,90,128,0.55)" stroke-width="1.5"></ellipse>
+      <path d="M600 540 L680 540 L702 562 L622 562 Z" fill="rgba(217,123,41,0.55)" stroke="#a8551a" stroke-width="1.5"></path>
+      <g fill="rgba(196,218,238,0.96)" stroke="#33455c" stroke-width="1.2">
+        <path d="M150 650 L280 642 L292 700 L162 710 Z"></path>
+        <path d="M330 645 L450 639 L460 692 L340 700 Z"></path>
+        <path d="M830 640 L950 646 L940 700 L818 692 Z"></path>
+        <path d="M1010 642 L1135 650 L1122 710 L995 700 Z"></path>
+        <path d="M220 535 L310 531 L317 570 L226 574 Z"></path>
+        <path d="M370 530 L455 526 L461 562 L375 566 Z"></path>
+        <path d="M840 526 L928 530 L920 566 L833 562 Z"></path>
+        <path d="M975 531 L1063 535 L1055 574 L966 570 Z"></path>
+        <path d="M280 465 L345 463 L349 492 L283 494 Z"></path>
+        <path d="M405 461 L466 459 L469 486 L408 488 Z"></path>
+        <path d="M520 458 L576 456 L578 482 L522 484 Z"></path>
+        <path d="M710 456 L766 458 L764 484 L708 482 Z"></path>
+        <path d="M815 459 L876 461 L873 488 L812 486 Z"></path>
+        <path d="M935 463 L1000 465 L996 494 L930 492 Z"></path>
+      </g>
+      <circle cx="1120" cy="105" r="18" fill="#f0b429"></circle>
+    </svg>
+    <div class="dim"></div>
+
+    <div class="drawer">
+      <div class="close">×</div>
+      <h2>Library</h2>
+      <div class="libtabs">
+        <button>Heliostat designs</button>
+        <button class="active">Receiver configs</button>
+        <button>Projects</button>
+      </div>
+
+      <div style="display: flex; align-items: center; gap: 6px; margin: -4px 0 10px 0">
+        <div class="btn small">
+          <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="#1f2933" stroke-width="1.6" style="vertical-align: -1px"><path d="M8 2v8M4.5 6.5L8 10l3.5-3.5M3 13h10"></path></svg>
+          Import…
+        </div>
+        <div class="btn small">
+          <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="#1f2933" stroke-width="1.6" style="vertical-align: -1px"><path d="M8 10V2M4.5 5.5L8 2l3.5 3.5M3 13h10"></path></svg>
+          Export…
+        </div>
+        <span style="font-size: 11px; color: #64748b">SolTrace · SolarPILOT · positions CSV</span>
+      </div>
+
+      <div class="sectionlabel">Built-in — manuscript baseline</div>
+
+      <div class="card">
+        <div class="cardhead">
+          <svg class="lock" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#64748b" stroke-width="1.6"><rect x="3.5" y="7" width="9" height="6.5" rx="1"></rect><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"></path></svg>
+          <span class="name">Prime focus 35.3 m</span>
+          <span class="badge builtin">BUILT-IN</span>
+        </div>
+        <div class="cardsub">Focus 35 335 mm · window 2 000 × 2 000 mm</div>
+        <div class="cardactions"><div class="btn small">Use</div><div class="btn small">Duplicate</div></div>
+      </div>
+
+      <div class="card current">
+        <div class="cardhead">
+          <svg class="lock" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#64748b" stroke-width="1.6"><rect x="3.5" y="7" width="9" height="6.5" rx="1"></rect><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"></path></svg>
+          <span class="name">Axicon 27 m / 20° / 14 m</span>
+          <span class="badge builtin">BUILT-IN</span>
+          <span class="badge inuse">IN USE</span>
+        </div>
+        <div class="cardsub">Apex 27 000 mm · half angle 20° · aperture r 14 000 mm · receiver 7 000 mm</div>
+        <div class="cardactions"><div class="btn small">Duplicate</div></div>
+      </div>
+
+      <div class="card">
+        <div class="cardhead">
+          <svg class="lock" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#64748b" stroke-width="1.6"><rect x="3.5" y="7" width="9" height="6.5" rx="1"></rect><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"></path></svg>
+          <span class="name">Cassegrain relay</span>
+          <span class="badge builtin">BUILT-IN</span>
+        </div>
+        <div class="cardsub">Vertex 26 994 mm · focus 34 892 mm · receiver 7 000 mm · aperture r 14 000 mm</div>
+        <div class="cardactions"><div class="btn small">Use</div><div class="btn small">Duplicate</div></div>
+      </div>
+
+      <div class="sectionlabel">Yours</div>
+
+      <div class="card">
+        <div class="cardhead">
+          <span class="name">Axicon 24° — wide cone trial</span>
+        </div>
+        <div class="cardsub">Apex 27 000 mm · half angle 24° · aperture r 15 500 mm · receiver 6 000 mm</div>
+        <div class="cardactions"><div class="btn small">Use</div><div class="btn small">Rename</div><div class="btn small">Duplicate</div><div class="btn small">Delete</div></div>
+      </div>
+
+      <div class="card">
+        <div class="cardhead">
+          <span class="name">Prime focus — low tower</span>
+          <span class="badge import">IMPORTED FROM SETUP</span>
+        </div>
+        <div class="cardsub">Focus 28 000 mm · window 1 500 × 1 500 mm</div>
+        <div class="cardactions"><div class="btn small">Use</div><div class="btn small">Rename</div><div class="btn small">Duplicate</div><div class="btn small">Delete</div></div>
+      </div>
+
+      <div class="drawerfoot">
+        “Use” swaps the receiver while your field and heliostat design stay put. Built-ins are the manuscript’s numbers — duplicate one to tweak it.
+        <div style="display: flex; align-items: center; gap: 8px; margin-top: 8px">
+          <span>Stored in <strong style="color: #1f2933">C:\Users\ryker\Coddington</strong></span>
+          <div class="btn small">Change…</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div></template></div></div>
+  <div class="checknote"><strong>Rev 3:</strong> the drawer footer now shows the storage folder with a Change button — pick any working/project directory (a shared drive, a repo); the default is a Coddington folder in your home directory. SolTrace/SolarPILOT round-trips include sun shape and optical-error settings where a direct equivalent exists, with anything unmapped reported.</div>
+
+  <h2><span class="num">6</span>Heliostat Shape — the full-screen detail editor</h2>
+  <p class="screennote">Replaces the viewport while open. Custom outline sketching, explicit canting (locked under Twisting), jet sag map with stated contour interval. Rev 4 adds two things: an <strong>Optical errors section</strong> (slope error, specularity, reflectance — used by Monte Carlo and carried through SolTrace/SolarPILOT export), and an answer to "which heliostat am I looking at": the header chip and sag panel <strong>name the previewed heliostat</strong> (H-214, r 45.2 m), a locator mini-map shows where it sits in the field, the ▾ selector switches, and clicking any heliostat in the workspace offers <strong>"View shape"</strong> to open this tab on it.</p>
+  <div class="stage"><div class="mock"><template shadowrootmode="open"><style>
+    :host { display: block;  margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 14px; color: #1f2933; background: #f7f8fa; }
+    a { color: #45739e; } a:hover { color: #345a80; }
+    .topbar { display: flex; align-items: center; gap: 10px; padding: 0 20px; height: 52px; background: #ffffff; border-bottom: 1px solid #d8dee5; }
+    .topbar h1 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: 0.02em; }
+    .tag { color: #64748b; font-size: 12px; }
+    .apptabs { display: flex; gap: 6px; margin-left: 28px; }
+    .apptabs .tab { padding: 7px 14px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; cursor: pointer; }
+    .apptabs .tab.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .topbar .right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+    .btn { padding: 7px 12px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; cursor: pointer; }
+    .btn.primary { background: #45739e; border-color: #345a80; color: #ffffff; font-weight: 600; }
+    .editbar { display: flex; align-items: center; gap: 12px; padding: 10px 20px; background: #ffffff; border-bottom: 1px solid #d8dee5; }
+    .editbar .name { font-size: 13.5px; font-weight: 600; }
+    .editbar .from { color: #64748b; font-size: 12px; }
+    .content { display: flex; gap: 18px; padding: 18px 20px; height: 700px; }
+    .panel { background: #ffffff; border: 1px solid #d8dee5; border-radius: 10px; padding: 16px 18px; }
+    .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: #64748b; margin: 0 0 12px 0; font-weight: 600; }
+    .controls { flex: 0 0 330px; }
+    .seg { display: flex; gap: 6px; margin-bottom: 12px; }
+    .seg button { flex: 1 1 auto; padding: 7px 10px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; cursor: pointer; }
+    .seg button.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .seg.disabled button { opacity: 0.5; cursor: default; }
+    .seg.disabled button.active { background: #eef1f4; border-color: #d8dee5; color: #64748b; }
+    .frow { display: flex; align-items: center; gap: 10px; margin-bottom: 9px; }
+    .frow label { flex: 0 0 140px; color: #64748b; font-size: 12.5px; }
+    .frow .val { flex: 1 1 auto; padding: 5px 8px; border: 1px solid #d8dee5; border-radius: 5px; background: #ffffff; font-size: 13px; font-variant-numeric: tabular-nums; }
+    .frow .val.placeholder { color: #64748b; font-style: italic; }
+    .hint { color: #64748b; font-size: 11.5px; margin: -3px 0 10px 150px; }
+    .subhead { color: #64748b; font-size: 12.5px; margin: 16px 0 6px 0; font-weight: 600; }
+    .previews { flex: 1 1 auto; display: flex; gap: 18px; }
+    .previews .panel { flex: 1 1 50%; display: flex; flex-direction: column; }
+    .frame { flex: 1 1 auto; border: 1px solid #d8dee5; border-radius: 8px; background: #ffffff; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+    .caption { color: #64748b; font-size: 11.5px; margin-top: 8px; }
+  </style><div style="width: 1440px; height: 900px; display: flex; flex-direction: column; background: #f7f8fa; overflow: hidden">
+
+  <div class="topbar">
+    <div style="width: 26px; height: 26px; border: 1.5px dashed #45739e; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: #45739e; font-size: 11px; font-weight: 700">C</div>
+    <h1>Coddington</h1>
+    <span class="tag">Manuscript baseline — axicon</span>
+    <div class="apptabs">
+      <div class="tab">Workspace</div>
+      <div class="tab active">Heliostat Shape</div>
+      <div class="tab">Analysis</div>
+    </div>
+    <div class="right">
+      <div class="btn">Library</div>
+      <span class="tag">Unsaved changes</span>
+    </div>
+  </div>
+
+  <div class="editbar">
+    <span class="name">Editing: Faceted 5 × 4 grid</span>
+    <span class="from">based on “Manuscript 5 × 3 m” · updates live in the workspace field</span>
+    <span style="display: flex; align-items: center; gap: 6px; border: 1px solid #d8dee5; border-radius: 6px; padding: 5px 10px; font-size: 12px; margin-left: 10px">
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#0b5fd0" stroke-width="1.6"><circle cx="8" cy="8" r="6"></circle><circle cx="8" cy="8" r="1.6" fill="#0b5fd0" stroke="none"></circle></svg>
+      Previewing on <strong style="margin: 0 2px">H-214</strong> · r 45.2 m <span style="color: #64748b">▾</span>
+    </span>
+    <div style="margin-left: auto; display: flex; gap: 8px">
+      <div class="btn">Save to library as…</div>
+      <div class="btn primary">Done — back to workspace</div>
+    </div>
+  </div>
+
+  <div class="content">
+    <div class="panel controls">
+      <h2>Design</h2>
+      <div class="seg">
+        <button>Rectangle</button>
+        <button class="active">Facet grid</button>
+        <button>Custom</button>
+      </div>
+      <div class="frow"><label>Facets across</label><div class="val">5</div></div>
+      <div class="frow"><label>Facets up</label><div class="val">4</div></div>
+      <div class="frow"><label>Facet width (mm)</label><div class="val">1 180</div></div>
+      <div class="frow"><label>Facet height (mm)</label><div class="val">730</div></div>
+      <div class="frow"><label>Gap (mm)</label><div class="val">40</div></div>
+      <div class="hint" style="margin-left: 0">Custom: sketch a closed outline with typed segment dimensions, SolidWorks-style; mirror symmetry optional.</div>
+
+      <div class="subhead">Surface figure</div>
+      <div class="seg">
+        <button class="active">Twisting</button>
+        <button>Spherical</button>
+        <button>Flat</button>
+      </div>
+      <div class="hint" style="margin-left: 0">Twisting re-solves the figure as the sun moves — the manuscript’s upper bound. Spherical freezes one figure (long focals give weakly focusing, not-quite-flat facets); flat has none.</div>
+
+      <div class="subhead">Canting (facet aiming)</div>
+      <div class="seg disabled">
+        <button>Off</button>
+        <button class="active">Auto — slant range</button>
+        <button>Focal…</button>
+      </div>
+      <div class="hint" style="margin-left: 0">Twisting solves figure and aim together, so canting is chosen for you. Pick Spherical or Flat to set canting yourself — Off leaves facets parallel.</div>
+
+      <div class="subhead">Optical errors</div>
+      <div class="frow"><label>Slope error (mrad)</label><div class="val">0</div></div>
+      <div class="frow"><label>Specularity (mrad)</label><div class="val">0</div></div>
+      <div class="frow"><label>Reflectance (%)</label><div class="val">90</div></div>
+      <div class="hint" style="margin-left: 0">Manuscript baseline: 90 % reflectance, no slope or specularity error. Used by Monte Carlo traces and carried through SolTrace / SolarPILOT export.</div>
+    </div>
+
+    <div class="previews">
+      <div class="panel">
+        <h2>Aperture layout</h2>
+        <div class="frame">
+          <svg viewBox="0 0 460 340" width="92%">
+            <rect width="460" height="340" fill="#ffffff"></rect>
+            <g stroke="rgba(110,130,150,0.35)" stroke-width="1">
+              <line x1="30" y1="170" x2="430" y2="170"></line>
+              <line x1="230" y1="20" x2="230" y2="320"></line>
+            </g>
+            <g fill="rgba(196,218,238,0.96)" stroke="#33455c" stroke-width="1.3">
+              <rect x="43" y="34" width="70" height="60"></rect><rect x="118" y="34" width="70" height="60"></rect><rect x="193" y="34" width="70" height="60"></rect><rect x="268" y="34" width="70" height="60"></rect><rect x="343" y="34" width="70" height="60"></rect>
+              <rect x="43" y="102" width="70" height="60"></rect><rect x="118" y="102" width="70" height="60"></rect><rect x="193" y="102" width="70" height="60"></rect><rect x="268" y="102" width="70" height="60"></rect><rect x="343" y="102" width="70" height="60"></rect>
+              <rect x="43" y="176" width="70" height="60"></rect><rect x="118" y="176" width="70" height="60"></rect><rect x="193" y="176" width="70" height="60"></rect><rect x="268" y="176" width="70" height="60"></rect><rect x="343" y="176" width="70" height="60"></rect>
+              <rect x="43" y="244" width="70" height="60"></rect><rect x="118" y="244" width="70" height="60"></rect><rect x="193" y="244" width="70" height="60"></rect><rect x="268" y="244" width="70" height="60"></rect><rect x="343" y="244" width="70" height="60"></rect>
+            </g>
+            <text x="230" y="332" text-anchor="middle" font-size="10" fill="#64748b">6.06 m × 3.04 m · 20 facets</text>
+          </svg>
+        </div>
+        <div class="caption">Live server render — updates as you type.</div>
+      </div>
+
+      <div class="panel">
+        <div style="display: flex; align-items: flex-start; gap: 10px">
+          <h2 style="flex: 1 1 auto">Sag map — H-214</h2>
+          <svg viewBox="0 0 84 56" width="84" height="56" style="flex: 0 0 auto; border: 1px solid #d8dee5; border-radius: 6px">
+            <rect width="84" height="56" fill="#fdfdfe"></rect>
+            <g fill="none" stroke="rgba(110,130,150,0.35)" stroke-width="0.8">
+              <circle cx="42" cy="28" r="9"></circle>
+              <circle cx="42" cy="28" r="17"></circle>
+              <circle cx="42" cy="28" r="25"></circle>
+            </g>
+            <rect x="40" y="26" width="4" height="4" fill="rgba(217,123,41,0.8)"></rect>
+            <circle cx="56" cy="16" r="4" fill="none" stroke="#0b5fd0" stroke-width="1.4"></circle>
+            <circle cx="56" cy="16" r="1.4" fill="#0b5fd0"></circle>
+          </svg>
+        </div>
+        <div class="frame">
+          <svg viewBox="0 0 460 340" width="92%">
+            <defs>
+              <radialGradient id="sag" cx="0.5" cy="0.5" r="0.75">
+                <stop offset="0" stop-color="#00007f"></stop>
+                <stop offset="0.2" stop-color="#0020ff"></stop>
+                <stop offset="0.4" stop-color="#00d4ff"></stop>
+                <stop offset="0.55" stop-color="#66ff8c"></stop>
+                <stop offset="0.7" stop-color="#ffe32e"></stop>
+                <stop offset="0.85" stop-color="#ff5c00"></stop>
+                <stop offset="1" stop-color="#a00000"></stop>
+              </radialGradient>
+            </defs>
+            <rect x="40" y="30" width="360" height="270" fill="url(#sag)" stroke="#33455c" stroke-width="1"></rect>
+            <g stroke="rgba(255,255,255,0.45)" stroke-width="1" fill="none">
+              <ellipse cx="220" cy="165" rx="60" ry="42"></ellipse>
+              <ellipse cx="220" cy="165" rx="115" ry="82"></ellipse>
+              <ellipse cx="220" cy="165" rx="165" ry="120"></ellipse>
+            </g>
+            <rect x="415" y="30" width="14" height="270" fill="url(#sag)" stroke="#33455c" stroke-width="0.8"></rect>
+            <text x="448" y="38" font-size="9" fill="#64748b" text-anchor="middle">0</text>
+            <text x="448" y="300" font-size="9" fill="#64748b" text-anchor="middle">−9.4</text>
+            <text x="220" y="325" text-anchor="middle" font-size="10" fill="#64748b">surface sag (mm) · contours every 1.0 mm · twisting figure at Az 165.2° El 61.4°</text>
+          </svg>
+        </div>
+        <div class="caption">Figure solved for the workspace’s current sun and H-214’s slant range. Pick another heliostat from the locator above, the ▾ selector, or by clicking one in the workspace and choosing “View shape”.</div>
+      </div>
+    </div>
+  </div>
+
+</div></template></div></div>
+  <div class="checknote"><strong>Rev 5:</strong> error defaults are now the manuscript's — 90 % reflectance, zero slope and specularity error.</div>
+
+  <h2><span class="num">7</span>Analysis — day sweeps against the current project</h2>
+  <p class="screennote">The strip under the tabs restates exactly what is being swept. Day sweeps run in the background with progress and cancel; results are the energy-through-the-day plot, the timestep table, and CSV export. Rev 2 answers "how do I see irradiance maps": <strong>click any timestep row and its flux map appears beside the table</strong>; the workspace's flux thumbnail expands to the same view.</p>
+  <div class="stage"><div class="mock"><template shadowrootmode="open"><style>
+    :host { display: block;  margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 14px; color: #1f2933; background: #f7f8fa; }
+    a { color: #45739e; } a:hover { color: #345a80; }
+    .topbar { display: flex; align-items: center; gap: 10px; padding: 0 20px; height: 52px; background: #ffffff; border-bottom: 1px solid #d8dee5; }
+    .topbar h1 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: 0.02em; }
+    .tag { color: #64748b; font-size: 12px; }
+    .apptabs { display: flex; gap: 6px; margin-left: 28px; }
+    .apptabs .tab { padding: 7px 14px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; cursor: pointer; }
+    .apptabs .tab.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .topbar .right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+    .btn { padding: 7px 12px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; cursor: pointer; }
+    .btn.primary { background: #45739e; border-color: #345a80; color: #ffffff; font-weight: 600; }
+    .subject { display: flex; align-items: center; gap: 8px; padding: 10px 20px; background: #ffffff; border-bottom: 1px solid #d8dee5; color: #64748b; font-size: 12.5px; }
+    .subject strong { color: #1f2933; font-weight: 600; }
+    .content { display: flex; gap: 18px; padding: 18px 20px; height: 706px; }
+    .panel { background: #ffffff; border: 1px solid #d8dee5; border-radius: 10px; padding: 16px 18px; }
+    .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: #64748b; margin: 0 0 12px 0; font-weight: 600; }
+    .left { flex: 1 1 auto; display: flex; flex-direction: column; gap: 18px; }
+    .right { flex: 0 0 330px; display: flex; flex-direction: column; gap: 18px; }
+    .frow { display: flex; align-items: center; gap: 10px; }
+    .frow label { color: #64748b; font-size: 12.5px; }
+    .frow .val { padding: 5px 8px; border: 1px solid #d8dee5; border-radius: 5px; background: #ffffff; font-size: 13px; font-variant-numeric: tabular-nums; }
+    .progress-bar { height: 8px; border: 1px solid #d8dee5; border-radius: 4px; overflow: hidden; background: #ffffff; flex: 1 1 auto; }
+    .progress-fill { height: 100%; width: 64%; background: #45739e; }
+    table { border-collapse: collapse; width: 100%; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+    th { text-align: right; color: #64748b; font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; padding: 6px 10px; border-bottom: 1px solid #d8dee5; }
+    th:first-child, td:first-child { text-align: left; }
+    td { text-align: right; padding: 6px 10px; border-bottom: 1px solid #eef1f4; }
+    tr.sel td { background: #f2f7fd; box-shadow: inset 3px 0 0 #0b5fd0; }
+    tr { cursor: pointer; }
+  </style><div style="width: 1440px; height: 900px; display: flex; flex-direction: column; background: #f7f8fa; overflow: hidden">
+
+  <div class="topbar">
+    <div style="width: 26px; height: 26px; border: 1.5px dashed #45739e; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: #45739e; font-size: 11px; font-weight: 700">C</div>
+    <h1>Coddington</h1>
+    <span class="tag">Manuscript baseline — axicon</span>
+    <div class="apptabs">
+      <div class="tab">Workspace</div>
+      <div class="tab">Heliostat Shape</div>
+      <div class="tab active">Analysis</div>
+    </div>
+    <div class="right">
+      <div class="btn">Library</div>
+      <span class="tag">Saved</span>
+    </div>
+  </div>
+
+  <div class="subject">
+    Analyzing the current project:
+    <strong>Axicon 27 m / 20° / 14 m</strong> · <strong>643 heliostats</strong> (Fermat 30–90 m) · <strong>Manuscript 5 × 3 m, twisting</strong>
+    <a style="margin-left: auto; font-size: 12px">change in Workspace →</a>
+  </div>
+
+  <div class="content">
+    <div class="left">
+
+      <div class="panel">
+        <h2>Day sweep</h2>
+        <div style="display: flex; align-items: center; gap: 14px; flex-wrap: wrap">
+          <div class="frow"><label>Date</label><div class="val">2026-03-21</div></div>
+          <div class="frow"><label>Timestep</label><div class="val">30 min</div></div>
+          <div class="frow"><label>Fidelity</label><div class="val">Fast accurate</div></div>
+          <div class="btn primary">Start day sweep</div>
+          <div class="btn">Cancel</div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 12px; margin-top: 12px">
+          <div class="progress-bar"><div class="progress-fill"></div></div>
+          <span style="color: #64748b; font-size: 12px; flex: 0 0 auto">16 / 25 timesteps · 08:00 → 19:40 solar</span>
+        </div>
+        <div style="color: #64748b; font-size: 11.5px; margin-top: 8px">Finished runs save with the project — reopen later without re-running. <a>Discard this run</a> · <a>Manage saved runs (3, 41 MB)</a></div>
+      </div>
+
+      <div class="panel" style="flex: 1 1 auto; display: flex; flex-direction: column">
+        <h2>Energy through the day</h2>
+        <div style="flex: 1 1 auto; border: 1px solid #d8dee5; border-radius: 8px; display: flex; align-items: center; justify-content: center; background: #ffffff">
+          <svg viewBox="0 0 760 300" width="96%">
+            <rect width="760" height="300" fill="#ffffff"></rect>
+            <g stroke="#eef1f4" stroke-width="1">
+              <line x1="60" y1="40" x2="730" y2="40"></line>
+              <line x1="60" y1="95" x2="730" y2="95"></line>
+              <line x1="60" y1="150" x2="730" y2="150"></line>
+              <line x1="60" y1="205" x2="730" y2="205"></line>
+            </g>
+            <line x1="60" y1="260" x2="730" y2="260" stroke="#64748b" stroke-width="1"></line>
+            <line x1="60" y1="30" x2="60" y2="260" stroke="#64748b" stroke-width="1"></line>
+            <path d="M95 258 L140 190 L185 128 L230 88 L275 62 L320 46 L365 40 L410 42 L440 44" fill="none" stroke="#45739e" stroke-width="2.5"></path>
+            <path d="M95 258 L140 190 L185 128 L230 88 L275 62 L320 46 L365 40 L410 42 L440 44 L440 260 L95 260 Z" fill="rgba(69,115,158,0.12)" stroke="none"></path>
+            <path d="M440 44 L485 52 L530 74 L575 112 L620 168 L665 232 L700 258" fill="none" stroke="#45739e" stroke-width="2.5" stroke-dasharray="4 4" opacity="0.5"></path>
+            <circle cx="440" cy="44" r="4" fill="#45739e"></circle>
+            <text x="52" y="44" text-anchor="end" font-size="10" fill="#64748b">12</text>
+            <text x="52" y="154" text-anchor="end" font-size="10" fill="#64748b">6</text>
+            <text x="52" y="263" text-anchor="end" font-size="10" fill="#64748b">0</text>
+            <text x="20" y="150" font-size="10" fill="#64748b" transform="rotate(-90 20 150)" text-anchor="middle">power on receiver (MW)</text>
+            <text x="95" y="276" text-anchor="middle" font-size="10" fill="#64748b">08:00</text>
+            <text x="320" y="276" text-anchor="middle" font-size="10" fill="#64748b">12:00</text>
+            <text x="545" y="276" text-anchor="middle" font-size="10" fill="#64748b">16:00</text>
+            <text x="700" y="276" text-anchor="middle" font-size="10" fill="#64748b">19:40</text>
+            <text x="560" y="52" font-size="10" fill="#64748b">remaining timesteps (dashed)</text>
+          </svg>
+        </div>
+        <div style="display: flex; align-items: center; gap: 14px; margin-top: 10px">
+          <span style="color: #64748b; font-size: 12px">Day total so far: <strong style="color: #1f2933">78.3 MWh</strong></span>
+          <a style="font-size: 12px; margin-left: auto">Export day CSV</a>
+        </div>
+      </div>
+
+      <div class="panel" style="display: flex; align-items: center; gap: 14px">
+        <h2 style="margin: 0; flex: 0 0 auto">Year estimate</h2>
+        <span style="color: #64748b; font-size: 12px">12 sample days, spaced in solar declination · DNI-weighted interpolation between them</span>
+        <strong style="margin-left: auto; font-size: 17px; font-variant-numeric: tabular-nums; flex: 0 0 auto">27 640 MWh / yr</strong>
+        <div class="btn primary" style="flex: 0 0 auto">Run year</div>
+      </div>
+
+    </div>
+
+    <div class="right">
+      <div class="panel" style="flex: 1 1 auto; overflow: hidden">
+        <h2>Timesteps</h2>
+        <table>
+          <thead><tr><th>Solar</th><th>El (°)</th><th>DNI</th><th>MW</th></tr></thead>
+          <tbody>
+            <tr><td>11:00</td><td>55.7</td><td>905</td><td>10.9</td></tr>
+            <tr><td>11:30</td><td>58.9</td><td>912</td><td>11.3</td></tr>
+            <tr><td>12:00</td><td>61.2</td><td>917</td><td>11.6</td></tr>
+            <tr class="sel"><td>12:30</td><td>61.4</td><td>918</td><td>11.6</td></tr>
+            <tr><td>13:00</td><td>60.1</td><td>915</td><td>11.4</td></tr>
+            <tr><td>13:30</td><td>57.4</td><td>909</td><td>11.1</td></tr>
+            <tr><td style="color: #64748b">14:00</td><td style="color: #64748b">—</td><td style="color: #64748b">—</td><td style="color: #64748b">running…</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="panel">
+        <h2>Irradiance map — 12:30 solar</h2>
+        <div style="border: 1px solid #d8dee5; border-radius: 8px; overflow: hidden">
+          <svg viewBox="0 0 290 190" width="100%">
+            <rect width="290" height="190" fill="#00007f"></rect>
+            <circle cx="145" cy="95" r="72" fill="#0020ff"></circle>
+            <circle cx="145" cy="95" r="54" fill="#00d4ff"></circle>
+            <circle cx="145" cy="95" r="40" fill="#66ff8c"></circle>
+            <circle cx="145" cy="95" r="27" fill="#ffe32e"></circle>
+            <circle cx="145" cy="95" r="15" fill="#ff5c00"></circle>
+            <circle cx="145" cy="95" r="7" fill="#a00000"></circle>
+            <text x="10" y="180" font-size="9" fill="#ffffff" opacity="0.85">peak 612 kW/m² · receiver window 4 × 4 m</text>
+          </svg>
+        </div>
+        <div style="color: #64748b; font-size: 11.5px; margin-top: 8px">Click any timestep to see its map. The workspace’s flux thumbnail expands to this same view.</div>
+      </div>
+    </div>
+  </div>
+
+</div></template></div></div>
+  <div class="checknote"><strong>Rev 5:</strong> the <strong>Year estimate</strong> strip — trace a set of sample days spread across the year (default 12, spaced in solar declination), interpolate between them weighted by DNI, and report annual collection in MWh. Saved with the project like day sweeps. <strong>Check:</strong> is 12 declination-spaced days the right default sampling?</div>
+
+  <section class="text">
+    <h2>Decisions these mockups encode</h2>
+    <ul>
+      <li><strong>Geometry is always live</strong> — the scene renders on open and after every edit; a trace is only ever for physics.</li>
+      <li><strong>The viewport follows the stage</strong> — Field opens the plan view, Receiver &amp; Tower opens the dimensioned elevation, everything else is 3D; "back to 3D" is always one click.</li>
+      <li><strong>Corner rays</strong> auto-refresh on edits (capped to a spread-out subset on big fields); full traces stay manual.</li>
+      <li><strong>Warnings vs. errors</strong> — a legal-but-underfilled geometry warns in amber with the needed value and never auto-adjusts; heliostats that cannot hit the optics at all are highlighted red and counted; an impossible geometry errors in red and the scene holds the last valid shape.</li>
+      <li><strong>Apply only where it's slow</strong> — edits apply live when the refresh is fast; any operation expected to take more than a couple of seconds (huge layouts, expensive re-solves) shows an explicit Apply instead.</li>
+      <li><strong>Panel + in-scene editing are the same thing</strong> — same fields, same values, messages inline in both.</li>
+      <li><strong>Honest labels per layout</strong> — "Apex height", "Focus height", "Secondary vertex height"; the ambiguous shared "tower height" box is gone.</li>
+      <li><strong>Field layouts</strong> — Fermat spiral (default), radial staggered, grid, honeycomb, imported CSV; roads of any angle, extent, or ring form cut out the heliostats they cross.</li>
+      <li><strong>Heights reference the heliostat plane</strong> (confirmed: the engine's z = 0), with ground offset (default 2 500 mm) as its own parameter.</li>
+      <li><strong>Optical errors live in Heliostat Shape</strong> — slope error, specularity, reflectance (manuscript defaults: 0 / 0 / 90 %) — and the previewed heliostat is always named, locatable, and switchable.</li>
+      <li><strong>The receiver is a design</strong> — flat window everywhere, cylindrical and frustum under prime focus, and an entrance aperture with the receiver offset behind it by a chosen distance.</li>
+      <li><strong>Degenerate limits are legal</strong> — half angle 0° or R → ∞ trace as flat mirrors with an info badge instead of erroring.</li>
+      <li><strong>Annual energy</strong> — a Year estimate traces sample days across the year and interpolates to MWh/yr.</li>
+      <li><strong>Branding stays quiet</strong> — Ryker Optics lockup + About at the bottom of the sidebar; app-logo placeholder in the top bar until the real mark exists.</li>
+      <li><strong>Named library</strong> with locked manuscript built-ins in a user-chosen storage folder; projects replace saved setups (with import); SolTrace / SolarPILOT / CSV interchange including sun shape and optical errors where equivalents exist.</li>
+      <li><strong>Analysis runs save with the project</strong>, with per-run discard and a storage manager.</li>
+      <li><strong>Custom heliostat outlines</strong> — polygon sketch with typed dimensions replaces the flower type; canting is explicit (Off / Auto / Focal) and locked under Twisting.</li>
+      <li><strong>Viewing scales to 10,000 heliostats;</strong> tracing keeps its current 1,000 cap and says so.</li>
+    </ul>
+    <h2>Open questions for you</h2>
+    <ul class="qs">
+      <li><strong>Year sampling</strong> — is 12 declination-spaced sample days the right default for the annual estimate?</li>
+      <li><strong>Receiver params</strong> — for cylindrical (radius, height) and frustum (top radius, bottom radius, height) under prime focus: any other parameters you need?</li>
+    </ul>
+    <h2>Sign-off checklist</h2>
+    <ul class="checklist">
+      <li>Stage list and field labels match how you think about the problem</li>
+      <li>Warning/error behavior including the near-heliostat miss (screen 2) is what you want</li>
+      <li>Plan view with flexible roads (3) and datum-referenced elevation with the receiver section (4) are right</li>
+      <li>The library model, storage folder, built-ins, and interchange are right</li>
+      <li>Optical errors, shape-preview selector (6), and Year estimate (7) are right</li>
+      <li>Spec <code>docs/ui-spec.md</code> read and approved</li>
+    </ul>
+  </section>
+
+  <footer>Rev 5 · Coddington is made by Ryker Optics LLC · Mockups are static drawings in the app's own tokens (slate accent #45739e, system type, white panels). The screens are drawn light-only because the app is light-only today. Numbers shown are the manuscript baseline; the plan view's spiral is a real Fermat layout at 30–90 m.</footer>
+</div>
+<script>
+  (function () {
+    function fit() {
+      document.querySelectorAll(".stage").forEach(function (stage) {
+        var mock = stage.querySelector(".mock");
+        var s = stage.clientWidth / 1440;
+        mock.style.transform = "scale(" + s + ")";
+        stage.style.height = Math.round(900 * s) + "px";
+      });
+    }
+    window.addEventListener("resize", fit);
+    fit();
+  })();
+</script>
