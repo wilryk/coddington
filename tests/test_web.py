@@ -110,6 +110,20 @@ def test_index_serves_html(client):
     assert "heliostat" in resp.text.lower()
 
 
+def test_static_mount_serves_the_same_index_html(client):
+    """Additive: `/` keeps its own explicit route (test_index_serves_html
+    above), and `/static/...` is a second, ordinary way to reach the files
+    beside it -- same content, via StaticFiles rather than the hand-rolled
+    route. StaticFiles serves the file's raw bytes (CRLF, on a Windows
+    checkout); the `/` route reads it as text first, which normalises line
+    endings -- so line endings are normalised here too before comparing.
+    """
+    resp = client.get("/static/index.html")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers["content-type"]
+    assert resp.text.replace("\r\n", "\n") == client.get("/").text.replace("\r\n", "\n")
+
+
 @pytest.mark.parametrize("design", [RECT_DESIGN, GRID_DESIGN, FLOWER_DESIGN])
 def test_design_preview_returns_png(client, design):
     resp = client.post("/api/design/preview", json={"design": design})

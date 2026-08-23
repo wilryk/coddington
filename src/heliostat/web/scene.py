@@ -534,6 +534,95 @@ def build_field_scene(
 
 
 # ---------------------------------------------------------------------------
+# geometry-only scene (no trace)
+
+
+def build_geometry_scene(
+    heliostats: list[dict],
+    outline_local_mm: np.ndarray | None,
+    solar_az_deg: float,
+    solar_el_deg: float,
+    secondary: Secondary | None,
+    receiver: Receiver | None,
+    *,
+    include_corner_rays: bool = True,
+    max_corner_sources: int = 500,
+    sun_below_horizon: bool = False,
+) -> dict:
+    """Describe a field's placement and orientation for the 3-D view -- no
+    trace, no flux, one solve per heliostat and nothing past it.
+
+    ``heliostats`` is one dict per heliostat: ``id``, ``x_mm``, ``y_mm``, and
+    either a solved ``rot_az_deg``/``rot_el_deg``/``c3``/``c4``/``c5``/
+    ``design`` -- exactly what :func:`build_field_scene` takes, and what
+    :func:`field_corner_rays` needs to reflect a real ray off each mirror's
+    own figured surface -- or ``None`` in all five when ``sun_below_horizon``
+    is set. There is no aiming solve below the horizon (the per-layout
+    solves divide by the sun's own elevation), so those heliostats are
+    placed with no orientation rather than a fabricated one; see the
+    endpoint's docstring in ``heliostat.web.app`` for why that, and not a
+    422, is the answer.
+
+    Unlike :func:`build_field_scene`, this builds no per-heliostat polygon.
+    ``outline_local_mm`` -- the mirror's own silhouette, ``(u, v)`` mm, the
+    same polygon :func:`_field_geometry` already builds once for the whole
+    field's occlusion pass -- is returned once, under ``outline_local``, and
+    the caller places one shared mesh at each heliostat's position and
+    orientation itself ("instancing" in the graphics sense). That is the
+    whole reason this endpoint can afford ten times the heliostat count a
+    trace can (:data:`~heliostat.web.app.MAX_GEOMETRY_HELIOSTATS`): the
+    payload is O(1) polygons plus O(n) transforms, not O(n) polygons.
+
+    Corner rays reuse :func:`field_corner_rays` verbatim -- real chief rays
+    through the real secondary and receiver, deterministic, no shading or
+    blocking -- from a stride of at most ``max_corner_sources`` heliostats
+    when the field is bigger than that (:func:`_field_ray_sources`), so a
+    10,000-heliostat field still draws a bounded number of rays. Skipped
+    entirely when ``include_corner_rays`` is false, ``outline_local_mm`` is
+    ``None``, the field is empty, or the sun is below the horizon.
+
+    :returns: JSON-safe dict with ``outline_local``, ``heliostats`` (id,
+        position, orientation), ``secondary``, ``receiver``, ``sun``,
+        ``sun_below_horizon``, ``rays`` and ``rays_source``
+        (``"corner_chief"``, always -- there is no other ray source here).
+    """
+    outline = None if outline_local_mm is None else np.asarray(outline_local_mm, dtype=float)
+
+    table = [
+        {
+            "id": int(h["id"]),
+            "x_mm": _round(h["x_mm"]),
+            "y_mm": _round(h["y_mm"]),
+            "rot_az_deg": None if h.get("rot_az_deg") is None else round(float(h["rot_az_deg"]), 4),
+            "rot_el_deg": None if h.get("rot_el_deg") is None else round(float(h["rot_el_deg"]), 4),
+        }
+        for h in heliostats
+    ]
+
+    rays: list = []
+    if include_corner_rays and not sun_below_horizon and outline is not None and heliostats:
+        sources = [heliostats[i] for i in _field_ray_sources(len(heliostats), max_corner_sources)]
+        rays = field_corner_rays(sources, outline, solar_az_deg, solar_el_deg, secondary, receiver)
+
+    profile = None if secondary is None else _secondary_profile(secondary)
+    rings = None if profile is None else profile[1][np.isfinite(profile[1]).all(axis=1)]
+    sun = _sun_vector(solar_az_deg, solar_el_deg)
+
+    return {
+        "outline_local": None if outline is None else _poly_payload(outline),
+        "heliostats": table,
+        "secondary": None
+        if profile is None
+        else {"kind": profile[0], "profile": [[_round(r), _round(z)] for r, z in rings]},
+        "receiver": None if receiver is None else _receiver_dict(receiver),
+        "sun": [_round_unit(c) for c in sun],
+        "sun_below_horizon": bool(sun_below_horizon),
+        "rays": rays,
+        "rays_source": "corner_chief",
+    }
+
+
+# ---------------------------------------------------------------------------
 # field corner rays
 
 

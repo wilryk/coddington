@@ -61,10 +61,12 @@ import numpy as np
 try:
     from fastapi import FastAPI, HTTPException, Response
     from fastapi.responses import HTMLResponse, JSONResponse
+    from fastapi.staticfiles import StaticFiles
     from pydantic import (
         BaseModel,
         ConfigDict,
         Field,
+        TypeAdapter,
         ValidationError,
         field_validator,
         model_validator,
@@ -112,8 +114,16 @@ from heliostat.solar import build_time_grid, sun_position, sunrise_sunset
 from heliostat.trace.cone import sunshape_kernel, trace_heliostat_cone
 from heliostat.trace.mc import MIRROR_HALF_X_MM, MIRROR_HALF_Y_MM, trace_heliostat
 from heliostat.trace.modes import MODES, TraceMode
+from heliostat.web.builtin_library import BUILTIN_DESIGNS, BUILTIN_RECEIVERS
 from heliostat.web.jobs import JobRegistry
-from heliostat.web.scene import build_field_scene, build_scene
+from heliostat.web.library import (
+    LibraryError,
+    delete_entry,
+    list_entries,
+    load_entry,
+    save_entry,
+)
+from heliostat.web.scene import build_field_scene, build_geometry_scene, build_scene
 from heliostat.web.setups import (
     SetupError,
     delete_setup,
@@ -141,6 +151,15 @@ FLUX_GRID = 128
 # what the day-sweep job endpoint is for -- but slow is the caller's
 # choice to make, not something to forbid.
 MAX_FIELD_HELIOSTATS = 1000
+
+# /api/scene/geometry's own, much larger cap. Placing and orienting a mirror
+# (one aiming solve, no shading/blocking, no receiver trace) costs nothing
+# like tracing it does, and the 3-D view's whole reason to exist is showing a
+# field too big to trace in a browser request -- docs/ui-spec.md 2.1 states
+# the scale target explicitly: "smooth orbiting up to 10,000 heliostats".
+# Ten thousand analytic solves is still a fraction of a second; the trace
+# cap above is unaffected.
+MAX_GEOMETRY_HELIOSTATS = 10_000
 
 # Fermat-spiral geometry for the ``{"type": "fermat", "n": ...}`` layout.
 #
@@ -688,6 +707,81 @@ class FieldTraceRequest(_TraceRequestBase):
     exclude_ids: list[int] = Field(default_factory=list)
 
 
+# ---------------------------------------------------------------------------
+# geometry-only field layouts
+#
+# /api/scene/geometry needs the same two layout shapes as a trace, only under
+# the much larger MAX_GEOMETRY_HELIOSTATS cap -- and that cap is a literal
+# Field(le=...) on FermatLayout.n and PositionsLayout.xy_mm, not a runtime
+# check this module could apply after the fact. Subclassing and redeclaring
+# just the capped field reuses every other line of the parent (a_m solving,
+# the capacity-shortfall message, the NaN rejection) rather than forking the
+# whole layout under a new name.
+
+
+class GeometryFermatLayout(FermatLayout):
+    n: int = Field(default=100, ge=1, le=MAX_GEOMETRY_HELIOSTATS)
+
+
+class GeometryPositionsLayout(PositionsLayout):
+    xy_mm: list[tuple[float, float]] = Field(min_length=1, max_length=MAX_GEOMETRY_HELIOSTATS)
+
+
+GeometryFieldLayout = Annotated[
+    Union[GeometryFermatLayout, GeometryPositionsLayout], Field(discriminator="type")
+]
+
+
+class GeometryRequest(BaseModel):
+    """Where a field stands and points -- no trace, no flux.
+
+    Everything a trace's phase 1 (:func:`_solve_field`) needs and nothing
+    past it: design, optics/tower, sun, and either a field ``layout`` or a
+    single heliostat's position, mirroring :class:`DayTraceRequest`'s own
+    "layout, else the single position" convention. No ``mode`` and no
+    ``n_rays`` -- there is no trace to budget.
+
+    ``design`` defaults to the legacy 5000x3000 rectangle (the same size
+    :class:`TraceRequest`'s hard-coded position defaults trace) rather than
+    being required, since the 3-D view's whole point is showing *something*
+    the instant it opens, before the sidebar's own design panel has been
+    touched (docs/ui-spec.md 2.1, "Live from the first frame").
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    design: DesignParams = Field(
+        default_factory=lambda: RectParams(width_mm=5000.0, height_mm=3000.0)
+    )
+    optics: Literal["prime_focus", "axicon", "cassegrain"]
+    optics_params: dict | None = None
+    solar_az_deg: float = Field(ge=0, le=360)
+    solar_el_deg: float
+    layout: GeometryFieldLayout | None = None
+    heliostat_x_mm: float = 0.0
+    heliostat_y_mm: float = -89609.0
+    #: Chief rays from mirror corners through the secondary to the receiver
+    #: (docs/ui-spec.md 2.1's "corner rays"); off by request for a caller
+    #: that only wants positions.
+    include_corner_rays: bool = True
+    #: Cap on how many heliostats contribute corner rays -- ui-spec's own
+    #: number ("For big fields they come from a spread-out subset (cap
+    #: ~500 sources)"). Unlike MAX_GEOMETRY_HELIOSTATS this is not a hard
+    #: field-size limit, just a picture budget, so it is adjustable.
+    max_corner_sources: int = Field(default=500, ge=1, le=2000)
+
+    @field_validator("solar_el_deg")
+    @classmethod
+    def _elevation_must_be_physical(cls, v: float) -> float:
+        # Unlike a trace, a non-positive elevation is not rejected here (see
+        # the endpoint): the sun below the horizon has to draw a scene, not a
+        # 422 -- docs/ui-spec.md 2.1, "scene never goes blank". Only past
+        # straight up is a plain typo.
+        if v > 90.0:
+            raise ValueError("solar_el_deg must be <= 90")
+        return v
+
+
 class DaySite(BaseModel):
     """Where and when. The sun angles come from this, per timestep."""
 
@@ -721,6 +815,165 @@ class DayTraceRequest(_TraceRequestBase):
     exclude_ids: list[int] = Field(default_factory=list)
     heliostat_x_mm: float = 0.0
     heliostat_y_mm: float = -89609.0
+
+
+# ---------------------------------------------------------------------------
+# library: named designs, receiver configs and projects
+#
+# heliostat.web.library is the file store (name-safe, atomic writes, skip-
+# unparseable listing -- the same machinery heliostat.web.setups uses, see
+# that module for why); it stores and returns documents without interpreting
+# them, exactly like setups does. Everything that gives those documents a
+# *shape* -- what a receiver or a project actually contains -- lives here,
+# next to the request models it reuses, so a receiver document and a trace
+# request's optics_params can never validate two different things called the
+# same name.
+
+
+class LibrarySaveRequest(BaseModel):
+    """A name and a document, for any of the three library collections.
+
+    The collection itself comes from the URL, not the body -- one request
+    shape serves ``designs``, ``receivers`` and ``projects`` alike, and which
+    schema the document must satisfy is decided by :func:`_validate_library_document`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=64)
+    document: dict
+
+
+class ReceiverDocument(BaseModel):
+    """A tower: which optics layout, and its params.
+
+    The shape of one ``receivers`` library entry's document, and of
+    :class:`ProjectDocument`'s ``receiver`` field -- one schema describes a
+    receiver everywhere it appears, whether saved alone or bundled in a
+    project. ``params`` is validated the same way a trace's own
+    ``optics_params`` is (:func:`resolve_optics_params`): absent/empty
+    resolves to that layout's defaults, and an invalid value names the field
+    that is wrong rather than failing three layers down.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    optics: Literal["prime_focus", "axicon", "cassegrain"]
+    params: dict = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _params_must_resolve(self) -> "ReceiverDocument":
+        try:
+            resolve_optics_params(self.optics, self.params)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        return self
+
+
+class ProjectField(BaseModel):
+    """Where the mirrors stand, mirroring a trace request's own
+    "layout, else a single position" choice (see :class:`DayTraceRequest`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    layout: FieldLayout | None = None
+    heliostat_x_mm: float = 0.0
+    heliostat_y_mm: float = -89609.0
+
+
+class ProjectSun(BaseModel):
+    """A sun direction, and optionally the site/time that produced it.
+
+    ``site`` is carried alongside the angles rather than instead of them --
+    reopening a project should not require re-deriving azimuth/elevation
+    from a site and clock time it may not even have (a plain angle pair is a
+    legal project), but when a site was used it is worth keeping so the
+    project can be re-opened at a different hour.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    azimuth_deg: float = Field(ge=0, le=360)
+    elevation_deg: float = Field(le=90)
+    site: DaySite | None = None
+
+
+class ProjectRun(BaseModel):
+    """The fidelity a project was (or should be) traced at."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["ultra_fast", "fast_accurate", "monte_carlo"] = "ultra_fast"
+    n_rays: int | None = Field(default=None, ge=100, le=2_000_000)
+
+
+class ProjectDocument(BaseModel):
+    """Schema v1 of a saved project: design + field + receiver + sun + run,
+    bundled as the Library's "save my work" unit (docs/ui-spec.md 5).
+
+    ``schema_version`` is a required literal, not a default, on purpose: a
+    document that does not say which version it is gets rejected rather than
+    silently read under today's rules, so a future v2 can change what a
+    project means without reinterpreting old ones.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1]
+    design: DesignParams
+    receiver: ReceiverDocument
+    field: ProjectField
+    sun: ProjectSun
+    run: ProjectRun = Field(default_factory=ProjectRun)
+
+
+#: Which pydantic shape validates a document posted to each library
+#: collection. ``designs`` validates against the same discriminated union a
+#: trace's own ``design`` field takes -- not a single ``BaseModel`` subclass,
+#: hence the ``TypeAdapter`` rather than a ``.model_validate()`` call.
+_DESIGN_ADAPTER: TypeAdapter = TypeAdapter(DesignParams)
+
+
+def _validate_library_document(collection: str, document: dict) -> None:
+    """Validate ``document`` against ``collection``'s schema.
+
+    Raises :class:`ValueError` with a flattened, human-readable message in
+    the same style :func:`resolve_optics_params` uses, so a 422 from saving
+    a library entry reads the same way whichever collection produced it.
+    """
+    try:
+        if collection == "designs":
+            _DESIGN_ADAPTER.validate_python(document)
+        elif collection == "receivers":
+            ReceiverDocument.model_validate(document)
+        elif collection == "projects":
+            ProjectDocument.model_validate(document)
+        else:  # pragma: no cover - the endpoint 404s unknown collections first
+            raise ValueError(f"unknown library collection {collection!r}")
+    except ValidationError as exc:
+        parts = []
+        for err in exc.errors():
+            loc = ".".join(str(p) for p in err["loc"])
+            parts.append(f"{loc}: {err['msg']}" if loc else err["msg"])
+        raise ValueError(f"{collection} document -- " + "; ".join(parts)) from exc
+
+
+#: Built-in, read-only entries per collection -- see
+#: heliostat.web.builtin_library for the numbers and where they come from.
+#: ``projects`` has none: a project is always something a user built.
+_BUILTIN_LIBRARY: dict[str, dict[str, dict]] = {
+    "designs": BUILTIN_DESIGNS,
+    "receivers": BUILTIN_RECEIVERS,
+    "projects": {},
+}
+
+
+def _require_known_collection(collection: str) -> None:
+    """404 for a collection name that is not one of the three -- every
+    library route needs this same check first, so it is one function
+    rather than four copies of the same ``if``."""
+    if collection not in _BUILTIN_LIBRARY:
+        raise HTTPException(status_code=404, detail=f"unknown library collection {collection!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -1463,6 +1716,41 @@ def _field_positions(layout, exclude_ids: list[int]) -> tuple[np.ndarray, list[i
     return xy[keep], keep
 
 
+def _solve_field(
+    optics: str,
+    optics_params: OpticsParams,
+    design: RectParams | GridParams | FlowerParams,
+    xy_mm: np.ndarray,
+    solar_az_deg: float,
+    solar_el_deg: float,
+) -> tuple[list[Solution], list[HeliostatDesign | None], list[float]]:
+    """One pointing/figure solve and one design per heliostat -- ``/api/field/trace``'s
+    former "phase 1", factored out so it and ``/api/scene/geometry`` share the
+    identical loop rather than two copies that could drift. Everything past
+    this (shading/blocking, the receiver trace) is trace-only business and
+    stays in ``/api/field/trace``; the geometry endpoint has no use for it.
+
+    :returns: ``(solutions, designs, slants)``, index-aligned with ``xy_mm``.
+    """
+    n = xy_mm.shape[0]
+    solutions = [
+        _solve_for(
+            optics,
+            float(xy_mm[i, 0]),
+            float(xy_mm[i, 1]),
+            solar_az_deg,
+            solar_el_deg,
+            optics_params,
+        )
+        for i in range(n)
+    ]
+    slants = [
+        _slant_range_mm(solutions[i], float(xy_mm[i, 0]), float(xy_mm[i, 1])) for i in range(n)
+    ]
+    designs = [_build_trace_design(design, solutions[i], slants[i]) for i in range(n)]
+    return solutions, designs, slants
+
+
 def _field_geometry(design: HeliostatDesign | None):
     """``(region, outline_local_mm, half_width_mm, half_height_mm)`` for the mirror.
 
@@ -1579,6 +1867,14 @@ def create_app():
     def index() -> HTMLResponse:
         html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
         return HTMLResponse(content=html)
+
+    # Additive: `/` keeps serving index.html through the explicit route
+    # above exactly as before. This only adds a second, ordinary way to
+    # reach the same files (and anything else dropped in static/, such as
+    # the branding lockup in docs/ui-spec.md 5b) at their own paths, for
+    # future markup that wants to reference `/static/...` directly rather
+    # than everything being inlined into one served HTML string.
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @app.get("/api/health")
     def health() -> JSONResponse:
@@ -2011,23 +2307,13 @@ def create_app():
         n = xy_mm.shape[0]
 
         # -- phase 1: one pointing/figure solve and one design per heliostat.
+        # Shared with /api/scene/geometry via _solve_field, so the two cannot
+        # trace and place the same field differently.
         t0 = time.perf_counter()
-        solutions = [
-            _solve_for(
-                body.optics,
-                float(xy_mm[i, 0]),
-                float(xy_mm[i, 1]),
-                body.solar_az_deg,
-                body.solar_el_deg,
-                optics_params,
-            )
-            for i in range(n)
-        ]
-        slants = [
-            _slant_range_mm(solutions[i], float(xy_mm[i, 0]), float(xy_mm[i, 1])) for i in range(n)
-        ]
         try:
-            designs = [_build_trace_design(body.design, solutions[i], slants[i]) for i in range(n)]
+            solutions, designs, _slants = _solve_field(
+                body.optics, optics_params, body.design, xy_mm, body.solar_az_deg, body.solar_el_deg
+            )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         t_solve = time.perf_counter()
@@ -2153,5 +2439,176 @@ def create_app():
                 "scene": scene,
             }
         )
+
+    @app.post("/api/scene/geometry")
+    def scene_geometry(body: GeometryRequest) -> JSONResponse:
+        """Where every mirror in a field stands and points -- no trace, no flux.
+
+        This is ``/api/field/trace``'s phase 1 (:func:`_solve_field`) and
+        nothing past it: no shading/blocking, no receiver trace, no flux map.
+        The 3-D view calls this on every edit (docs/ui-spec.md 2.1, "Live
+        from the first frame" and "Apply only where it's slow") -- placing
+        and orienting mirrors is cheap enough to run live even for a field
+        far too large to trace in a browser request, hence its own, larger
+        cap (:data:`MAX_GEOMETRY_HELIOSTATS`, ten times the trace cap).
+
+        The sun at or below the horizon is NOT an error here, unlike a
+        trace. Every per-layout aiming solve (:func:`solve_prime_focus` and
+        its siblings) divides by the sun's own elevation, so there is no
+        pointing to compute -- but the view still has a field to show
+        (docs/ui-spec.md 2.1: "Sun below horizon: scene never goes blank --
+        heliostats hold their last pose, rays disappear, a banner
+        explains"). This endpoint has no "last pose" to hold (it is not
+        stateful), so the simplest honest answer is the one the scene
+        already reports as ``null``-able: every heliostat comes back at its
+        position with no orientation, ``rays`` is empty, and
+        ``sun_below_horizon: true`` says why -- the client already has
+        everything it needs to draw the banner and keep the last frame it
+        drew, without this endpoint pretending to solve something that has
+        no solution.
+        """
+        try:
+            optics_params = resolve_optics_params(body.optics, body.optics_params)
+            if body.layout is None:
+                xy_mm = np.array([[body.heliostat_x_mm, body.heliostat_y_mm]], dtype=float)
+                ids: list[int] = [0]
+            else:
+                xy_mm, ids = _field_positions(body.layout, [])
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        secondary, receiver = _geometry_for(body.optics, optics_params)
+        sun_below_horizon = body.solar_el_deg <= 0.0
+
+        if sun_below_horizon:
+            heliostats = [
+                {
+                    "id": int(i),
+                    "x_mm": float(x),
+                    "y_mm": float(y),
+                    "rot_az_deg": None,
+                    "rot_el_deg": None,
+                    "c3": None,
+                    "c4": None,
+                    "c5": None,
+                    "design": None,
+                }
+                for i, (x, y) in zip(ids, xy_mm)
+            ]
+            # No solve means no real design-driven silhouette either -- a
+            # design's outline does not depend on the solve, but building
+            # one only to draw no rays with it is pointless below the
+            # horizon. The legacy rectangle's outline is a fine stand-in for
+            # "some outline exists to place the (unoriented) mirrors with".
+            _region, outline, _hw, _hh = _field_geometry(None)
+        else:
+            try:
+                solutions, designs, _slants = _solve_field(
+                    body.optics,
+                    optics_params,
+                    body.design,
+                    xy_mm,
+                    body.solar_az_deg,
+                    body.solar_el_deg,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            heliostats = [
+                {
+                    "id": int(ids[i]),
+                    "x_mm": float(xy_mm[i, 0]),
+                    "y_mm": float(xy_mm[i, 1]),
+                    "rot_az_deg": solutions[i].rot_az_deg,
+                    "rot_el_deg": solutions[i].rot_el_deg,
+                    "c3": solutions[i].c3,
+                    "c4": solutions[i].c4,
+                    "c5": solutions[i].c5,
+                    "design": designs[i],
+                }
+                for i in range(len(ids))
+            ]
+            # designs[0] stands in for the whole field's silhouette, exactly
+            # as /api/field/trace's own occlusion pass assumes -- see
+            # _field_geometry's docstring for why every heliostat of one
+            # design presents the identical outline.
+            _region, outline, _hw, _hh = _field_geometry(designs[0])
+
+        scene = build_geometry_scene(
+            heliostats,
+            outline,
+            body.solar_az_deg,
+            body.solar_el_deg,
+            secondary,
+            receiver,
+            include_corner_rays=body.include_corner_rays,
+            max_corner_sources=body.max_corner_sources,
+            sun_below_horizon=sun_below_horizon,
+        )
+        scene["optics_resolved"] = optics_params.model_dump()
+        return JSONResponse(scene)
+
+    # -- library: designs, receivers, projects ------------------------------
+
+    @app.get("/api/library/{collection}")
+    def library_list(collection: str) -> JSONResponse:
+        _require_known_collection(collection)
+        entries = [{"name": name, "builtin": True} for name in _BUILTIN_LIBRARY[collection]]
+        entries += [
+            {"name": e["name"], "builtin": False, "saved_at": e["saved_at"]}
+            for e in list_entries(collection)
+        ]
+        return JSONResponse({"entries": entries})
+
+    @app.post("/api/library/{collection}")
+    def library_save(collection: str, body: LibrarySaveRequest) -> JSONResponse:
+        _require_known_collection(collection)
+        if body.name in _BUILTIN_LIBRARY[collection]:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{body.name!r} is a built-in {collection[:-1]} and cannot be overwritten",
+            )
+        try:
+            _validate_library_document(collection, body.document)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        try:
+            saved = save_entry(collection, body.name, body.document)
+        except LibraryError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except OSError as exc:  # full disk, permissions, read-only home
+            raise HTTPException(status_code=500, detail=f"could not save: {exc}") from exc
+        return JSONResponse(saved)
+
+    # {name:path} rather than the default {name}: FastAPI's default string
+    # converter splits on "/", and one built-in name is genuinely
+    # "Axicon 27 m / 20 deg / 14 m" (docs/ui-spec.md 5's own naming) -- a
+    # plain {name} 404s on it, since the router sees an extra path segment
+    # rather than one name containing a slash.
+    @app.get("/api/library/{collection}/{name:path}")
+    def library_load(collection: str, name: str) -> JSONResponse:
+        _require_known_collection(collection)
+        if name in _BUILTIN_LIBRARY[collection]:
+            return JSONResponse(
+                {"name": name, "builtin": True, "document": _BUILTIN_LIBRARY[collection][name]}
+            )
+        try:
+            payload = load_entry(collection, name)
+        except LibraryError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return JSONResponse({**payload, "builtin": False})
+
+    @app.delete("/api/library/{collection}/{name:path}")
+    def library_delete(collection: str, name: str) -> JSONResponse:
+        _require_known_collection(collection)
+        if name in _BUILTIN_LIBRARY[collection]:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{name!r} is a built-in {collection[:-1]} and cannot be deleted",
+            )
+        try:
+            delete_entry(collection, name)
+        except LibraryError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return JSONResponse({"deleted": name})
 
     return app

@@ -17,9 +17,11 @@ import os
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
-# The web app is a package-data payload (one HTML file), not an import, so
-# it has to be collected explicitly or the frozen app serves a 500.
-datas = collect_data_files("heliostat", includes=["web/static/*"])
+# The web app is a package-data payload, not an import, so it has to be
+# collected explicitly or the frozen app serves a 500. Recursive: the
+# frontend is growing subdirectories (js/, css/, vendor/), and a
+# non-recursive glob would silently ship a build without them.
+datas = collect_data_files("heliostat", includes=["web/static/**/*"])
 
 hiddenimports = [
     # uvicorn resolves its protocol and lifespan implementations by string
