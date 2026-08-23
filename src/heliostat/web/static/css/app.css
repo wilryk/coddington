@@ -1,0 +1,480 @@
+/* Coddington workspace (Phase 3a) -- tokens and layout lifted from the
+   signed-off mockups (docs/ui-spec.md, "Coddington Workspace" rev 5). */
+
+:root {
+  --accent: #45739e;
+  --accent-dark: #345a80;
+  --select: #0b5fd0;
+  --border: #d8dee5;
+  --bg: #f7f8fa;
+  --panel: #fff;
+  --text: #1f2933;
+  --muted: #64748b;
+  --error-bg: #fdeceb;
+  --error-border: #e0554a;
+  --error-text: #8a2c22;
+  --warn-bg: #fdf3e7;
+  --warn-border: #d97b29;
+  --warn-text: #8a4d12;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* The UA's [hidden] rule loses to any author `display` declaration, and
+   several toggled elements here (the flux overlay, banners) carry one --
+   same trap, same fix as the previous frontend. */
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  color: var(--accent-dark);
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* -- top bar ---------------------------------------------------------- */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 20px;
+  height: 52px;
+  flex: 0 0 52px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.topbar h1 {
+  font-size: 17px;
+  margin: 0;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.logo-mark {
+  width: 26px;
+  height: 26px;
+  border: 1.5px dashed var(--accent);
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  flex: 0 0 auto;
+}
+.tag {
+  color: var(--muted);
+  font-size: 12px;
+}
+.apptabs {
+  display: flex;
+  gap: 6px;
+  margin-left: 28px;
+}
+.apptabs .tab {
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 6px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.apptabs .tab.active {
+  background: var(--accent);
+  border-color: var(--accent-dark);
+  color: #fff;
+}
+.apptabs .tab.disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.topbar .right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.btn {
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 6px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent-dark);
+  color: #fff;
+  font-weight: 600;
+}
+.btn.disabled-link,
+.disabled-link {
+  cursor: not-allowed;
+  opacity: 0.5;
+  pointer-events: none;
+}
+.savestate {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* -- shell: sidebar + viewport ------------------------------------------ */
+
+.shell {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.sidebar {
+  flex: 0 0 300px;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.stage {
+  border-bottom: 1px solid var(--border);
+  padding: 8px 16px;
+  flex: 0 0 auto;
+}
+.stagehead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.stagehead h2 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin: 0;
+  font-weight: 600;
+  flex: 1 1 auto;
+}
+.chev {
+  flex: 0 0 auto;
+  color: var(--muted);
+  display: inline-block;
+  transition: transform 0.15s ease;
+}
+.summary {
+  color: var(--muted);
+  font-size: 12.5px;
+  margin-top: 6px;
+}
+.summary strong {
+  color: var(--text);
+  font-weight: 600;
+}
+.stagebody {
+  margin-top: 10px;
+}
+
+.seg {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.seg button {
+  flex: 1 1 auto;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.seg button.active {
+  background: var(--accent);
+  border-color: var(--accent-dark);
+  color: #fff;
+}
+
+.frow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.frow label {
+  flex: 0 0 128px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.frow .val,
+input.val {
+  flex: 1 1 auto;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: #fff;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  font-family: inherit;
+  color: var(--text);
+  width: 100%;
+  min-width: 0;
+}
+input.val:focus {
+  outline: none;
+  border-color: var(--select);
+  box-shadow: 0 0 0 2px rgba(11, 95, 208, 0.15);
+}
+/* Chrome/Safari/Edge number-input spinners crowd a 13px box; drop them. */
+input.val::-webkit-outer-spin-button,
+input.val::-webkit-inner-spin-button {
+  margin: 0;
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 11.5px;
+  margin-top: 4px;
+}
+
+.fielderr {
+  color: var(--error-text);
+  background: var(--error-bg);
+  border: 1px solid var(--error-border);
+  border-radius: 5px;
+  font-size: 11.5px;
+  padding: 5px 8px;
+  margin: 4px 0 8px 0;
+}
+.fieldwarn {
+  color: var(--warn-text);
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  border-radius: 5px;
+  font-size: 11.5px;
+  padding: 5px 8px;
+  margin: 4px 0 8px 0;
+}
+
+.stageactions {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+}
+.stageactions .btn {
+  font-size: 11.5px;
+  padding: 5px 9px;
+}
+
+.sidebar-footer {
+  margin-top: auto;
+  border-top: 1px solid var(--border);
+  padding: 5px 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.sidebar-footer a {
+  font-size: 11px;
+  margin-left: auto;
+}
+
+/* -- viewport ------------------------------------------------------------ */
+
+.viewport {
+  flex: 1 1 auto;
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(180deg, #f4f7fb 0%, #dbe4ee 100%);
+}
+#scene-container {
+  position: absolute;
+  inset: 0;
+}
+#scene-container canvas {
+  display: block;
+}
+
+.chip {
+  position: absolute;
+  left: 14px;
+  bottom: 14px;
+  background: rgba(255, 255, 255, 0.85);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 11.5px;
+  color: var(--muted);
+  pointer-events: none;
+}
+.viewhint {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 11.5px;
+  color: var(--muted);
+  pointer-events: none;
+}
+.banner {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  color: var(--warn-text);
+  border-radius: 6px;
+  padding: 7px 14px;
+  font-size: 12.5px;
+}
+.error-strip {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--error-bg);
+  border: 1px solid var(--error-border);
+  color: var(--error-text);
+  border-radius: 6px;
+  padding: 7px 14px;
+  font-size: 12.5px;
+  max-width: 70%;
+}
+
+/* -- run bar --------------------------------------------------------------- */
+
+.runbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 20px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  height: 86px;
+  flex: 0 0 86px;
+}
+.runbar .seg {
+  margin-bottom: 0;
+  flex: 0 0 auto;
+}
+.runbar .seg button {
+  flex: 0 0 auto;
+  padding: 7px 12px;
+}
+.runbar .fielderr {
+  margin: 0;
+}
+.results {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  margin-left: auto;
+}
+.results.stale {
+  opacity: 0.45;
+}
+.metric {
+  text-align: right;
+}
+.metric .num {
+  font-size: 16px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.metric .lbl {
+  font-size: 11px;
+  color: var(--muted);
+}
+.fluxthumb {
+  width: 58px;
+  height: 58px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  flex: 0 0 auto;
+  background: #20124d;
+}
+.stamp {
+  color: var(--muted);
+  font-size: 11px;
+}
+.stalechip {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 11.5px;
+  flex: 0 0 auto;
+}
+
+/* -- flux overlay ------------------------------------------------------- */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(20, 26, 33, 0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.overlay-panel {
+  background: var(--panel);
+  border-radius: 10px;
+  padding: 16px;
+  max-width: 90vw;
+  max-height: 90vh;
+  position: relative;
+  box-shadow: 0 12px 40px rgba(31, 41, 51, 0.3);
+}
+.overlay-panel img {
+  display: block;
+  max-width: 80vw;
+  max-height: 80vh;
+}
+.overlay-close {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  color: var(--muted);
+  font-size: 20px;
+  cursor: pointer;
+  line-height: 1;
+  background: none;
+  border: none;
+}

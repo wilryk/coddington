@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Coddington</title>
+  <link rel="stylesheet" href="/static/css/app.css" />
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "/static/vendor/three/three.module.min.js",
+        "three/addons/controls/OrbitControls.js": "/static/vendor/three/OrbitControls.js"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="app">
+    <div class="topbar">
+      <div class="logo-mark">C</div>
+      <h1>Coddington</h1>
+      <span class="tag">Manuscript baseline — axicon</span>
+      <div class="apptabs">
+        <div class="tab active">Workspace</div>
+        <div class="tab disabled" title="Heliostat Shape tab -- coming in a later phase">Heliostat Shape</div>
+        <div class="tab disabled" title="Analysis tab -- coming in a later phase">Analysis</div>
+      </div>
+      <div class="right">
+        <div class="btn disabled-link" title="Library -- coming in a later phase">Library</div>
+        <span class="savestate">Phase 3a -- projects not yet saved</span>
+      </div>
+    </div>
+
+    <div class="shell">
+      <aside class="sidebar">
+        <div id="stage-heliostat"></div>
+        <div id="stage-field"></div>
+        <div id="stage-receiver"></div>
+        <div id="stage-sun"></div>
+        <div class="sidebar-footer">
+          <svg viewBox="0 0 540 100" width="86" height="16" opacity="0.9"><g transform="translate(28.5 50) scale(0.8182)"><path d="M -19.85,-44 L -13.85,-44 Q 16.15,0 -13.85,44 L -19.85,44 Q -49.85,0 -19.85,-44 Z" fill="#00AEEF"></path><path d="M 4.85,-44 L 34.85,-44 L 34.85,44 L 4.85,44 Q 34.85,0 4.85,-44 Z" fill="#000000"></path></g><text x="72" y="73" font-family="'Segoe UI', sans-serif" font-size="64" font-weight="600"><tspan fill="#00AEEF">Ryker</tspan><tspan fill="#1f2933">Optics</tspan></text></svg>
+          <a href="#" class="disabled-link" title="About -- coming in a later phase">About</a>
+        </div>
+      </aside>
+
+      <div class="viewport">
+        <div id="scene-container"></div>
+        <div class="banner" id="sun-banner" hidden>
+          Sun below the horizon at this time — heliostats hold their last pose, rays hidden.
+        </div>
+        <div class="error-strip" id="geometry-error-strip" hidden></div>
+        <div class="chip" id="rays-chip">Corner chief rays — viewing aid, no shading</div>
+        <div class="viewhint">drag to orbit · right-drag to pan · scroll to zoom</div>
+      </div>
+    </div>
+
+    <div id="runbar" class="runbar"></div>
+  </div>
+
+  <div id="flux-overlay" class="overlay" hidden>
+    <div class="overlay-panel">
+      <button type="button" class="overlay-close" id="flux-overlay-close" aria-label="Close">&times;</button>
+      <img id="flux-overlay-img" alt="Flux map" />
+    </div>
+  </div>
+
+  <script type="module" src="/static/js/main.js"></script>
+</body>
+</html>

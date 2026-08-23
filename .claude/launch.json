@@ -1,0 +1,18 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "coddington-web",
+      "runtimeExecutable": "C:\\gitlab\\coddington\\.venv\\Scripts\\python.exe",
+      "runtimeArgs": [
+        "-m",
+        "uvicorn",
+        "heliostat.web.app:create_app",
+        "--factory",
+        "--port",
+        "8742"
+      ],
+      "port": 8742
+    }
+  ]
+}
