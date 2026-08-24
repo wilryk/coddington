@@ -46,6 +46,8 @@ east, y north, z up, heliostat pivot at ``z = 0``, tower axis at
 
 from __future__ import annotations
 
+import dataclasses
+
 import numpy as np
 
 from ..geometry.aperture import Rect
@@ -54,6 +56,7 @@ from ..geometry.receiver import FlatWindowReceiver, Receiver
 from ..geometry.secondary import (
     AxiconSecondary,
     CassegrainSecondary,
+    NoSecondary,
     Secondary,
     _axicon_tip_geometry,
 )
@@ -90,6 +93,22 @@ FIELD_SILHOUETTE_VERTICES = 24
 # fixed seed -- the scene must be identical for two identical requests.
 SIDE_TRACE_RAYS = 4000
 SIDE_TRACE_SEED = 20260818
+
+# Miss detection (docs/ui-spec.md 2.3's amber "warning" tier): how much
+# bigger than the real aperture the probe secondary is. Large enough that a
+# field needing, say, 2x today's aperture still reports a finite
+# ``needed_aperture_radius_mm`` instead of being clipped by the probe
+# itself; not so large that float precision at the enlarged radius becomes
+# an issue for any geometry this app builds.
+MISS_PROBE_ENLARGE = 20.0
+
+# Fallback overshoot length for a dropped corner ray's dashed extension,
+# used only if the secondary has no revolved profile to measure a "top
+# height" from (should not happen -- miss detection only runs for axicon
+# and Cassegrain, both surfaces of revolution). Reuses the scene's own
+# "far enough to read as deliberate" source distance rather than inventing
+# a new constant.
+_MISS_RAY_FALLBACK_LEN_MM = SOURCE_DIST_MM
 
 # Outline sampling: azimuths per facet, and the radial profile resolution
 # the client revolves the secondary from.
@@ -548,6 +567,7 @@ def build_geometry_scene(
     include_corner_rays: bool = True,
     max_corner_sources: int = 500,
     sun_below_horizon: bool = False,
+    include_miss_rays: bool = False,
 ) -> dict:
     """Describe a field's placement and orientation for the 3-D view -- no
     trace, no flux, one solve per heliostat and nothing past it.
@@ -581,10 +601,19 @@ def build_geometry_scene(
     entirely when ``include_corner_rays`` is false, ``outline_local_mm`` is
     ``None``, the field is empty, or the sun is below the horizon.
 
+    ``include_miss_rays`` (off by default, so every other caller's return
+    shape is untouched) additionally routes the same strided sources
+    through :func:`field_corner_rays`'s ``return_misses`` and exposes the
+    dropped-ray polylines under ``miss_rays`` -- the picture half of
+    :func:`field_miss_detection`'s warning tier, which the endpoint
+    computes separately (it needs every heliostat's centre, not a
+    corner-ray stride) and stitches back together with this key.
+
     :returns: JSON-safe dict with ``outline_local``, ``heliostats`` (id,
         position, orientation), ``secondary``, ``receiver``, ``sun``,
-        ``sun_below_horizon``, ``rays`` and ``rays_source``
-        (``"corner_chief"``, always -- there is no other ray source here).
+        ``sun_below_horizon``, ``rays``, ``rays_source``
+        (``"corner_chief"``, always -- there is no other ray source here),
+        and ``miss_rays`` only when ``include_miss_rays`` was set.
     """
     outline = None if outline_local_mm is None else np.asarray(outline_local_mm, dtype=float)
 
@@ -600,26 +629,38 @@ def build_geometry_scene(
     ]
 
     rays: list = []
+    result: dict = {}
     if include_corner_rays and not sun_below_horizon and outline is not None and heliostats:
         sources = [heliostats[i] for i in _field_ray_sources(len(heliostats), max_corner_sources)]
-        rays = field_corner_rays(sources, outline, solar_az_deg, solar_el_deg, secondary, receiver)
+        want_misses = include_miss_rays and secondary is not None and not isinstance(secondary, NoSecondary)
+        if want_misses:
+            rays, result["miss_rays"] = field_corner_rays(
+                sources, outline, solar_az_deg, solar_el_deg, secondary, receiver, return_misses=True
+            )
+        else:
+            rays = field_corner_rays(sources, outline, solar_az_deg, solar_el_deg, secondary, receiver)
+    if include_miss_rays and "miss_rays" not in result:
+        result["miss_rays"] = []
 
     profile = None if secondary is None else _secondary_profile(secondary)
     rings = None if profile is None else profile[1][np.isfinite(profile[1]).all(axis=1)]
     sun = _sun_vector(solar_az_deg, solar_el_deg)
 
-    return {
-        "outline_local": None if outline is None else _poly_payload(outline),
-        "heliostats": table,
-        "secondary": None
-        if profile is None
-        else {"kind": profile[0], "profile": [[_round(r), _round(z)] for r, z in rings]},
-        "receiver": None if receiver is None else _receiver_dict(receiver),
-        "sun": [_round_unit(c) for c in sun],
-        "sun_below_horizon": bool(sun_below_horizon),
-        "rays": rays,
-        "rays_source": "corner_chief",
-    }
+    result.update(
+        {
+            "outline_local": None if outline is None else _poly_payload(outline),
+            "heliostats": table,
+            "secondary": None
+            if profile is None
+            else {"kind": profile[0], "profile": [[_round(r), _round(z)] for r, z in rings]},
+            "receiver": None if receiver is None else _receiver_dict(receiver),
+            "sun": [_round_unit(c) for c in sun],
+            "sun_below_horizon": bool(sun_below_horizon),
+            "rays": rays,
+            "rays_source": "corner_chief",
+        }
+    )
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -684,6 +725,48 @@ def _normal_at(h: dict, lu: float, lv: float, n, u, v):
     return None
 
 
+def _mirror_frames_batch(rot_az_deg: np.ndarray, rot_el_deg: np.ndarray):
+    """Vectorised :func:`~heliostat.trace.mc._mirror_frame` over many
+    heliostats at once: the identical construction, ``(N,)`` pointing
+    angles in rather than a Python loop of N scalar calls. That loop is
+    what :func:`field_corner_rays` already pays per corner-ray *source*
+    (bounded by ``max_corner_sources``); :func:`field_miss_detection` runs
+    over the whole field instead, so it needs the array form to stay cheap
+    at 10,000 heliostats.
+
+    :returns: ``(n, u, v)``, each ``(N, 3)``.
+    """
+    az = np.deg2rad(rot_az_deg)
+    el = np.deg2rad(rot_el_deg)
+    n = np.column_stack([np.cos(el) * np.cos(az), np.cos(el) * np.sin(az), np.sin(el)])
+    up = np.array([0.0, 0.0, 1.0])
+    u = np.cross(up, n)
+    u /= np.linalg.norm(u, axis=1, keepdims=True)
+    v = np.cross(n, u)
+    v /= np.linalg.norm(v, axis=1, keepdims=True)
+    return n, u, v
+
+
+def _secondary_top_height_mm(secondary: Secondary) -> float:
+    """The ``z`` a secondary's surface reaches at its own aperture rim.
+
+    Used only to size the dashed-red overshoot on a dropped corner ray
+    (:func:`field_corner_rays`'s ``return_misses``) -- reuses
+    :func:`_secondary_profile`, the same revolved profile the 3-D view
+    draws the secondary from, so the overshoot length tracks whatever
+    surface is actually on screen. Falls back to a fixed scene distance
+    for a secondary with no such profile (should not arise here: miss
+    detection only runs for axicon and Cassegrain).
+    """
+    profile = _secondary_profile(secondary)
+    if profile is None:
+        return _MISS_RAY_FALLBACK_LEN_MM
+    top_z = float(profile[1][-1, 1])
+    if not np.isfinite(top_z) or top_z <= 0:
+        return _MISS_RAY_FALLBACK_LEN_MM
+    return top_z
+
+
 def field_corner_rays(
     heliostats: list[dict],
     outline_local_mm: np.ndarray,
@@ -691,7 +774,9 @@ def field_corner_rays(
     solar_el_deg: float,
     secondary: Secondary,
     receiver: Receiver,
-) -> list:
+    *,
+    return_misses: bool = False,
+) -> list | tuple[list, list]:
     """One chief ray from each corner of *every* heliostat in the field.
 
     Deterministic and cheap: four rays per mirror, the sun's centre only (no
@@ -707,8 +792,23 @@ def field_corner_rays(
     surface at that corner, then goes through the same secondary and
     receiver objects the trace used.
 
-    :returns: polylines ``[source, mirror, secondary, receiver]``, world mm,
-        for the rays that reach the receiver.
+    ``return_misses=True`` (docs/ui-spec.md 2.1's "Rays that miss the
+    optics ... draw dashed red rather than disappearing") additionally
+    returns every corner ray that did NOT make it to the receiver -- missed
+    the secondary's aperture entirely, or reached the secondary but landed
+    outside the receiver window -- as a short ``[source, mirror,
+    extension]`` polyline. The extension continues the direction the ray
+    left the MIRROR in (the same one a surviving ray uses for its first
+    leg), never the post-secondary bounce: a secondary-miss never has one,
+    and using one convention for both keeps every dashed line's meaning
+    identical regardless of which stage dropped it. Its length is fixed per
+    call (1.3x :func:`_secondary_top_height_mm`), not per ray, since this
+    is a "this family of rays would have overshot about this far" picture,
+    not a traced trajectory.
+
+    :returns: the usual hit-ray polylines
+        (``[source, mirror, secondary, receiver]``), or ``(hit_rays,
+        miss_rays)`` when ``return_misses`` is set.
     """
     s = _sun_vector(solar_az_deg, solar_el_deg)
     corners = _outline_sample_points(np.asarray(outline_local_mm, dtype=float))
@@ -737,24 +837,136 @@ def field_corner_rays(
             dirs.append(d_out)
 
     if not hits:
-        return []
+        return ([], []) if return_misses else []
 
     hit = np.asarray(hits, dtype=float).T
     d = np.asarray(dirs, dtype=float).T
     src = hit + SOURCE_DIST_MM * s[:, None]
 
-    pre, d_out, on_sec = secondary.redirect(hit, d, {})
-    src, mir = src[:, on_sec], hit[:, on_sec]
-    reached, uv = receiver.intersect(pre, d_out)
-    src, mir, pre = src[:, reached], mir[:, reached], pre[:, reached]
-    uv = uv[:, reached]
+    pre, d_sec, on_sec = secondary.redirect(hit, d, {})
+    reached_sub, uv_sub = receiver.intersect(pre, d_sec)
+
+    # Scatter the (already secondary-filtered) receiver-intersect result
+    # back onto the full corner-ray index space, so "reached the receiver"
+    # and "everything else" (misses) can both be read off one N-length mask.
+    reached = np.zeros(hit.shape[1], dtype=bool)
+    reached[on_sec] = reached_sub
+    hit_ok = on_sec & reached
 
     rec_z = getattr(receiver, "z_mm", float("nan"))
-    rec = np.vstack([uv[0], uv[1], np.full(uv.shape[1], rec_z)])
-    paths = np.stack([src, mir, pre, rec])
+    rec = np.vstack([uv_sub[0], uv_sub[1], np.full(uv_sub.shape[1], rec_z)])
+    paths = np.stack([src[:, hit_ok], hit[:, hit_ok], pre[:, reached_sub], rec[:, reached_sub]])
     finite = np.isfinite(paths).all(axis=(0, 1))
     paths = paths[:, :, finite]
-    return [
+    hit_rays = [
         [[_round(paths[vtx, axis, i]) for axis in range(3)] for vtx in range(4)]
         for i in range(paths.shape[2])
     ]
+
+    if not return_misses:
+        return hit_rays
+
+    miss_mask = ~hit_ok
+    ext_len = 1.3 * _secondary_top_height_mm(secondary)
+    miss_paths = np.stack(
+        [
+            src[:, miss_mask],
+            hit[:, miss_mask],
+            hit[:, miss_mask] + ext_len * d[:, miss_mask],
+        ]
+    )
+    miss_finite = np.isfinite(miss_paths).all(axis=(0, 1))
+    miss_paths = miss_paths[:, :, miss_finite]
+    miss_rays = [
+        [[_round(miss_paths[vtx, axis, i]) for axis in range(3)] for vtx in range(3)]
+        for i in range(miss_paths.shape[2])
+    ]
+    return hit_rays, miss_rays
+
+
+def field_miss_detection(
+    heliostats: list[dict],
+    solar_az_deg: float,
+    solar_el_deg: float,
+    secondary: Secondary | None,
+) -> dict | None:
+    """The amber "warning" tier of docs/ui-spec.md 2.3: which heliostats'
+    chief rays miss the secondary, and how big an aperture would catch the
+    whole field.
+
+    ``None`` means "no warning to report", the API contract's three exempt
+    cases: no secondary at all (``secondary`` is ``None`` or
+    :class:`~heliostat.geometry.secondary.NoSecondary` -- prime focus), or
+    an empty field. The fourth exemption, sun below the horizon, is the
+    caller's business: there is no solved orientation to build a chief ray
+    from then, so this function must not be called in that case (every
+    heliostat here needs ``rot_az_deg``/``rot_el_deg``, unlike
+    :func:`build_geometry_scene`'s table, which tolerates ``None`` for the
+    below-horizon placement-only case).
+
+    Each heliostat's chief ray starts at its own mirror CENTRE, not a
+    corner -- this answers "does this heliostat work at all", where
+    :func:`field_corner_rays` answers "what does the beam bundle look
+    like". It reflects off the plain pointing normal
+    (:func:`_mirror_frames_batch`, vectorised over every heliostat at
+    once): figure is a fraction of a millimetre of sag at the mirror
+    centre, invisible to a which-heliostat-misses test.
+
+    Every ray is tested in ONE vectorised
+    :meth:`~heliostat.geometry.secondary.Secondary.redirect` call against
+    an enlarged copy of the secondary (:data:`MISS_PROBE_ENLARGE`x the real
+    aperture radius, everything else identical via
+    :func:`dataclasses.replace`) -- the only way this stays cheap at
+    :data:`~heliostat.web.app.MAX_GEOMETRY_HELIOSTATS` heliostats. A ray
+    landing inside the REAL aperture is necessarily inside the enlarged one
+    too (enlarging only relaxes the aperture cutoff; every other surface
+    parameter, including where the surface's root-finding picks its nearest
+    intersection, is unchanged), so this single enlarged pass is enough to
+    classify every heliostat -- a second call against the real secondary
+    would answer nothing this one does not already contain.
+
+    :returns: ``{"needed_aperture_radius_mm", "aperture_miss_ids",
+        "total_miss_ids"}``. ``"rays"`` is deliberately absent: the dropped
+        corner-ray polylines come from the corner-ray machinery's own
+        strided sources (:func:`field_corner_rays`'s ``return_misses``),
+        not from testing all 10,000 heliostats' centres, so the caller
+        (:func:`build_geometry_scene`) attaches them.
+    """
+    if secondary is None or isinstance(secondary, NoSecondary) or not heliostats:
+        return None
+
+    ids = np.array([h["id"] for h in heliostats], dtype=int)
+    x = np.array([h["x_mm"] for h in heliostats], dtype=float)
+    y = np.array([h["y_mm"] for h in heliostats], dtype=float)
+    az = np.array([h["rot_az_deg"] for h in heliostats], dtype=float)
+    el = np.array([h["rot_el_deg"] for h in heliostats], dtype=float)
+
+    n, _u, _v = _mirror_frames_batch(az, el)
+    s = _sun_vector(solar_az_deg, solar_el_deg)
+    d_in = -s
+    d_out = d_in[None, :] - 2.0 * (n @ d_in)[:, None] * n  # (N, 3)
+
+    p = np.column_stack([x, y, np.zeros_like(x)]).T  # (3, N)
+    d = d_out.T  # (3, N)
+
+    enlarged = dataclasses.replace(
+        secondary, aperture_radius_mm=secondary.aperture_radius_mm * MISS_PROBE_ENLARGE
+    )
+    hit, _d2, on_enlarged = enlarged.redirect(p, d, {})
+
+    if hit.shape[1] == 0:
+        needed = None
+        aperture_miss_ids: list = []
+    else:
+        radius = np.hypot(hit[0], hit[1])
+        needed = float(np.max(radius))
+        beyond_actual = radius > secondary.aperture_radius_mm
+        aperture_miss_ids = sorted(int(i) for i in ids[on_enlarged][beyond_actual])
+
+    total_miss_ids = sorted(int(i) for i in ids[~on_enlarged])
+
+    return {
+        "needed_aperture_radius_mm": needed,
+        "aperture_miss_ids": aperture_miss_ids,
+        "total_miss_ids": total_miss_ids,
+    }

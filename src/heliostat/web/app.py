@@ -75,7 +75,7 @@ except ImportError as exc:  # pragma: no cover - exercised only without the extr
     raise ImportError("heliostat.web needs the 'web' extra: pip install heliostat[web]") from exc
 
 from heliostat import __version__
-from heliostat.field import HeliostatField, neighbour_pairs
+from heliostat.field import HeliostatField, load_field, neighbour_pairs
 from heliostat.field_layouts import generate, ring_filter
 from heliostat.geometry.aiming import (
     Solution,
@@ -123,7 +123,12 @@ from heliostat.web.library import (
     load_entry,
     save_entry,
 )
-from heliostat.web.scene import build_field_scene, build_geometry_scene, build_scene
+from heliostat.web.scene import (
+    build_field_scene,
+    build_geometry_scene,
+    build_scene,
+    field_miss_detection,
+)
 from heliostat.web.setups import (
     SetupError,
     delete_setup,
@@ -140,6 +145,43 @@ JOBS = JobRegistry()
 
 WINDOW_MM = 2000.0
 FLUX_GRID = 128
+
+# ---------------------------------------------------------------------------
+# the manuscript field: the paper's real 643-heliostat layout
+#
+# The app's default field used to REGENERATE a Fermat spiral standing in for
+# the paper's own positions -- close in scale (643, 30-90 m), but not the
+# points a reader comparing the app to the paper actually wants. This is the
+# byte-identical fix: a packaged copy of examples/paper/data/field_645.csv,
+# loaded through the exact loader the paper's own reproduce.py calls
+# (load_paper_field), with the identical coincident-duplicate rule applied
+# (144=192, 241=289 dropped by heliostat.field.load_field's own
+# distance-based check, leaving 643). Parsed once per process below -- the
+# file never changes at runtime.
+MANUSCRIPT_FIELD_PATH = STATIC_DIR / "data" / "field_645.csv"
+
+#: Mirror dims load_paper_field() passes load_field() (examples/paper/
+#: reproduce.py's own MIRROR_WIDTH_MM/MIRROR_HEIGHT_MM). They do not affect
+#: which positions load, only the field's own mirror_width_mm/height_mm
+#: metadata -- carried here only so a caller reading `_load_manuscript_field()`
+#: gets a field that matches the paper's in every respect, not just position.
+_MANUSCRIPT_MIRROR_WIDTH_MM = 5000.0
+_MANUSCRIPT_MIRROR_HEIGHT_MM = 3000.0
+
+_manuscript_field: HeliostatField | None = None
+
+
+def _load_manuscript_field() -> HeliostatField:
+    """The paper's field, parsed once and cached for the process lifetime."""
+    global _manuscript_field
+    if _manuscript_field is None:
+        _manuscript_field = load_field(
+            MANUSCRIPT_FIELD_PATH,
+            mirror_width_mm=_MANUSCRIPT_MIRROR_WIDTH_MM,
+            mirror_height_mm=_MANUSCRIPT_MIRROR_HEIGHT_MM,
+        )
+    return _manuscript_field
+
 
 # ---------------------------------------------------------------------------
 # field-trace limits and layout defaults
@@ -1880,6 +1922,38 @@ def create_app():
     def health() -> JSONResponse:
         return JSONResponse({"version": __version__})
 
+    @app.get("/api/field/manuscript")
+    def field_manuscript() -> JSONResponse:
+        """The paper's own 643-heliostat field, verbatim.
+
+        Loaded from the packaged copy of ``examples/paper/data/field_645.csv``
+        through the exact loader the paper's ``reproduce.py`` uses
+        (:func:`heliostat.field.load_field`), so the two coincident-duplicate
+        pairs (144=192, 241=289) are dropped here exactly as they are there --
+        this endpoint cannot report a field that disagrees with the paper's
+        own runs.
+
+        ``ids`` are the loader's own surviving ids: 0-based file-row numbers,
+        with the dropped duplicates' ids missing (so they run 0..644 with two
+        gaps, not a clean 0..642). This is honest about what the ids mean and
+        NOT what a trace renumbers them to -- a
+        ``{"type": "positions", "xy_mm": ...}`` layout (the shape this
+        endpoint's ``xy_mm`` feeds directly into) assigns every heliostat a
+        fresh id 0..n-1 by array position when it traces, so an id reported
+        here is not necessarily the id a trace on the same field reports back
+        for the same mirror. ``xy_mm``'s order is preserved either way, which
+        is what a trace/positions round-trip actually depends on.
+        """
+        field = _load_manuscript_field()
+        xy_mm = [[round(float(x), 1), round(float(y), 1)] for x, y in field.xy_mm]
+        return JSONResponse(
+            {
+                "xy_mm": xy_mm,
+                "ids": [int(i) for i in field.ids],
+                "n": len(field),
+            }
+        )
+
     @app.get("/api/setups")
     def setups_list() -> JSONResponse:
         return JSONResponse({"setups": list_setups()})
@@ -2466,6 +2540,17 @@ def create_app():
         everything it needs to draw the banner and keep the last frame it
         drew, without this endpoint pretending to solve something that has
         no solution.
+
+        ``miss`` is docs/ui-spec.md 2.3's amber "warning" tier: ``null``
+        for prime focus (no secondary to miss), the sun below the horizon
+        (no solved orientation to build a chief ray from), or an empty
+        field; otherwise ``{needed_aperture_radius_mm, aperture_miss_ids,
+        total_miss_ids, rays}`` from :func:`~heliostat.web.scene.field_miss_detection`
+        plus the dropped-corner-ray polylines
+        :func:`~heliostat.web.scene.build_geometry_scene` collects from the
+        same strided sources as its own ``rays``. Nothing here is adjusted
+        automatically -- the geometry solve above is untouched; this is
+        purely a report on it.
         """
         try:
             optics_params = resolve_optics_params(body.optics, body.optics_params)
@@ -2543,7 +2628,22 @@ def create_app():
             include_corner_rays=body.include_corner_rays,
             max_corner_sources=body.max_corner_sources,
             sun_below_horizon=sun_below_horizon,
+            include_miss_rays=True,
         )
+        # The amber "warning" tier (docs/ui-spec.md 2.3): null for prime
+        # focus (field_miss_detection's own NoSecondary check), an empty
+        # field, or the sun below the horizon -- there is no solved
+        # orientation to build a chief ray from then, so this must not be
+        # called (see field_miss_detection's docstring). The dropped-ray
+        # polylines come from build_geometry_scene's own strided corner-ray
+        # sources, not a second pass over all 10,000 heliostats.
+        miss_rays = scene.pop("miss_rays", [])
+        miss = None if sun_below_horizon else field_miss_detection(
+            heliostats, body.solar_az_deg, body.solar_el_deg, secondary
+        )
+        if miss is not None:
+            miss["rays"] = miss_rays
+        scene["miss"] = miss
         scene["optics_resolved"] = optics_params.model_dump()
         return JSONResponse(scene)
 
