@@ -1,41 +1,13 @@
 // Sun stage: azimuth + elevation (docs/ui-spec.md 2.2). Site & time entry
 // is a later phase; Phase 3a is the direct az/el pair the trace endpoints
-// take verbatim.
+// take verbatim. Field descriptors live in ../fields.js so the floating
+// inspector (../inspector.js) can render the identical rows when the sun
+// is selected in scene (docs/ui-spec.md 2.4).
 import { store } from "../store.js";
+import { numberRow, setVal, SUN_FIELDS } from "../fields.js";
 
 let built = false;
 let els = {};
-
-function isFocused(el) {
-  return el && document.activeElement === el;
-}
-
-function setVal(input, value) {
-  if (isFocused(input)) return;
-  const s = value == null ? "" : String(value);
-  if (input.value !== s) input.value = s;
-}
-
-function numberRow(parent, label, path, opts) {
-  const row = document.createElement("div");
-  row.className = "frow";
-  const lab = document.createElement("label");
-  lab.textContent = label;
-  const input = document.createElement("input");
-  input.type = "number";
-  input.className = "val";
-  if (opts && opts.step !== undefined) input.step = opts.step;
-  if (opts && opts.min !== undefined) input.min = opts.min;
-  if (opts && opts.max !== undefined) input.max = opts.max;
-  input.addEventListener("input", () => {
-    const v = parseFloat(input.value);
-    if (Number.isFinite(v)) store.set(path, v);
-  });
-  row.appendChild(lab);
-  row.appendChild(input);
-  parent.appendChild(row);
-  return input;
-}
 
 function build(container) {
   container.innerHTML = "";
@@ -57,8 +29,8 @@ function build(container) {
 
   const body = document.createElement("div");
   body.className = "stagebody";
-  const az = numberRow(body, "Azimuth (°)", "doc.sun.az", { min: 0, max: 360, step: 0.1 });
-  const el = numberRow(body, "Elevation (°)", "doc.sun.el", { min: -90, max: 90, step: 0.1 });
+  const az = numberRow(body, SUN_FIELDS[0]);
+  const el = numberRow(body, SUN_FIELDS[1]);
   const hint = document.createElement("div");
   hint.className = "hint";
   hint.textContent = "Site & time entry -- coming in a later phase.";

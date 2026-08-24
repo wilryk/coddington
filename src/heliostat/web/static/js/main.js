@@ -10,26 +10,74 @@ import {
   postTrace,
   postFieldTrace,
   postFluxCsv,
+  fetchManuscriptField,
+  setManuscriptField,
 } from "./api.js";
+import { OPTICS_LABELS } from "./fields.js";
 import { createScene } from "./scene3d.js";
 import * as heliostatPanel from "./panels/heliostat.js";
 import * as fieldPanel from "./panels/field.js";
 import * as receiverPanel from "./panels/receiver.js";
 import * as sunPanel from "./panels/sun.js";
 import * as runPanel from "./panels/run.js";
+import * as inspector from "./inspector.js";
+import * as planView from "./views/plan.js";
+import * as elevationView from "./views/elevation.js";
+import * as library from "./library.js";
+
+const OPTICS_NAME = Object.fromEntries(OPTICS_LABELS);
 
 const sceneContainer = document.getElementById("scene-container");
-const scene = createScene(sceneContainer);
+// docs/ui-spec.md 2.4: a click in the viewport selects a heliostat, the
+// secondary, the receiver, or the sun -- scene3d.js owns the raycasting
+// and click-vs-drag detection and reports back through this callback, so
+// it never needs to import the store itself.
+const scene = createScene(sceneContainer, { onSelect: (sel) => store.set("ui.selection", sel) });
 
 const sunBanner = document.getElementById("sun-banner");
 const errorStrip = document.getElementById("geometry-error-strip");
 const raysChip = document.getElementById("rays-chip");
+const orbitHint = document.getElementById("orbit-hint");
+const inspectorEl = document.getElementById("inspector");
+
+// docs/ui-spec.md 2.1: "the viewport follows the active stage" -- the plan
+// and elevation views are siblings of #scene-container (index.html), shown
+// one at a time via [hidden] so the 3D scene is never disposed on switch.
+const planContainer = document.getElementById("plan-view");
+const elevationContainer = document.getElementById("elevation-view");
+const viewPill = document.getElementById("view-pill");
+const viewPillMode = document.getElementById("view-pill-mode");
+const viewPillBack = document.getElementById("view-pill-back");
 
 const stageHeliostat = document.getElementById("stage-heliostat");
 const stageField = document.getElementById("stage-field");
 const stageReceiver = document.getElementById("stage-receiver");
 const stageSun = document.getElementById("stage-sun");
 const runbar = document.getElementById("runbar");
+
+// -- top bar: Library button, save state, optics label (docs/ui-spec.md
+// 1 + 5, mockup M5) -------------------------------------------------------
+const libraryBtn = document.getElementById("library-btn");
+const libraryDrawer = document.getElementById("library-drawer");
+const libraryBackdrop = document.getElementById("library-backdrop");
+const savestateEl = document.getElementById("savestate");
+const opticsTagEl = document.getElementById("optics-tag");
+
+libraryBtn.addEventListener("click", () => {
+  store.set("ui.libraryOpen", !store.get("ui.libraryOpen"));
+});
+
+function renderTopbar() {
+  const doc = store.get("doc");
+  const ui = store.get("ui");
+  libraryBtn.classList.toggle("primary", ui.libraryOpen);
+  opticsTagEl.textContent = OPTICS_NAME[doc.optics] || doc.optics;
+  if (!ui.projectName) {
+    savestateEl.textContent = ui.dirty ? "Unsaved project" : "New project";
+  } else {
+    savestateEl.textContent = ui.dirty ? `${ui.projectName} — unsaved changes` : `${ui.projectName} — saved`;
+  }
+}
 
 const fluxOverlay = document.getElementById("flux-overlay");
 const fluxOverlayImg = document.getElementById("flux-overlay-img");
@@ -41,9 +89,48 @@ function renderAllPanels() {
   receiverPanel.render(stageReceiver);
   sunPanel.render(stageSun);
   runPanel.render(runbar, runActions);
+  // Needs the last geometry response (not store state) for a selected
+  // heliostat's distance-from-axis readout -- see inspector.js's header comment.
+  inspector.render(inspectorEl, { geometry: lastGeometryResponse });
+  // Phase 3b: Library slide-over (docs/ui-spec.md 5). Fetches its own
+  // listings on open / after a mutation rather than on every call here --
+  // see library.js's header comment.
+  library.render(libraryDrawer, libraryBackdrop);
+  renderTopbar();
 
-  const heliostats = (lastGeometryResponse && lastGeometryResponse.heliostats) || [];
-  raysChip.textContent = `Corner chief rays — viewing aid, no shading · ${heliostats.length.toLocaleString()} heliostat${heliostats.length === 1 ? "" : "s"}`;
+  renderViewportMode();
+}
+
+// docs/ui-spec.md 2.1: shows exactly one of scene-container/plan-view/
+// elevation-view per ui.view, updates the view pill and the bottom-left
+// chip's view-specific text, and re-renders whichever view is actually
+// showing -- at the same cadence as the sidebar panels (called from
+// renderAllPanels, which every store change already triggers). The other
+// two views simply don't render while hidden -- no wasted SVG rebuilds.
+function renderViewportMode() {
+  const view = store.get("ui.view");
+  sceneContainer.hidden = view !== "3d";
+  planContainer.hidden = view !== "plan";
+  elevationContainer.hidden = view !== "elevation";
+  // The orbit/pan/zoom hint describes the 3D controls only -- in plan or
+  // elevation it would sit on top of the view's own chip and mislead.
+  orbitHint.hidden = view !== "3d";
+
+  viewPill.hidden = view === "3d";
+  if (view === "plan") viewPillMode.textContent = "Plan";
+  else if (view === "elevation") viewPillMode.textContent = "Elevation";
+
+  if (view === "3d") {
+    const heliostats = (lastGeometryResponse && lastGeometryResponse.heliostats) || [];
+    raysChip.textContent = `Corner chief rays — viewing aid, no shading · ${heliostats.length.toLocaleString()} heliostat${heliostats.length === 1 ? "" : "s"}`;
+  } else if (view === "plan") {
+    raysChip.textContent = "Plan view — click a heliostat to inspect it · drag-to-move lands with the layout picker";
+  } else {
+    raysChip.textContent = "Elevation — dimensions are live and referenced to the heliostat plane";
+  }
+
+  if (view === "plan") planView.render(planContainer);
+  else if (view === "elevation") elevationView.render(elevationContainer);
 }
 
 // -- geometry: live scene refresh on every doc edit ------------------------
@@ -70,8 +157,18 @@ function handleGeometrySuccess(data) {
     return;
   }
   store.set("ui.sunBelowHorizon", false);
+  // docs/ui-spec.md 2.3: the `miss` key (aperture_miss_ids, total_miss_ids,
+  // needed_aperture_radius_mm, dropped rays) may not be live on the backend
+  // yet -- `data.miss` undefined/null both read as "no warnings" throughout
+  // fields.js's apertureMissMessage() and scene3d.js's miss tinting.
+  store.set("ui.miss", data.miss || null);
   lastGeometryResponse = data;
   scene.updateGeometry(data);
+  // Cache into the plan/elevation views too (never on error -- both keep
+  // drawing their last valid geometry, same rule as the 3D scene) so
+  // switching views renders instantly instead of waiting on the next edit.
+  planView.setGeometry(data);
+  elevationView.setGeometry(data);
   renderAllPanels();
 }
 
@@ -151,23 +248,59 @@ function closeFluxOverlay() {
 
 const runActions = { onRunTrace: runTrace, onExportCsv: exportFluxCsv, onOpenFlux: openFluxOverlay };
 
+// docs/ui-spec.md 2.1: "a view pill in the corner ... offers 'back to 3D'
+// at all times" -- the owning stage stays expanded (only ui.view resets).
+viewPillBack.addEventListener("click", (e) => {
+  e.preventDefault();
+  store.set("ui.view", "3d");
+});
+
 fluxOverlayClose.addEventListener("click", closeFluxOverlay);
 fluxOverlay.addEventListener("click", (e) => {
   if (e.target === fluxOverlay) closeFluxOverlay();
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") closeFluxOverlay();
+  if (e.key === "Escape") {
+    closeFluxOverlay();
+    // Phase 3b: the Library drawer takes priority -- Esc closes it first,
+    // and only deselects (docs/ui-spec.md 2.4) once it's already shut.
+    if (store.get("ui.libraryOpen")) {
+      store.set("ui.libraryOpen", false);
+    } else {
+      store.set("ui.selection", null);
+    }
+  }
 });
 
 // -- store wiring ------------------------------------------------------------
 
-store.subscribe((path) => {
+store.subscribe((path, value) => {
+  // docs/ui-spec.md 2.1: "the viewport follows the active stage" -- wired
+  // on the specific expand/collapse events (not derived from ui.expanded
+  // as a whole), so the view pill's manual "back to 3D" isn't silently
+  // re-overridden by a stage that's simply still open. Expanding switches
+  // to that stage's view; collapsing only resets to "3d" if that stage was
+  // the one currently showing (collapsing Field while in elevation, say,
+  // must not touch it).
+  if (path === "ui.expanded.field") {
+    if (value) store.set("ui.view", "plan");
+    else if (store.get("ui.view") === "plan") store.set("ui.view", "3d");
+  } else if (path === "ui.expanded.receiver") {
+    if (value) store.set("ui.view", "elevation");
+    else if (store.get("ui.view") === "elevation") store.set("ui.view", "3d");
+  }
+
   if (path.startsWith("doc.")) {
     const ui = store.get("ui");
     if (ui.traceResult && !ui.staleResults) {
       store.set("ui.staleResults", true);
       scene.clearTraceRays();
     }
+    // Phase 3b save state (docs/ui-spec.md 5): any edit dirties the
+    // project -- guarded so a doc.* change doesn't re-set (and re-notify
+    // subscribers over) an already-true flag on every single keystroke.
+    // library.js clears this back to false right after a load/save.
+    if (!ui.dirty) store.set("ui.dirty", true);
     renderAllPanels();
     refreshGeometryDebounced();
   } else if (path.startsWith("ui.")) {
@@ -179,11 +312,47 @@ store.subscribe((path) => {
     } else {
       errorStrip.hidden = true;
     }
+    // Keeps the 3D highlight (per-instance heliostat tint, secondary/
+    // receiver edge, sun color) in sync with ui.selection however it
+    // changed -- a scene click, Esc, or a sidebar interaction that
+    // happens to also carry a selection (docs/ui-spec.md 2.4).
+    scene.setSelection(store.get("ui.selection"));
     renderAllPanels();
   }
 });
 
 // -- first paint: live from the first frame ---------------------------------
+//
+// The default field is doc.field.layout === "manuscript" (store.js), which
+// needs the paper's actual positions in hand before the very first geometry
+// request goes out -- otherwise that request would race the fetch and
+// currentLayoutPayload() would fall back to the (wrong-looking) Fermat
+// spiral for one frame. So the manuscript fetch is awaited here, before
+// refreshGeometryNow(), rather than fired in parallel with it. A failed
+// fetch is not fatal: the app still has the Fermat fallback
+// (currentLayoutPayload) to draw something, so it warns and proceeds rather
+// than blocking forever.
 
 renderAllPanels();
-refreshGeometryNow();
+fetchManuscriptField()
+  .then((data) => {
+    setManuscriptField(data.xy_mm);
+  })
+  .catch((err) => {
+    console.warn("could not load the manuscript field, falling back to the Fermat spiral:", err);
+    store.set("ui.geometryError", {
+      message:
+        "Could not load the manuscript field (" +
+        ((err && err.message) || "network error") +
+        ") -- showing the Fermat spiral instead.",
+      forReceiver: false,
+    });
+    // Not sticky: the very next successful geometry request clears
+    // ui.geometryError the same way any other transient error does
+    // (handleGeometrySuccess), so this is a one-time notice, not a banner
+    // that lingers after the fallback field has drawn fine.
+  })
+  .finally(() => {
+    renderAllPanels();
+    refreshGeometryNow();
+  });

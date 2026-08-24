@@ -5,13 +5,13 @@
 
 const API_BASE = "/api";
 
-async function postJSON(path, body, signal) {
-  const resp = await fetch(API_BASE + path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal,
-  });
+// Shared response handling for every wrapper below (postJSON included): a
+// non-2xx response is turned into an Error carrying both a human-readable
+// `message` (the server's `detail` when the body parsed as JSON, else the
+// status text) and the raw `status`/`detail`, so callers (library.js's
+// inline error boxes especially) can tell a 409 name collision from a 422
+// validation failure without re-parsing anything themselves.
+async function handleResponse(resp) {
   if (!resp.ok) {
     let detail = resp.statusText;
     try {
@@ -26,7 +26,28 @@ async function postJSON(path, body, signal) {
     err.detail = detail;
     throw err;
   }
+  if (resp.status === 204) return null;
   return resp.json();
+}
+
+async function postJSON(path, body, signal) {
+  const resp = await fetch(API_BASE + path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  return handleResponse(resp);
+}
+
+async function getJSON(path, signal) {
+  const resp = await fetch(API_BASE + path, { signal });
+  return handleResponse(resp);
+}
+
+async function deleteJSON(path, signal) {
+  const resp = await fetch(API_BASE + path, { method: "DELETE", signal });
+  return handleResponse(resp);
 }
 
 export function postGeometry(body, signal) {
@@ -61,6 +82,61 @@ export async function postFluxCsv(body) {
 }
 
 // ---------------------------------------------------------------------------
+// library: named designs, receiver configs and projects (docs/ui-spec.md 5)
+// -- plus the read-only legacy `/api/setups` used for the Projects tab's
+// import section. `name` may contain slashes (one built-in receiver is
+// literally "Axicon 27 m / 20 deg / 14 m" -- docs/ui-spec.md 5's own
+// naming), so it goes through encodeURIComponent like any other path
+// segment; the server's `{name:path}` route decodes the resulting `%2F`
+// back into a real slash, so this "just works" without special-casing.
+
+export function getLibrary(collection) {
+  return getJSON(`/library/${encodeURIComponent(collection)}`);
+}
+
+export function getLibraryEntry(collection, name) {
+  return getJSON(`/library/${encodeURIComponent(collection)}/${encodeURIComponent(name)}`);
+}
+
+export function saveLibraryEntry(collection, name, document) {
+  return postJSON(`/library/${encodeURIComponent(collection)}`, { name, document });
+}
+
+export function deleteLibraryEntry(collection, name) {
+  return deleteJSON(`/library/${encodeURIComponent(collection)}/${encodeURIComponent(name)}`);
+}
+
+export function getSetups() {
+  return getJSON("/setups");
+}
+
+export function getSetup(name) {
+  return getJSON(`/setups/${encodeURIComponent(name)}`);
+}
+
+// ---------------------------------------------------------------------------
+// the manuscript field: the paper's real 643-heliostat positions
+// (/api/field/manuscript), fetched once at startup (main.js) and cached here
+// module-level -- the same reason FIELD_MC_SEED-style caching lives on the
+// server: this data never changes, so every caller in this tab (
+// currentLayoutPayload, project.js's serialize/apply) reads the identical
+// array rather than re-fetching or risking two slightly different copies.
+
+let manuscriptFieldXY = null;
+
+export function setManuscriptField(xy) {
+  manuscriptFieldXY = xy;
+}
+
+export function getManuscriptField() {
+  return manuscriptFieldXY;
+}
+
+export function fetchManuscriptField() {
+  return getJSON("/field/manuscript");
+}
+
+// ---------------------------------------------------------------------------
 // pure request-body builders -- a function of the store's `doc` (and, for
 // trace, `ui.fidelity`/`ui.mcRays`) and nothing else, so the same doc always
 // produces the same request.
@@ -71,7 +147,20 @@ export function currentDesignPayload(doc) {
   return Object.assign({ type }, params, { surface: doc.design.surface });
 }
 
-function currentLayoutPayload(doc) {
+// Exported so js/project.js's serializeProject() builds the exact same
+// layout shape a geometry/trace request sends -- one function, not two
+// copies that could drift. doc.field.layout picks which of two shapes:
+// "manuscript" sends the paper's own positions verbatim (the cache
+// fetchManuscriptField() filled at startup -- see main.js), "fermat" sends
+// the parametric `{type: "fermat", n, r_min_m?, r_max_m?}` spiral it always
+// did. A manuscript request with an empty cache (the startup fetch failed)
+// falls back to the fermat payload so the app still has something to draw
+// rather than sending an empty positions list.
+export function currentLayoutPayload(doc) {
+  if (doc.field.layout === "manuscript") {
+    const xy = getManuscriptField();
+    if (xy && xy.length) return { type: "positions", xy_mm: xy };
+  }
   const f = doc.field.fermat;
   const layout = { type: "fermat", n: f.n };
   if (f.r_min_m !== null && f.r_min_m !== undefined) layout.r_min_m = f.r_min_m;

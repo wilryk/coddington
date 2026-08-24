@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Coddington</title>
+  <link rel="icon" type="image/svg+xml" href="/static/img/coddington-icon.svg" />
   <link rel="stylesheet" href="/static/css/app.css" />
   <script type="importmap">
     {
@@ -17,17 +18,17 @@
 <body>
   <div id="app">
     <div class="topbar">
-      <div class="logo-mark">C</div>
+      <img class="logo-mark" src="/static/img/coddington-icon.svg" alt="Coddington" />
       <h1>Coddington</h1>
-      <span class="tag">Manuscript baseline — axicon</span>
+      <span class="tag" id="optics-tag">Axicon</span>
       <div class="apptabs">
         <div class="tab active">Workspace</div>
         <div class="tab disabled" title="Heliostat Shape tab -- coming in a later phase">Heliostat Shape</div>
         <div class="tab disabled" title="Analysis tab -- coming in a later phase">Analysis</div>
       </div>
       <div class="right">
-        <div class="btn disabled-link" title="Library -- coming in a later phase">Library</div>
-        <span class="savestate">Phase 3a -- projects not yet saved</span>
+        <div class="btn" id="library-btn">Library</div>
+        <span class="savestate" id="savestate">New project</span>
       </div>
     </div>
 
@@ -45,17 +46,36 @@
 
       <div class="viewport">
         <div id="scene-container"></div>
+        <!-- docs/ui-spec.md 2.1/2.2: plan (Field stage) and elevation
+             (Receiver & Tower stage) views, siblings of #scene-container so
+             the 3D scene keeps running underneath instead of being disposed
+             on switch (main.js shows exactly one via [hidden]). -->
+        <div id="plan-view" hidden></div>
+        <div id="elevation-view" hidden></div>
         <div class="banner" id="sun-banner" hidden>
           Sun below the horizon at this time — heliostats hold their last pose, rays hidden.
         </div>
         <div class="error-strip" id="geometry-error-strip" hidden></div>
+        <div id="inspector" hidden></div>
         <div class="chip" id="rays-chip">Corner chief rays — viewing aid, no shading</div>
-        <div class="viewhint">drag to orbit · right-drag to pan · scroll to zoom</div>
+        <div class="viewhint" id="orbit-hint">drag to orbit · right-drag to pan · scroll to zoom · click an object to edit it</div>
+        <div class="viewpill" id="view-pill" hidden>
+          <span class="mode" id="view-pill-mode">Plan</span>
+          <span style="color: var(--muted)">·</span>
+          <a href="#" id="view-pill-back">back to 3D</a>
+        </div>
       </div>
     </div>
 
     <div id="runbar" class="runbar"></div>
   </div>
+
+  <!-- docs/ui-spec.md 5, mockup M5: the Library slide-over. Fixed/full-app
+       overlay (unlike the mockup's viewport-scoped version) so it dims the
+       sidebar too, same pattern as #flux-overlay below -- js/library.js
+       owns everything inside #library-drawer, built once on first open. -->
+  <div id="library-backdrop" class="dim" hidden></div>
+  <aside id="library-drawer" class="drawer" hidden></aside>
 
   <div id="flux-overlay" class="overlay" hidden>
     <div class="overlay-panel">

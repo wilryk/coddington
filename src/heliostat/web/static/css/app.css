@@ -78,14 +78,7 @@ a:hover {
 .logo-mark {
   width: 26px;
   height: 26px;
-  border: 1.5px dashed var(--accent);
-  border-radius: 6px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--accent);
-  font-size: 11px;
-  font-weight: 700;
+  display: block;
   flex: 0 0 auto;
 }
 .tag {
@@ -142,6 +135,10 @@ a:hover {
   opacity: 0.5;
   pointer-events: none;
 }
+.btn.small {
+  padding: 4px 9px;
+  font-size: 11.5px;
+}
 .savestate {
   color: var(--muted);
   font-size: 12px;
@@ -168,6 +165,14 @@ a:hover {
   border-bottom: 1px solid var(--border);
   padding: 8px 16px;
   flex: 0 0 auto;
+}
+/* docs/ui-spec.md 2.1 + mockup M3/M4: the stage that owns the current
+   viewport mode (Field -> plan, Receiver & Tower -> elevation) highlights
+   in the sidebar. Toggled by that stage's own panel (field.js/receiver.js)
+   off ui.view, not here -- this is presentation only. */
+.stage.selectedstage {
+  background: #f2f7fd;
+  box-shadow: inset 3px 0 0 var(--select);
 }
 .stagehead {
   display: flex;
@@ -325,6 +330,54 @@ input.val::-webkit-inner-spin-button {
   display: block;
 }
 
+/* Phase 3b: the plan/elevation views (js/views/plan.js, js/views/elevation.js)
+   are siblings of #scene-container, shown one at a time via [hidden]
+   (docs/ui-spec.md 2.1, "the viewport follows the active stage") -- the 3D
+   scene is never disposed on switch, just covered. */
+#plan-view,
+#elevation-view {
+  position: absolute;
+  inset: 0;
+}
+#plan-view svg,
+#elevation-view svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Elevation view's dimension callouts (docs/ui-spec.md 2.2: "every callout
+   is an editable value box bound to the same fields as the sidebar") --
+   absolutely-positioned over the SVG, repositioned every render from the
+   same projection the leader lines are drawn with. Pointer events are
+   off on the layer so empty space still reaches the SVG's click-to-deselect,
+   and on again per callout so its input is actually usable. */
+.elevation-callouts {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.callout {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+  text-align: center;
+}
+.callout .val {
+  width: 84px;
+  text-align: center;
+  font-weight: 600;
+}
+.callout .val.noneditable {
+  cursor: default;
+  color: var(--muted);
+}
+.callout .calloutlabel {
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
 .chip {
   position: absolute;
   left: 14px;
@@ -337,6 +390,27 @@ input.val::-webkit-inner-spin-button {
   color: var(--muted);
   pointer-events: none;
 }
+/* docs/ui-spec.md 2.1: "a view pill in the corner names the current mode
+   and offers 'back to 3D' at all times" -- hidden in 3D itself (main.js). */
+.viewpill {
+  position: absolute;
+  right: 14px;
+  top: 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 11.5px;
+  color: var(--text);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.viewpill .mode {
+  font-weight: 600;
+  color: var(--select);
+}
+
 .viewhint {
   position: absolute;
   right: 14px;
@@ -373,6 +447,52 @@ input.val::-webkit-inner-spin-button {
   padding: 7px 14px;
   font-size: 12.5px;
   max-width: 70%;
+}
+
+/* -- floating in-scene inspector (docs/ui-spec.md 2.4, mockup M2) -------- */
+
+.inspector {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 268px;
+  max-height: calc(100% - 32px);
+  overflow-y: auto;
+  background: rgba(255, 255, 255, 0.97);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 6px 22px rgba(31, 41, 51, 0.14);
+  padding: 12px 14px;
+}
+.inspector h3 {
+  margin: 0 0 2px 0;
+  font-size: 13px;
+  font-weight: 600;
+  padding-right: 16px;
+}
+.inspector .sub {
+  color: var(--muted);
+  font-size: 11.5px;
+  margin-bottom: 10px;
+}
+.inspector .close {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+  line-height: 1;
+}
+.inspector .frow label {
+  flex: 0 0 118px;
+}
+.inspector .foot {
+  color: var(--muted);
+  font-size: 11px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  margin-top: 4px;
 }
 
 /* -- run bar --------------------------------------------------------------- */
@@ -477,4 +597,168 @@ input.val::-webkit-inner-spin-button {
   line-height: 1;
   background: none;
   border: none;
+}
+
+/* -- Library slide-over (docs/ui-spec.md 5, mockup M5) -------------------
+   Classes/colors lifted from the mockup's own <style> (docs/mockups/
+   coddington-workspace.html, screen 5) onto this app's tokens -- .dim and
+   .drawer are fixed/full-app here (see index.html's comment) rather than
+   scoped to the mockup's .stagearea, so the sidebar dims along with the
+   viewport while the drawer is open. */
+
+.dim {
+  position: fixed;
+  inset: 0;
+  background: rgba(31, 41, 51, 0.28);
+  z-index: 90;
+}
+.drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 470px;
+  max-width: 92vw;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  box-shadow: -10px 0 30px rgba(31, 41, 51, 0.15);
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  z-index: 91;
+}
+.drawer h2 {
+  font-size: 15px;
+  margin: 0;
+  font-weight: 600;
+}
+.drawer .close {
+  position: absolute;
+  top: 14px;
+  right: 16px;
+  color: var(--muted);
+  font-size: 16px;
+  cursor: pointer;
+}
+.libtabs {
+  display: flex;
+  gap: 6px;
+  margin: 14px 0;
+  flex: 0 0 auto;
+}
+.libtabs button {
+  flex: 1 1 auto;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 6px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.libtabs button.active {
+  background: var(--accent);
+  border-color: var(--accent-dark);
+  color: #fff;
+}
+.libbody {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  min-height: 0;
+}
+.libsavebar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.libsavebar input.val {
+  flex: 1 1 auto;
+}
+.card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
+}
+.card.current {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(69, 115, 158, 0.18);
+}
+.cardhead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cardhead .name {
+  font-weight: 600;
+  font-size: 13.5px;
+}
+.badge {
+  font-size: 10.5px;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+.badge.builtin {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+.badge.inuse {
+  background: var(--accent);
+  color: #fff;
+}
+.badge.import {
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  color: var(--warn-text);
+}
+.cardsub {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.cardactions {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.cardinline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+.cardinline input.val {
+  flex: 1 1 auto;
+}
+.sectionlabel {
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  font-weight: 600;
+  margin: 10px 0 8px 0;
+}
+.drawerfoot {
+  margin-top: auto;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  color: var(--muted);
+  font-size: 11.5px;
+  flex: 0 0 auto;
+}
+.lock {
+  vertical-align: -1px;
+}
+.importreport {
+  margin-bottom: 10px;
+}
+.importreport .fielderr,
+.importreport .fieldwarn {
+  margin-bottom: 6px;
 }

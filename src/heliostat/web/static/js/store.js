@@ -9,10 +9,14 @@
 // docs/ui-spec.md 2.2's per-layout defaults (the manuscript baseline):
 // rect 5000x3000 twisting, axicon selected (apex 27000, half angle 20,
 // aperture 14000, receiver 7000, window 2000/2000), field mode "field"
-// with a 643-heliostat Fermat spiral 30-90 m, sun az 165.2 / el 61.4.
-// prime_focus and cassegrain keep their own manuscript numbers too, so
-// switching optics layout shows real geometry rather than a blank slate
-// (spec 2.2, "each layout keeps its own last-used numbers").
+// with layout "manuscript" -- the paper's real 643-heliostat positions
+// (field_645.csv, served by /api/field/manuscript) -- sun az 165.2 / el
+// 61.4. doc.field.fermat's 643-heliostat 30-90 m spiral stays around as the
+// parametric alternative a user can switch to (see panels/field.js's
+// layout picker), it just is not what a fresh document opens on. prime_focus
+// and cassegrain keep their own manuscript numbers too, so switching optics
+// layout shows real geometry rather than a blank slate (spec 2.2, "each
+// layout keeps its own last-used numbers").
 
 function clone(x) {
   return JSON.parse(JSON.stringify(x));
@@ -60,6 +64,7 @@ const DEFAULT_DOC = {
   },
   field: {
     mode: "field",
+    layout: "manuscript", // "manuscript" | "fermat"
     single: { x_mm: 0, y_mm: -89609 },
     fermat: { n: 643, r_min_m: 30, r_max_m: 90 },
   },
@@ -68,6 +73,13 @@ const DEFAULT_DOC = {
 
 const DEFAULT_UI = {
   expanded: { heliostat: true, field: true, receiver: true, sun: true },
+  // docs/ui-spec.md 2.1: "the viewport follows the active stage" -- "3d" |
+  // "plan" | "elevation". Driven entirely by main.js's store.subscribe on
+  // the ui.expanded.field / ui.expanded.receiver paths (expand -> that
+  // stage's view, collapse the owning stage -> back to "3d") plus the view
+  // pill's own "back to 3D" link; never derived fresh from ui.expanded here,
+  // so a manual "back to 3D" isn't clobbered by an already-expanded stage.
+  view: "3d",
   fidelity: "fast_accurate",
   mcRays: null,
   geometryPending: false,
@@ -78,6 +90,17 @@ const DEFAULT_UI = {
   traceResult: null, // last successful trace response, plus derived fields
   staleResults: false,
   fluxOverlayOpen: false,
+  // In-scene selection + miss warnings (docs/ui-spec.md 2.3, 2.4).
+  selection: null, // null | { kind: "heliostat" | "secondary" | "receiver" | "sun", id: number|null }
+  miss: null, // /api/scene/geometry's top-level `miss` key, verbatim (or null if absent/not-yet-live)
+  // Phase 3b: Library slide-over + save/load (docs/ui-spec.md 5). `dirty`
+  // is set by main.js's store.subscribe on the first `doc.*` write after a
+  // load/save; `projectName` is null until a project has been saved to or
+  // loaded from the library (js/library.js and js/project.js own both).
+  libraryOpen: false,
+  libraryTab: "receivers", // "designs" | "receivers" | "projects"
+  projectName: null,
+  dirty: false,
 };
 
 function createStore() {

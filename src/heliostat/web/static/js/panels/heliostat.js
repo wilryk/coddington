@@ -1,44 +1,14 @@
 // Heliostat stage: which mirror design the field uses (docs/ui-spec.md 2.2).
 // Phase 3a: Rectangle / Facet grid, surface figure. "Edit shape..." opens
 // the Heliostat Shape tab, deferred to a later phase -- shown disabled.
+// Field descriptors live in ../fields.js so the floating inspector
+// (../inspector.js) can render the identical rows for a selected
+// heliostat (docs/ui-spec.md 2.4).
 import { store } from "../store.js";
+import { numberRow, setVal, segButton, HELIOSTAT_RECT_FIELDS, HELIOSTAT_GRID_FIELDS, HELIOSTAT_SURFACE_OPTIONS } from "../fields.js";
 
 let built = false;
 let els = {};
-
-function isFocused(el) {
-  return el && document.activeElement === el;
-}
-
-function numberRow(parent, label, path, opts) {
-  const row = document.createElement("div");
-  row.className = "frow";
-  const lab = document.createElement("label");
-  lab.textContent = label;
-  const input = document.createElement("input");
-  input.type = "number";
-  input.className = "val";
-  if (opts && opts.step !== undefined) input.step = opts.step;
-  if (opts && opts.min !== undefined) input.min = opts.min;
-  input.addEventListener("input", () => {
-    const v = parseFloat(input.value);
-    if (Number.isFinite(v)) store.set(path, v);
-  });
-  row.appendChild(lab);
-  row.appendChild(input);
-  parent.appendChild(row);
-  return input;
-}
-
-function segButton(parent, label, active, onClick) {
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.textContent = label;
-  btn.className = active ? "active" : "";
-  btn.addEventListener("click", onClick);
-  parent.appendChild(btn);
-  return btn;
-}
 
 function build(container) {
   container.innerHTML = "";
@@ -81,16 +51,16 @@ function build(container) {
   body.appendChild(typeSeg);
 
   const rectFields = document.createElement("div");
-  const rectWidth = numberRow(rectFields, "Width (mm)", "doc.designParams.rect.width_mm", { min: 1 });
-  const rectHeight = numberRow(rectFields, "Height (mm)", "doc.designParams.rect.height_mm", { min: 1 });
+  const rectWidth = numberRow(rectFields, HELIOSTAT_RECT_FIELDS[0]);
+  const rectHeight = numberRow(rectFields, HELIOSTAT_RECT_FIELDS[1]);
   body.appendChild(rectFields);
 
   const gridFields = document.createElement("div");
-  const gridNu = numberRow(gridFields, "Columns (n_u)", "doc.designParams.grid.n_u", { min: 1, step: 1 });
-  const gridNv = numberRow(gridFields, "Rows (n_v)", "doc.designParams.grid.n_v", { min: 1, step: 1 });
-  const gridFw = numberRow(gridFields, "Facet width (mm)", "doc.designParams.grid.facet_w_mm", { min: 1 });
-  const gridFh = numberRow(gridFields, "Facet height (mm)", "doc.designParams.grid.facet_h_mm", { min: 1 });
-  const gridGap = numberRow(gridFields, "Gap (mm)", "doc.designParams.grid.gap_mm", { min: 0 });
+  const gridNu = numberRow(gridFields, HELIOSTAT_GRID_FIELDS[0]);
+  const gridNv = numberRow(gridFields, HELIOSTAT_GRID_FIELDS[1]);
+  const gridFw = numberRow(gridFields, HELIOSTAT_GRID_FIELDS[2]);
+  const gridFh = numberRow(gridFields, HELIOSTAT_GRID_FIELDS[3]);
+  const gridGap = numberRow(gridFields, HELIOSTAT_GRID_FIELDS[4]);
   const cantHint = document.createElement("div");
   cantHint.className = "hint";
   cantHint.textContent = "Canting: Auto (slant range) -- editable in a later phase.";
@@ -99,9 +69,10 @@ function build(container) {
 
   const surfaceSeg = document.createElement("div");
   surfaceSeg.className = "seg";
-  const twistBtn = segButton(surfaceSeg, "Twisting", true, () => store.set("doc.design.surface", "twisting"));
-  const sphBtn = segButton(surfaceSeg, "Spherical", false, () => store.set("doc.design.surface", "spherical"));
-  const flatBtn = segButton(surfaceSeg, "Flat", false, () => store.set("doc.design.surface", "flat"));
+  const surfaceBtns = {};
+  for (const [key, label] of HELIOSTAT_SURFACE_OPTIONS) {
+    surfaceBtns[key] = segButton(surfaceSeg, label, key === "twisting", () => store.set("doc.design.surface", key));
+  }
   body.appendChild(surfaceSeg);
 
   container.appendChild(head);
@@ -123,17 +94,9 @@ function build(container) {
     gridFw,
     gridFh,
     gridGap,
-    twistBtn,
-    sphBtn,
-    flatBtn,
+    surfaceBtns,
   };
   built = true;
-}
-
-function setVal(input, value) {
-  if (isFocused(input)) return;
-  const s = value == null ? "" : String(value);
-  if (input.value !== s) input.value = s;
 }
 
 export function render(container) {
@@ -151,9 +114,9 @@ export function render(container) {
   els.gridFields.style.display = type === "grid" ? "" : "none";
 
   const surface = doc.design.surface;
-  els.twistBtn.classList.toggle("active", surface === "twisting");
-  els.sphBtn.classList.toggle("active", surface === "spherical");
-  els.flatBtn.classList.toggle("active", surface === "flat");
+  for (const [key, btn] of Object.entries(els.surfaceBtns)) {
+    btn.classList.toggle("active", key === surface);
+  }
 
   if (type === "rect") {
     const p = doc.designParams.rect;
