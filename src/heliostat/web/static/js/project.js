@@ -6,7 +6,7 @@
 // into this module, and it owns the network/DOM side of the Library
 // drawer, so this file stays free of both.
 import { store, DEFAULT_DOC } from "./store.js";
-import { currentDesignPayload, currentLayoutPayload, getManuscriptField } from "./api.js";
+import { currentDesignPayload, currentLayoutPayload, currentOpticsParams, getManuscriptField } from "./api.js";
 import { OPTICS_LABELS } from "./fields.js";
 
 const OPTICS_KEYS = OPTICS_LABELS.map(([key]) => key);
@@ -40,7 +40,12 @@ function xyMatchesManuscriptField(xy) {
 
 export function serializeProject(doc, ui) {
   const design = currentDesignPayload(doc);
-  const receiver = { optics: doc.optics, params: doc.opticsParams[doc.optics] };
+  // currentOpticsParams rather than doc.opticsParams[doc.optics] for two
+  // reasons: the saved document must never share an object with the live
+  // store (a later caller mutating the document would silently edit the
+  // workspace), and the server's ReceiverDocument forbids foreign keys the
+  // same way a trace request does -- same whitelist, same boundary.
+  const receiver = { optics: doc.optics, params: currentOpticsParams(doc) };
   const field =
     doc.field.mode === "field"
       ? {

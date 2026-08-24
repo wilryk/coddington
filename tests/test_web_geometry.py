@@ -439,3 +439,50 @@ def test_manuscript_field_is_cached_and_deterministic(client):
     first = client.get("/api/field/manuscript").json()
     second = client.get("/api/field/manuscript").json()
     assert first == second
+
+
+def test_steep_axicon_with_upward_reflected_corner_rays_is_not_a_500(client):
+    """Regression: docs/ui-spec.md 2.1's live-edit contract, at half angle 30.
+
+    A 30-degree axicon over the manuscript field reflects a couple of corner
+    rays *upward*, so they never cross the receiver plane at all. That made
+    ``Receiver.intersect``'s hit mask no longer all-True, which detonated a
+    latent double-indexing bug in ``field_corner_rays`` (uv comes back
+    already filtered to the hits; masking it again only worked while the
+    mask was all-True) -- the endpoint 500'd the moment a user typed 30 into
+    the half-angle box. Found live by the author.
+    """
+    field = client.get("/api/field/manuscript").json()
+    resp = client.post(
+        "/api/scene/geometry",
+        json=_payload(
+            optics="axicon",
+            solar_az_deg=165.2,
+            solar_el_deg=61.4,
+            optics_params={
+                "apex_height_mm": 27000,
+                "half_angle_deg": 30,
+                "aperture_radius_mm": 14000,
+                "receiver_z_mm": 7000,
+                "window_half_u_mm": 2000,
+                "window_half_v_mm": 2000,
+            },
+            layout={"type": "positions", "xy_mm": field["xy_mm"]},
+        ),
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["heliostats"]) == field["n"]
+    # The upward rays are genuine receiver misses: they must show up dashed
+    # red rather than disappearing (spec 2.1), i.e. in miss["rays"].
+    assert data["miss"] is not None
+    assert len(data["miss"]["rays"]) > 0
+    # Ryker's classification correction: these outer heliostats cross the
+    # EXTENDED 30-degree flank (~17.3 m) but the bounce never comes down to
+    # the receiver, so a bigger aperture fixes nothing -- they must be
+    # total misses, NOT "needs >= 17,300 mm" aperture misses, and the
+    # recommended radius must come from deliverable rays only.
+    miss = data["miss"]
+    assert miss["aperture_miss_ids"] == []
+    assert len(miss["total_miss_ids"]) == 144
+    assert miss["needed_aperture_radius_mm"] < 14000

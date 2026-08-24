@@ -2,6 +2,10 @@
 // builders and the debounced-geometry helper main.js drives the 3-D view
 // with. No store/DOM access here -- everything is a function of its
 // arguments, so it is easy to reason about what a given `doc` produces.
+// (fields.js is imported for its RECEIVER_FIELD_TABLE constant only --
+// currentOpticsParams filters against the same per-layout field lists the
+// UI renders from; nothing here reads or writes the store.)
+import { RECEIVER_FIELD_TABLE } from "./fields.js";
 
 const API_BASE = "/api";
 
@@ -147,6 +151,34 @@ export function currentDesignPayload(doc) {
   return Object.assign({ type }, params, { surface: doc.design.surface });
 }
 
+// The selected layout's optics params, filtered to that layout's own legal
+// fields (fields.js's RECEIVER_FIELD_TABLE -- the same lists the sidebar,
+// inspector, and elevation callouts render from). The server's pydantic
+// models forbid extra keys, so a foreign field leaking into a layout's
+// params (seen twice in the wild: half_angle_deg inside the cassegrain
+// params, producing a user-facing 422 on every request) must never reach
+// the wire. The filter is a boundary guard, not a fix for the leak itself
+// -- hence the loud console.warn: if the writer ever fires again, the
+// evidence names the keys while the page state is still alive to inspect.
+export function currentOpticsParams(doc) {
+  const optics = doc.optics;
+  const params = doc.opticsParams[optics] || {};
+  const legal = new Set((RECEIVER_FIELD_TABLE[optics] || []).map((f) => f.key));
+  const out = {};
+  const dropped = [];
+  for (const [key, value] of Object.entries(params)) {
+    if (legal.has(key)) out[key] = value;
+    else dropped.push(key);
+  }
+  if (dropped.length) {
+    console.warn(
+      `optics_params for '${optics}' carried foreign key(s) [${dropped.join(", ")}] -- ` +
+        "dropped at the request boundary. This means something wrote across layouts; please report."
+    );
+  }
+  return out;
+}
+
 // Exported so js/project.js's serializeProject() builds the exact same
 // layout shape a geometry/trace request sends -- one function, not two
 // copies that could drift. doc.field.layout picks which of two shapes:
@@ -173,7 +205,7 @@ export function buildGeometryRequest(doc, opts) {
   const body = {
     design: currentDesignPayload(doc),
     optics: doc.optics,
-    optics_params: doc.opticsParams[doc.optics],
+    optics_params: currentOpticsParams(doc),
     solar_az_deg: doc.sun.az,
     solar_el_deg: doc.sun.el,
     include_corner_rays: options.includeCornerRays !== false,
@@ -195,7 +227,7 @@ export function buildTraceRequest(doc, ui) {
     optics: doc.optics,
     solar_az_deg: doc.sun.az,
     solar_el_deg: doc.sun.el,
-    optics_params: doc.opticsParams[doc.optics],
+    optics_params: currentOpticsParams(doc),
   };
   if (ui.fidelity === "monte_carlo" && ui.mcRays) body.n_rays = ui.mcRays;
   if (doc.field.mode === "field") {
@@ -221,7 +253,7 @@ export function buildFluxCsvRequest(doc, ui) {
     optics: doc.optics,
     solar_az_deg: doc.sun.az,
     solar_el_deg: doc.sun.el,
-    optics_params: doc.opticsParams[doc.optics],
+    optics_params: currentOpticsParams(doc),
     heliostat_x_mm: doc.field.single.x_mm,
     heliostat_y_mm: doc.field.single.y_mm,
   };

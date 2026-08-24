@@ -167,15 +167,22 @@ export function apertureMissMessage(miss) {
   const totalIds = miss.total_miss_ids || [];
   if (!apertureIds.length && !totalIds.length) return null;
 
+  // Two different physics, two different messages (Ryker's correction):
+  // an aperture miss is fixable -- the reflected ray would land in the
+  // receiver window, the rim just cuts it off first, so "needs >= X" is a
+  // real purchase recommendation. A total miss is not: that heliostat's
+  // light never reaches the receiver via this secondary (a near heliostat
+  // that can't reach the cone, or a steep cone folding light away), and no
+  // aperture size helps, so the message must not suggest one.
   let message;
   if (apertureIds.length) {
     const needed = miss.needed_aperture_radius_mm;
     const neededMm = needed == null ? null : Math.round(needed / 100) * 100;
     const neededTxt = neededMm == null ? "" : `needs ≥ ${neededMm.toLocaleString()} mm to catch the full field — `;
     message = `${neededTxt}${apertureIds.length} heliostat${apertureIds.length === 1 ? "" : "s"} miss the aperture`;
-    if (totalIds.length) message += `; ${totalIds.length} can't reach the secondary at all`;
+    if (totalIds.length) message += `; ${totalIds.length} can't reach the receiver at any aperture`;
   } else {
-    message = `${totalIds.length} heliostat${totalIds.length === 1 ? "" : "s"} can't reach the secondary at all`;
+    message = `${totalIds.length} heliostat${totalIds.length === 1 ? "" : "s"} can't reach the receiver at this geometry — no aperture size catches them`;
   }
   return message;
 }

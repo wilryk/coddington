@@ -2639,7 +2639,7 @@ def create_app():
         # sources, not a second pass over all 10,000 heliostats.
         miss_rays = scene.pop("miss_rays", [])
         miss = None if sun_below_horizon else field_miss_detection(
-            heliostats, body.solar_az_deg, body.solar_el_deg, secondary
+            heliostats, body.solar_az_deg, body.solar_el_deg, secondary, receiver
         )
         if miss is not None:
             miss["rays"] = miss_rays

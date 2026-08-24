@@ -854,8 +854,17 @@ def field_corner_rays(
     hit_ok = on_sec & reached
 
     rec_z = getattr(receiver, "z_mm", float("nan"))
+    # Receiver.intersect's contract: `reached_sub` masks its (3, K) input,
+    # but `uv_sub` comes back ALREADY filtered to the hits, in ray order --
+    # so `rec` is aligned with pre[:, reached_sub] as built and must not be
+    # masked again. Indexing it with reached_sub a second time was a latent
+    # bug inherited from the 3a version of this function; it only detonates
+    # when some on-secondary ray never crosses the receiver plane at all
+    # (e.g. a 30-degree axicon reflecting steep corner rays upward), because
+    # a gentler geometry leaves reached_sub all-True and the double indexing
+    # a no-op.
     rec = np.vstack([uv_sub[0], uv_sub[1], np.full(uv_sub.shape[1], rec_z)])
-    paths = np.stack([src[:, hit_ok], hit[:, hit_ok], pre[:, reached_sub], rec[:, reached_sub]])
+    paths = np.stack([src[:, hit_ok], hit[:, hit_ok], pre[:, reached_sub], rec])
     finite = np.isfinite(paths).all(axis=(0, 1))
     paths = paths[:, :, finite]
     hit_rays = [
@@ -889,10 +898,25 @@ def field_miss_detection(
     solar_az_deg: float,
     solar_el_deg: float,
     secondary: Secondary | None,
+    receiver: Receiver | None = None,
 ) -> dict | None:
     """The amber "warning" tier of docs/ui-spec.md 2.3: which heliostats'
     chief rays miss the secondary, and how big an aperture would catch the
     whole field.
+
+    "Catch" means COLLECT, not merely intercept -- Ryker's correction on
+    the first cut of this function. Intersecting the (extended) secondary
+    surface proves nothing by itself: a 30-degree axicon over the
+    manuscript field folds the outer heliostats' light *away* from the
+    receiver, so their chief rays cross the extended flank at ~17.3 m and
+    then never come down to the window at all. Growing the aperture would
+    put glass in front of those rays and deliver nothing. So a heliostat
+    only counts as an *aperture* miss if its reflected chief ray, after
+    the (enlarged-probe) secondary bounce, actually lands inside the
+    receiver window -- i.e. a bigger aperture genuinely fixes it. Every
+    other failure -- no secondary intersection at all (the near-heliostat
+    case), or a bounce that never reaches the window -- is a *total* miss:
+    no aperture size helps.
 
     ``None`` means "no warning to report", the API contract's three exempt
     cases: no secondary at all (``secondary`` is ``None`` or
@@ -926,11 +950,15 @@ def field_miss_detection(
     would answer nothing this one does not already contain.
 
     :returns: ``{"needed_aperture_radius_mm", "aperture_miss_ids",
-        "total_miss_ids"}``. ``"rays"`` is deliberately absent: the dropped
-        corner-ray polylines come from the corner-ray machinery's own
-        strided sources (:func:`field_corner_rays`'s ``return_misses``),
-        not from testing all 10,000 heliostats' centres, so the caller
-        (:func:`build_geometry_scene`) attaches them.
+        "total_miss_ids"}``. ``needed_aperture_radius_mm`` is the largest
+        hit radius among DELIVERABLE rays only (``None`` if none deliver)
+        -- the number is a purchase recommendation, so it must not be
+        inflated by rays no aperture can save. ``"rays"`` is deliberately
+        absent: the dropped corner-ray polylines come from the corner-ray
+        machinery's own strided sources (:func:`field_corner_rays`'s
+        ``return_misses``), not from testing all 10,000 heliostats'
+        centres, so the caller (:func:`build_geometry_scene`) attaches
+        them.
     """
     if secondary is None or isinstance(secondary, NoSecondary) or not heliostats:
         return None
@@ -952,18 +980,36 @@ def field_miss_detection(
     enlarged = dataclasses.replace(
         secondary, aperture_radius_mm=secondary.aperture_radius_mm * MISS_PROBE_ENLARGE
     )
-    hit, _d2, on_enlarged = enlarged.redirect(p, d, {})
+    hit, d2, on_enlarged = enlarged.redirect(p, d, {})
 
-    if hit.shape[1] == 0:
+    # Deliverability: does the post-bounce chief ray land inside the
+    # receiver window? Receiver.intersect's contract (same trap as in
+    # field_corner_rays): `reached` masks its (3, K) input, `uv` comes back
+    # already filtered to the hits in ray order -- clip that against the
+    # window extent and scatter back onto the K enlarged-hit columns, then
+    # onto the full N. No receiver to test against (a caller that only has
+    # a secondary) degrades to the old intercept-only rule.
+    deliver_sub = np.ones(hit.shape[1], dtype=bool)
+    if receiver is not None and hit.shape[1] > 0:
+        reached, uv = receiver.intersect(hit, d2)
+        (u0, u1), (v0, v1) = receiver.uv_extent()
+        in_window = (uv[0] >= u0) & (uv[0] <= u1) & (uv[1] >= v0) & (uv[1] <= v1)
+        deliver_sub = np.zeros(hit.shape[1], dtype=bool)
+        deliver_sub[reached] = in_window
+
+    deliverable = np.zeros(len(ids), dtype=bool)
+    deliverable[on_enlarged] = deliver_sub
+
+    if hit.shape[1] == 0 or not deliver_sub.any():
         needed = None
         aperture_miss_ids: list = []
     else:
         radius = np.hypot(hit[0], hit[1])
-        needed = float(np.max(radius))
-        beyond_actual = radius > secondary.aperture_radius_mm
+        needed = float(np.max(radius[deliver_sub]))
+        beyond_actual = (radius > secondary.aperture_radius_mm) & deliver_sub
         aperture_miss_ids = sorted(int(i) for i in ids[on_enlarged][beyond_actual])
 
-    total_miss_ids = sorted(int(i) for i in ids[~on_enlarged])
+    total_miss_ids = sorted(int(i) for i in ids[~deliverable])
 
     return {
         "needed_aperture_radius_mm": needed,
