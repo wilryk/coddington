@@ -450,6 +450,7 @@ def trace_heliostat_cone(
     support = kernel.support_rad
     occluders = occluders or []
     (u0, u1), (v0, v1) = receiver.uv_extent()
+    u_period_mm = getattr(receiver, "u_period_mm", None)
     k = mask_nodes
     kk = k * k
     axis_nodes = np.linspace(-support, support, k)
@@ -471,14 +472,14 @@ def trace_heliostat_cone(
             reach = _reach_mm(jac_all, hess_all, full_stencil, skip_support)
             uv0 = uv[:, 0, :]
             margin = reach * WINDOW_SAFETY_FACTOR + WINDOW_MARGIN_FLOOR_MM
-            within_window = (
-                chief_ok
-                & can_jac
-                & (uv0[0] - margin >= u0)
-                & (uv0[0] + margin <= u1)
-                & (uv0[1] - margin >= v0)
-                & (uv0[1] + margin <= v1)
+            v_clears = (uv0[1] - margin >= v0) & (uv0[1] + margin <= v1)
+            # A receiver that closes on itself has no edge in u (the flux
+            # grid wraps there too, see `wrap_u` below) -- u0/u1 are a chart
+            # cut, not a wall, so only v can clip.
+            u_clears = (
+                True if u_period_mm else (uv0[0] - margin >= u0) & (uv0[0] + margin <= u1)
             )
+            within_window = chief_ok & can_jac & u_clears & v_clears
         if isinstance(secondary, NoSecondary):
             can_skip = within_window
         elif isinstance(secondary, (AxiconSecondary, CassegrainSecondary)) and np.any(within_window):
@@ -542,8 +543,9 @@ def trace_heliostat_cone(
         # `u` on a receiver that closes on itself is periodic, so a landing
         # point just past the seam is inside the window, not outside it --
         # wrap before comparing or a spot straddling the cut is thrown away.
-        u_period = getattr(receiver, "u_period_mm", None)
-        u_test = uv_n[0] if not u_period else u0 + np.mod(uv_n[0] - u0, u_period)
+        u_test = (
+            uv_n[0] if not u_period_mm else u0 + np.mod(uv_n[0] - u0, u_period_mm)
+        )
         in_ext = (u_test >= u0) & (u_test <= u1) & (uv_n[1] >= v0) & (uv_n[1] <= v1)
         pass_out[surv[in_ext]] = True
         uv_nodes_n[:, surv] = uv_n
@@ -559,7 +561,7 @@ def trace_heliostat_cone(
     weights = STANDARD_IRRADIANCE_W_MM2 * area_w * cos_aoi
 
     # A receiver that closes on itself has no edge in u: the flux grid wraps.
-    wrap_u = bool(getattr(receiver, "u_period_mm", None))
+    wrap_u = bool(u_period_mm)
 
     n_u, n_v = flux_grid
     u_edges = np.linspace(u0, u1, n_u + 1)
