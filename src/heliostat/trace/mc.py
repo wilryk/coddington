@@ -108,6 +108,61 @@ def _perturb_unit(
     return out
 
 
+def _perturb_isotropic(
+    d: np.ndarray,
+    ref: np.ndarray,
+    sigma_rad: float,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Independent per-ray isotropic Gaussian scatter of a ``(3, M)`` unit
+    direction bundle ``d`` about ITSELF, in the plane perpendicular to each
+    ray's own direction.
+
+    This is the specularity convention (matching SolTrace): micro-facet
+    roughness scatters the REFLECTED ray about its own ideal direction, not
+    about the surface normal, so the two axes spanning the perturbation
+    must be perpendicular to ``d`` -- not to the (unperturbed) normal the
+    slope-error perturbation (:func:`_perturb_unit`) uses. Those normal-
+    tangent axes (mirror ``u``/``v``, or a facet's ``fu``/``fv``) are only
+    perpendicular to ``d`` at normal incidence; at oblique incidence they
+    are skewed away from perpendicular-to-``d`` by the angle of incidence,
+    which is exactly the bug this function fixes (a ``cos(theta)``
+    under-broadening of the out-of-plane component).
+
+    ``ref`` is a fixed world direction -- the mirror's own ``u`` for the
+    legacy rectangle, a facet's ``fu`` for a design -- used only to seed a
+    per-ray basis perpendicular to ``d``: projected out of each ray's own
+    ``d`` and renormalised, ``axis1`` is guaranteed perpendicular to ``d``
+    (a ray that just reflected off this mirror cannot run parallel to
+    ``ref``, which lies in the mirror plane while ``d`` points away from
+    it). ``axis2 = d x axis1`` completes a right-handed frame. Because
+    reflection about the mirror's true, unperturbed normal is an isometry
+    of direction space, an isotropic perturbation built this way in the
+    outgoing ray's own perpendicular plane is exactly the SolTrace
+    convention and exactly what the cone backend's ``sunshape_kernel``
+    assumes when it convolves ``specularity_mrad`` in with no doubling
+    (see that function's docstring).
+
+    ``sigma_rad`` is the per-axis standard deviation in radians, the same
+    convention :func:`_perturb_unit` uses; this draws exactly two ``(M,)``
+    Gaussian arrays from ``rng``, same as that function, so the random-
+    number consumption pattern is unaffected by this fix -- only which
+    geometric axes the draws land on changes.
+    """
+    dot_rd = np.einsum("i,ij->j", ref, d)
+    axis1 = ref[:, None] - dot_rd[None, :] * d
+    axis1 /= np.linalg.norm(axis1, axis=0)
+    axis2 = np.cross(d, axis1, axis=0)
+    m = d.shape[1]
+    out = (
+        d
+        + axis1 * rng.normal(0.0, sigma_rad, m)
+        + axis2 * rng.normal(0.0, sigma_rad, m)
+    )
+    out /= np.linalg.norm(out, axis=0)
+    return out
+
+
 def design_facet_frames(design, helio: np.ndarray, n: np.ndarray, u: np.ndarray, v: np.ndarray):
     """World-frame geometry per facet: ``(facet, normal, fu, fv, centre)``.
 
@@ -176,7 +231,13 @@ def trace_heliostat(
     rectangle's) — and recomputes ``source_power_w`` accordingly; an
     explicit opt-in so no stored-run convention shifts, but the right
     choice for small or large custom designs, where the fixed 3.5 m disk
-    wastes rays or clips corners.
+    wastes rays or clips corners. Regardless of radius, the disk is always
+    CENTRED on the design's own bbox centroid (the legacy rectangle's bbox
+    is symmetric about the pivot, so this is a no-op there): a custom
+    sketch offset from the pivot -- a hand-drawn outline, a flower whose
+    petals don't average back to the origin -- would otherwise have part
+    of its area fall outside a disk centred on the pivot instead, silently
+    losing the rays that should have illuminated it.
 
     ``design`` switches the mirror model. ``None`` (default) is the
     original single 5 x 3 m rectangle whose figure is the ``c3``/``c4``/
@@ -195,12 +256,18 @@ def trace_heliostat(
     top of whichever figure ran, both zero by default (no perturbation, no
     extra cost, bit-identical to before either existed). ``slope_error_mrad``
     perturbs the mirror's local surface NORMAL, independently per tangent
-    axis, before reflection -- a manufacturing/mounting tilt, which the
-    reflection law doubles into the ray's deflection. ``specularity_mrad``
-    perturbs the REFLECTED ray direction itself, independently per axis,
-    after reflection -- a coating scatter, with no such doubling. Both draw
-    from ``rng``, so a run's random-number sequence is unchanged whenever
-    both are left at zero.
+    axis (``u``/``v``, or a facet's ``fu``/``fv``), before reflection -- a
+    manufacturing/mounting tilt, which the reflection law doubles into the
+    ray's deflection and which correctly picks up a ``cos(theta_incidence)``
+    compression in its out-of-plane component (see :func:`_perturb_unit`).
+    ``specularity_mrad`` perturbs the REFLECTED ray direction itself,
+    independently per axis, after reflection -- a coating micro-roughness
+    scatter, isotropic about the reflected ray by convention (matching
+    SolTrace), with no doubling and no incidence-angle compression (see
+    :func:`_perturb_isotropic`, which builds its two axes perpendicular to
+    the actual outgoing ray rather than to the unperturbed normal). Both
+    draw from ``rng``, so a run's random-number sequence is unchanged
+    whenever both are left at zero.
     """
     if sampler is None:
         sampler = _default_sampler()
@@ -227,6 +294,7 @@ def trace_heliostat(
 
     s = _sun_vector(solar_az_deg, solar_el_deg)
     helio = np.array([x_mm, y_mm, 0.0])
+    n, u, v = _mirror_frame(rot_az_deg, rot_el_deg)
 
     # Source disk basis: any orthonormal pair perpendicular to the sun
     # vector works -- positions are uniform and the angular law is
@@ -234,7 +302,24 @@ def trace_heliostat(
     e1 = np.cross(np.array([0.0, 0.0, 1.0]), s)
     e1 /= np.linalg.norm(e1)
     e2 = np.cross(s, e1)
-    centre = helio + SOURCE_DIST_MM * s
+
+    # The disk must be centred over the mirror region it actually needs to
+    # cover, not over the heliostat's pivot -- for the legacy rectangle
+    # those coincide (bbox symmetric about (0, 0)), but a custom design's
+    # sketch can sit anywhere in its own (u, v) plane (an outline offset
+    # from the pivot, a flower whose petals don't average back to the
+    # origin). Recentre on the design's own bbox centroid, carried into
+    # world space through the mirror's (u, v) axes and then out along the
+    # sun vector to the source plane, so a ray aimed at the disk centre
+    # still lands at the mirror region's own centre, not at the pivot.
+    if design is not None:
+        du0, du1, dv0, dv1 = design.bbox
+        centre_u = 0.5 * (du0 + du1)
+        centre_v = 0.5 * (dv0 + dv1)
+    else:
+        centre_u = centre_v = 0.0
+    mirror_centre = helio + u * centre_u + v * centre_v
+    centre = mirror_centre + SOURCE_DIST_MM * s
 
     r = source_disk_radius_mm * np.sqrt(rng.random(n_rays))
     phi = 2.0 * np.pi * rng.random(n_rays)
@@ -251,7 +336,6 @@ def trace_heliostat(
     counters = {"emitted": n_rays}
 
     # --- primary mirror -----------------------------------------------
-    n, u, v = _mirror_frame(rot_az_deg, rot_el_deg)
     if design is None:
         dn = d.T @ n  # (N,)
         du, dv = d.T @ u, d.T @ v
@@ -281,7 +365,7 @@ def trace_heliostat(
         dot *= 2.0
         d -= dot * normal
         if specularity_mrad:
-            d = _perturb_unit(d, u, v, specularity_mrad * 1.0e-3, rng)
+            d = _perturb_isotropic(d, u, specularity_mrad * 1.0e-3, rng)
     else:
         frames = design_facet_frames(design, helio, n, u, v)
         n_in = d.shape[1]
@@ -335,7 +419,7 @@ def trace_heliostat(
                 grp = best == k
                 if not np.any(grp):
                     continue
-                d[:, grp] = _perturb_unit(d[:, grp], fu, fv, sigma, rng)
+                d[:, grp] = _perturb_isotropic(d[:, grp], fu, sigma, rng)
 
     # --- secondary -------------------------------------------------------
     pre, d, on_sec = secondary.redirect(hit, d, counters)
@@ -363,16 +447,10 @@ def trace_heliostat(
         mir = hit[:, on_sec][:, hit_mask][:, inside]
         con = pre[:, hit_mask][:, inside]  # == mir when there is no secondary
         rec_uv = uv[:, inside]
-        # World xyz of the receiver hit: exact for a flat window (uv is
-        # world xy minus the window's own centre -- add it back), NaN for a
-        # receiver whose (u, v) does not embed a single world point -- a
-        # curved receiver's path plot needs its own 3-D reconstruction, out
-        # of scope here.
-        rec_z = getattr(receiver, "z_mm", float("nan"))
-        rec_cx = getattr(receiver, "center_x_mm", 0.0)
-        rec_cy = getattr(receiver, "center_y_mm", 0.0)
-        rec = np.vstack(
-            [rec_uv[0] + rec_cx, rec_uv[1] + rec_cy, np.full(int(inside.sum()), rec_z)]
-        )
+        # World xyz of the receiver hit -- exact for any receiver kind via
+        # its own uv_to_world (flat, cylinder, frustum, or an aperture-
+        # clipped wrapper delegating to whichever of those sits behind it),
+        # not a bare z_mm lookup that only exists on the flat case.
+        rec = receiver.uv_to_world(rec_uv)
         result["paths"] = np.stack([src, mir, con, rec])
     return result
