@@ -138,7 +138,9 @@ const DEFAULT_UI = {
   sunBelowHorizon: false,
   traceBusy: false,
   traceError: null,
-  traceResult: null, // last successful trace response, plus derived fields
+  traceResult: null,
+  // The fidelity the on-screen results were actually traced at.
+  traceFidelity: null, // last successful trace response, plus derived fields
   // A field trace's job snapshot while ui.traceBusy (heliostat.web.jobs'
   // Job.snapshot() -- done/total/detail/eta_s/state) -- null for a
   // single-heliostat trace, which has no job behind it to poll.

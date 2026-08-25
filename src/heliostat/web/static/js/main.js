@@ -91,6 +91,16 @@ apptabAnalysis.addEventListener("click", () => store.set("ui.tab", "analysis"));
 // visibility toggles, nothing is destroyed. A tab module is rendered only
 // while its own section is visible; both fetch on open rather than while
 // hidden.
+// Closing one stage while the other is still open hands the viewport to
+// whichever stage remains, rather than dropping to 3D with the view pill
+// hidden and an expanded stage that no longer matches what is shown.
+function viewForOpenStage() {
+  const expanded = store.get("ui.expanded");
+  if (expanded.field) return "plan";
+  if (expanded.receiver) return "elevation";
+  return "3d";
+}
+
 function renderTabs() {
   const tab = store.get("ui.tab");
   apptabWorkspace.classList.toggle("active", tab === "workspace");
@@ -270,6 +280,14 @@ function handleGeometrySuccess(data) {
   // fields.js's apertureMissMessage() and scene3d.js's miss tinting.
   store.set("ui.miss", data.miss || null);
   lastGeometryResponse = data;
+  // A heliostat can vanish from under the selection -- shrink the field, or
+  // switch layout, and the inspector would otherwise stay bound to an id
+  // that is no longer in the scene, editing a ghost.
+  const sel = store.get("ui.selection");
+  if (sel && sel.kind === "heliostat" && sel.id != null) {
+    const present = (data.heliostats || []).some((h) => h.id === sel.id);
+    if (!present) store.set("ui.selection", null);
+  }
   // The shapes pass carries no rays, so anything the previous pass drew is
   // now stale -- drop it rather than hang mismatched rays off new geometry.
   lastRaysResponse = null;
@@ -354,14 +372,26 @@ function refreshGeometryDebounced() {
 // they belong to this network loop, not to anything a re-render should own.
 let traceJobId = null;
 let tracePollTimer = null;
+// Set when a doc edit lands while a trace is in flight, and the fidelity the
+// run actually went out with -- results must be labelled with what traced
+// them, not with whatever the run bar happens to show when they arrive.
+let editedDuringTrace = false;
+let tracedFidelity = null;
 
 function traceSucceeded(data) {
   store.set("ui.traceBusy", false);
   store.set("ui.traceProgress", null);
   store.set("ui.traceResult", data);
   store.set("ui.traceTimestamp", Date.now());
-  store.set("ui.staleResults", false);
-  if (data.scene && data.scene.rays) scene.showTraceRays(data.scene.rays);
+  // Stale means "the project moved on since this run started", so an edit
+  // made WHILE a trace was running leaves its results stale the moment they
+  // land -- clearing the flag here unconditionally would dress old numbers,
+  // and old rays over new geometry, as fresh.
+  const stale = editedDuringTrace;
+  editedDuringTrace = false;
+  store.set("ui.staleResults", stale);
+  store.set("ui.traceFidelity", tracedFidelity);
+  if (!stale && data.scene && data.scene.rays) scene.showTraceRays(data.scene.rays);
   renderAllPanels();
 }
 
@@ -374,6 +404,8 @@ function traceFailed(message) {
 
 function runTrace() {
   if (store.get("ui.traceBusy")) return;
+  editedDuringTrace = false;
+  tracedFidelity = store.get("ui.fidelity");
   store.set("ui.traceBusy", true);
   store.set("ui.traceError", null);
   const doc = store.get("doc");
@@ -548,14 +580,25 @@ store.subscribe((path, value) => {
   // must not touch it).
   if (path === "ui.expanded.field") {
     if (value) store.set("ui.view", "plan");
-    else if (store.get("ui.view") === "plan") store.set("ui.view", "3d");
+    else if (store.get("ui.view") === "plan") store.set("ui.view", viewForOpenStage());
   } else if (path === "ui.expanded.receiver") {
     if (value) store.set("ui.view", "elevation");
-    else if (store.get("ui.view") === "elevation") store.set("ui.view", "3d");
+    else if (store.get("ui.view") === "elevation") store.set("ui.view", viewForOpenStage());
+  }
+
+  if (path === "ui.fidelity") {
+    // Fidelity is part of what produced a number, so switching it makes the
+    // results on screen describe a run nobody asked for any more.
+    const ui = store.get("ui");
+    if (ui.traceResult && !ui.staleResults && ui.traceFidelity && value !== ui.traceFidelity) {
+      store.set("ui.staleResults", true);
+      scene.clearTraceRays();
+    }
   }
 
   if (path.startsWith("doc.")) {
     const ui = store.get("ui");
+    if (ui.traceBusy) editedDuringTrace = true;
     if (ui.traceResult && !ui.staleResults) {
       store.set("ui.staleResults", true);
       scene.clearTraceRays();

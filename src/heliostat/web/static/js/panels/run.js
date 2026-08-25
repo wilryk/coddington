@@ -283,7 +283,10 @@ export function render(container, actions, ctx) {
       els.axisCaption.hidden = true;
     }
     const when = ui.traceTimestamp ? new Date(ui.traceTimestamp).toLocaleTimeString() : "";
-    els.stamp.textContent = when ? `traced ${when} · ${ui.fidelity}` : "";
+    // The fidelity that produced these numbers, not whichever one is
+    // selected now -- switching the control must not relabel old results.
+    const tracedAt = ui.traceFidelity || ui.fidelity;
+    els.stamp.textContent = when ? `traced ${when} · ${tracedAt}` : "";
   } else {
     els.peakNum.textContent = "—";
     els.meanNum.textContent = "—";
