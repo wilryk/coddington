@@ -153,6 +153,37 @@ def test_over_the_geometry_cap_is_422(client):
     assert resp.status_code == 422
 
 
+def test_radial_stagger_default_via_geometry(client):
+    resp = client.post("/api/scene/geometry", json=_payload(layout={"type": "radial_stagger"}))
+    assert resp.status_code == 200
+    assert len(resp.json()["heliostats"]) == 643
+
+
+def test_radial_stagger_above_the_trace_cap_is_within_the_geometry_cap(client):
+    """The same raised cap the Fermat geometry variant gets: a field ten
+    times the trace endpoint's limit still places and orients fine here."""
+    layout = {
+        "type": "radial_stagger",
+        "band_counts": [3000],
+        "band_ring_counts": [1],
+        "ring_radii_m": [50.0],
+    }
+    resp = client.post("/api/scene/geometry", json=_payload(layout=layout, max_corner_sources=50))
+    assert resp.status_code == 200
+    assert len(resp.json()["heliostats"]) == 3000
+
+
+def test_radial_stagger_over_the_geometry_cap_is_422(client):
+    layout = {
+        "type": "radial_stagger",
+        "band_counts": [MAX_GEOMETRY_HELIOSTATS + 1],
+        "band_ring_counts": [1],
+        "ring_radii_m": [50.0],
+    }
+    resp = client.post("/api/scene/geometry", json=_payload(layout=layout))
+    assert resp.status_code == 422
+
+
 def test_sun_below_horizon_is_not_an_error(client):
     """Unlike a trace, a non-positive elevation returns 200: the scene never
     goes blank (docs/ui-spec.md 2.1)."""

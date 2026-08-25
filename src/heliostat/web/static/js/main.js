@@ -481,36 +481,22 @@ store.subscribe((path, value) => {
 
 // -- first paint: live from the first frame ---------------------------------
 //
-// The default field is doc.field.layout === "manuscript" (store.js), which
-// needs the paper's actual positions in hand before the very first geometry
-// request goes out -- otherwise that request would race the fetch and
-// currentLayoutPayload() would fall back to the (wrong-looking) Fermat
-// spiral for one frame. So the manuscript fetch is awaited here, before
-// refreshGeometryNow(), rather than fired in parallel with it. A failed
-// fetch is not fatal: the app still has the Fermat fallback
-// (currentLayoutPayload) to draw something, so it warns and proceeds rather
-// than blocking forever.
+// The default field is doc.field.layout === "radial_stagger" (store.js), a
+// purely parametric layout -- the very first geometry request needs no
+// network fetch to be correct, so it fires immediately. The manuscript
+// field is fetched here too, in parallel rather than blocking that first
+// request, so switching the Layout picker to "Manuscript 643" already has
+// its positions cached instead of triggering a fetch on that click.
 
 renderAllPanels();
+refreshGeometryNow();
 fetchManuscriptField()
   .then((data) => {
     setManuscriptField(data.xy_mm);
   })
   .catch((err) => {
-    console.warn("could not load the manuscript field, falling back to the Fermat spiral:", err);
-    store.set("ui.geometryError", {
-      message:
-        "Could not load the manuscript field (" +
-        ((err && err.message) || "network error") +
-        ") -- showing the Fermat spiral instead.",
-      forReceiver: false,
-    });
-    // Not sticky: the very next successful geometry request clears
-    // ui.geometryError the same way any other transient error does
-    // (handleGeometrySuccess), so this is a one-time notice, not a banner
-    // that lingers after the fallback field has drawn fine.
+    console.warn("could not prefetch the manuscript field:", err);
   })
   .finally(() => {
     renderAllPanels();
-    refreshGeometryNow();
   });

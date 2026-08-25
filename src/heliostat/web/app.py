@@ -54,7 +54,7 @@ from dataclasses import replace
 from io import BytesIO, StringIO
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Annotated, Literal, Union
+from typing import Annotated, ClassVar, Literal, Union
 
 import numpy as np
 
@@ -204,6 +204,31 @@ MAX_FIELD_HELIOSTATS = 1000
 # Ten thousand analytic solves is still a fraction of a second; the trace
 # cap above is unaffected.
 MAX_GEOMETRY_HELIOSTATS = 10_000
+
+# Radial-staggered geometry for the ``{"type": "radial_stagger", ...}``
+# layout: 12 rings in 3 bands (3 rings x 32, 4 rings x 48, 5 rings x 71 --
+# 643 total), each band's own azimuthal pitch (360 / heliostats-per-ring),
+# and explicit per-ring radii rather than a spacing scalar because the
+# radial step is not constant, not even within a band. Reproduces the
+# packaged field_645.csv field to 632/643 positions within 0.1 mm (max error
+# ~42 mm, RMS ~3.9 mm) -- the remaining rows carry a hand-rounded coordinate
+# in the source spreadsheet that no formula reproduces exactly.
+RADIAL_STAGGER_BAND_COUNTS = [32, 48, 71]
+RADIAL_STAGGER_BAND_RING_COUNTS = [3, 4, 5]
+RADIAL_STAGGER_RING_RADII_M = [
+    30.000000,
+    35.014619,
+    40.264159,
+    46.095110,
+    51.127524,
+    56.419441,
+    61.998057,
+    67.829008,
+    72.884974,
+    78.188180,
+    83.756681,
+    89.609429,
+]
 
 # Fermat-spiral geometry for the ``{"type": "fermat", "n": ...}`` layout.
 #
@@ -825,7 +850,97 @@ class PositionsLayout(BaseModel):
         return xy
 
 
-FieldLayout = Annotated[Union[FermatLayout, PositionsLayout], Field(discriminator="type")]
+class RadialStaggeredLayout(BaseModel):
+    """Concentric rings of heliostats, the classic DELSOL/Campo pattern.
+
+    The field is organised into bands: each band has its own heliostat
+    count per ring (``band_counts``) and its own number of rings
+    (``band_ring_counts``), and every ring in the field has its own radius
+    (``ring_radii_m``, one entry per ring across all bands, innermost
+    first) -- the radial step is not constant, not even within a band, so
+    it cannot be derived from a spacing scalar and is given explicitly.
+
+    Within a ring the ``N`` heliostats are evenly spaced at pitch
+    ``360 / N`` degrees. Consecutive rings within a band alternate a
+    half-pitch stagger, and that alternation restarts at each band's first
+    ring (which always carries the half-pitch offset) rather than
+    continuing across the boundary, because the pitch itself changes
+    there. The defaults reproduce the field this app has always shipped as
+    a fixed 643-position CSV.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["radial_stagger"] = "radial_stagger"
+    band_counts: list[int] = Field(default_factory=lambda: list(RADIAL_STAGGER_BAND_COUNTS))
+    band_ring_counts: list[int] = Field(default_factory=lambda: list(RADIAL_STAGGER_BAND_RING_COUNTS))
+    ring_radii_m: list[float] = Field(default_factory=lambda: list(RADIAL_STAGGER_RING_RADII_M))
+
+    #: Total-heliostat cap for this layout. There is no single ``n`` field to
+    #: pin a ``Field(le=...)`` on (the count is ``sum(band_counts *
+    #: band_ring_counts)``), so it is checked in ``_shape_must_agree``
+    #: instead; :class:`GeometryRadialStaggeredLayout` overrides this to
+    #: ``MAX_GEOMETRY_HELIOSTATS`` the same way the Fermat geometry variant
+    #: raises its own cap.
+    _max_heliostats: ClassVar[int] = MAX_FIELD_HELIOSTATS
+
+    @model_validator(mode="after")
+    def _shape_must_agree(self) -> "RadialStaggeredLayout":
+        if len(self.band_counts) != len(self.band_ring_counts):
+            raise ValueError(
+                "band_counts and band_ring_counts must be the same length -- "
+                f"got {len(self.band_counts)} band_counts and "
+                f"{len(self.band_ring_counts)} band_ring_counts"
+            )
+        if any(n <= 0 for n in self.band_counts):
+            raise ValueError("band_counts must all be positive")
+        if any(n <= 0 for n in self.band_ring_counts):
+            raise ValueError("band_ring_counts must all be positive")
+        if any(r <= 0 for r in self.ring_radii_m):
+            raise ValueError("ring_radii_m must all be positive")
+        total_rings = sum(self.band_ring_counts)
+        if total_rings != len(self.ring_radii_m):
+            raise ValueError(
+                f"band_ring_counts sums to {total_rings} rings, but "
+                f"ring_radii_m has {len(self.ring_radii_m)} -- one radius is "
+                "needed per ring, across all bands"
+            )
+        total = sum(n * r for n, r in zip(self.band_counts, self.band_ring_counts))
+        if total > self._max_heliostats:
+            raise ValueError(
+                f"band_counts x band_ring_counts totals {total} heliostats, "
+                f"more than the {self._max_heliostats} this endpoint allows"
+            )
+        return self
+
+    def positions_mm(self) -> np.ndarray:
+        """Every ring's heliostats, band by band, innermost ring first.
+
+        Azimuth follows :attr:`~heliostat.field.HeliostatField.azimuth_deg`'s
+        own convention -- compass bearing, clockwise from +y -- so
+        ``x = R sin(az)``, ``y = R cos(az)``. Positions come back in
+        millimetres, matching every other layout.
+        """
+        xs = []
+        ys = []
+        ring = 0
+        for band_count, n_rings in zip(self.band_counts, self.band_ring_counts):
+            pitch_deg = 360.0 / band_count
+            for local_ring in range(n_rings):
+                radius_mm = self.ring_radii_m[ring] * 1000.0
+                ring += 1
+                # First ring of the band (and every other ring after it)
+                # carries the half-pitch stagger -- see the class docstring.
+                phase_deg = pitch_deg / 2.0 if local_ring % 2 == 0 else 0.0
+                az_rad = np.radians(phase_deg + pitch_deg * np.arange(band_count))
+                xs.append(radius_mm * np.sin(az_rad))
+                ys.append(radius_mm * np.cos(az_rad))
+        return np.column_stack((np.concatenate(xs), np.concatenate(ys)))
+
+
+FieldLayout = Annotated[
+    Union[FermatLayout, RadialStaggeredLayout, PositionsLayout], Field(discriminator="type")
+]
 
 
 class FieldTraceRequest(_TraceRequestBase):
@@ -839,17 +954,23 @@ class FieldTraceRequest(_TraceRequestBase):
 # ---------------------------------------------------------------------------
 # geometry-only field layouts
 #
-# /api/scene/geometry needs the same two layout shapes as a trace, only under
-# the much larger MAX_GEOMETRY_HELIOSTATS cap -- and that cap is a literal
-# Field(le=...) on FermatLayout.n and PositionsLayout.xy_mm, not a runtime
-# check this module could apply after the fact. Subclassing and redeclaring
-# just the capped field reuses every other line of the parent (a_m solving,
-# the capacity-shortfall message, the NaN rejection) rather than forking the
-# whole layout under a new name.
+# /api/scene/geometry needs the same three layout shapes as a trace, only
+# under the much larger MAX_GEOMETRY_HELIOSTATS cap -- for FermatLayout.n and
+# PositionsLayout.xy_mm that cap is a literal Field(le=...), not a runtime
+# check this module could apply after the fact; for RadialStaggeredLayout it
+# is the ``_max_heliostats`` class variable its own validator reads.
+# Subclassing and redeclaring just the capped field/attribute reuses every
+# other line of the parent (a_m solving, the capacity-shortfall message, the
+# NaN rejection, the ring/stagger math) rather than forking the whole layout
+# under a new name.
 
 
 class GeometryFermatLayout(FermatLayout):
     n: int = Field(default=100, ge=1, le=MAX_GEOMETRY_HELIOSTATS)
+
+
+class GeometryRadialStaggeredLayout(RadialStaggeredLayout):
+    _max_heliostats: ClassVar[int] = MAX_GEOMETRY_HELIOSTATS
 
 
 class GeometryPositionsLayout(PositionsLayout):
@@ -857,7 +978,8 @@ class GeometryPositionsLayout(PositionsLayout):
 
 
 GeometryFieldLayout = Annotated[
-    Union[GeometryFermatLayout, GeometryPositionsLayout], Field(discriminator="type")
+    Union[GeometryFermatLayout, GeometryRadialStaggeredLayout, GeometryPositionsLayout],
+    Field(discriminator="type"),
 ]
 
 

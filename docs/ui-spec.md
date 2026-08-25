@@ -108,7 +108,10 @@ Full-screen. Left: shape controls — **Rectangle** (width/height), **Facet grid
 
 Full-screen. The strip under the tabs restates the exact project being analyzed. Day sweep: date + timestep + fidelity, background job with progress/cancel, energy-through-the-day plot, per-step table, day CSV export.
 
-- **Irradiance maps**: click any timestep row and its flux map renders beside the table; the workspace flux thumbnail expands to the same view. This is the answer to "how do I see irradiance maps" — one click from any timestep, one click from the run bar.
+- **Fidelity is one setting for the whole app**, not one per screen: the fidelity chosen here and the one in the workspace run bar are the same value seen twice. Changing it marks a finished sweep as no longer describing the current settings, like any other change that moves the numbers.
+- A finished sweep says plainly when the heliostat, optics or field have changed since it ran — dimmed but still readable, and its timesteps still openable. The sweep's own date and timestep are settings for the *next* run and do not invalidate it.
+
+- **Irradiance maps**: click any timestep row and its flux map appears beside the table; the workspace flux thumbnail expands to the same view. This is the answer to "how do I see irradiance maps" — one click from any timestep, one click from the run bar. The sweep keeps each timestep's map as it traces, so opening one costs nothing. Irradiance maps use the trace's own colormap (magma); the jet colormap applies to sag maps only.
 - **Runs save with the project.** A finished sweep (including a large Monte Carlo run) persists in the project's storage and reopens without re-running. Per-run **"Discard this run"** covers the user who doesn't want that, and a **Manage saved runs** view lists what is stored with its disk footprint and delete controls.
 - **Year estimate**: traces a set of **sample days across the year** (default 12, spaced in solar declination) using the day-sweep machinery, then **interpolates between them weighted by DNI** to report **annual collection in MWh** (with the per-day energies plotted across the year so the interpolation is visible, not a black box). Runs in the background like a day sweep and saves with the project.
   - **Fast mode** (default on): declination is symmetric about the solstices, so only **7 days are actually traced** and the other 5 come by symmetry; DNI weighting is applied afterward. A toggle traces all 12 for the skeptic.
@@ -152,7 +155,7 @@ All questions resolved at sign-off (2026-08-22): year sampling is 12 declination
 6. Expand Receiver & Tower: elevation appears with dimension callouts referenced to the heliostat-plane datum, ground offset as its own dimension; editing a callout edits the sidebar field.
 7. Swap receiver config from the Library: field untouched.
 8. Export the project to SolTrace, reimport it: same field, geometry, sun shape, and optical errors; unmapped settings reported.
-9. In Analysis, click a timestep: its irradiance map appears (jet colormap). Run a sweep, close the app, reopen: the run is still there; Discard removes it. Run a Year estimate: annual MWh reported with the per-day curve visible.
+9. In Analysis, click a timestep: its irradiance map appears immediately, from the map the sweep already made — no re-trace. Run a sweep, close the app, reopen: the run is still there; Discard removes it. Run a Year estimate: annual MWh reported with the per-day curve visible.
 9a. Set axicon half angle to 0°: the scene shows a flat disc, the trace runs, an info badge says "degenerate: tracing as flat mirror" — no error. Same for a Cassegrain that solves to a flat relay. Set a positive aperture → receiver offset under prime focus: flux reports at the offset receiver.
 9b. In Heliostat Shape, the previewed heliostat is named with its slant range; switching it re-solves the sag map; "View shape" from a workspace heliostat lands on that heliostat. Changing slope error changes the next Monte Carlo result.
 10. 10,000-heliostat field: smooth orbiting; trace politely refuses over 1,000; the layout regeneration presents Apply instead of stalling.

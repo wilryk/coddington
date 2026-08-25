@@ -6,9 +6,12 @@
 // here talks to the network or the DOM; main.js and the panels do that by
 // reading/writing through get/set and reacting to subscribe().
 //
-// doc.field.layout "manuscript" is a real dataset: the paper's own
-// 643-heliostat field positions, served by /api/field/manuscript. "fermat"
-// is the parametric spiral alternative (doc.field.fermat).
+// doc.field.layout picks the field's shape: "radial_stagger" (the default --
+// concentric staggered rings, doc.field.radialStagger) is the parametric
+// layout whose own defaults reproduce the paper's field; "fermat" is the
+// golden-angle spiral alternative (doc.field.fermat); "manuscript" is that
+// same paper field as a fixed dataset, served byte-exact by
+// /api/field/manuscript.
 
 function clone(x) {
   return JSON.parse(JSON.stringify(x));
@@ -70,9 +73,22 @@ const DEFAULT_DOC = {
   },
   field: {
     mode: "field",
-    layout: "manuscript", // "manuscript" | "fermat"
+    layout: "radial_stagger", // "radial_stagger" | "fermat" | "manuscript"
     single: { x_mm: 0, y_mm: -89609 },
     fermat: { n: 643, r_min_m: 30, r_max_m: 90 },
+    // Three bands, innermost first -- matches the server's own
+    // RadialStaggeredLayout defaults (heliostat.web.app), which is what
+    // reproduces the paper's 643-heliostat field. Ring radii are not
+    // exposed for editing here; see api.js's radialStaggerPayload for how
+    // an edited band count reshapes them.
+    radialStagger: {
+      band0Rings: 3,
+      band0Count: 32,
+      band1Rings: 4,
+      band1Count: 48,
+      band2Rings: 5,
+      band2Count: 71,
+    },
   },
   sun: { az: 165.2, el: 61.4 },
 };

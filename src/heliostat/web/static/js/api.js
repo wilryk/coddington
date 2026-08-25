@@ -283,19 +283,80 @@ export function currentOpticsParams(doc) {
   return out;
 }
 
+// Radial-staggered layout: per-band [innermost, outermost] radius bounds in
+// metres, matching heliostat.web.app.RADIAL_STAGGER_RING_RADII_M's own
+// default split into its three bands. Used only to reshape a band's rings
+// when its ring count is edited away from the default -- the exact default
+// radii (not this interpolation) are what actually reproduces the paper's
+// field, and that happens server-side via RadialStaggeredLayout's own
+// defaults whenever no band has been touched (see radialStaggerPayload).
+const RADIAL_STAGGER_BAND_RADIUS_BOUNDS_M = [
+  [30.0, 40.264159],
+  [46.09511, 61.998057],
+  [67.829008, 89.609429],
+];
+
+const RADIAL_STAGGER_DEFAULT_BANDS = [
+  { rings: 3, count: 32 },
+  { rings: 4, count: 48 },
+  { rings: 5, count: 71 },
+];
+
+export function radialStaggerBands(doc) {
+  const r = doc.field.radialStagger;
+  return [
+    { rings: r.band0Rings, count: r.band0Count },
+    { rings: r.band1Rings, count: r.band1Count },
+    { rings: r.band2Rings, count: r.band2Count },
+  ];
+}
+
+function linspace(min, max, n) {
+  if (n <= 1) return [max];
+  const out = [];
+  for (let i = 0; i < n; i++) out.push(min + ((max - min) * i) / (n - 1));
+  return out;
+}
+
+// The radial-staggered layout payload for the current doc. Untouched bands
+// (still the default 3/32, 4/48, 5/71) send a bare `{type: "radial_stagger"}`
+// so the server's own model defaults apply -- byte-for-byte the field this
+// app reproduces. An edited band count must also carry its own ring radii
+// (the server requires one radius per ring, and its default list no longer
+// has the right length), reshaped by evenly spacing that band's rings
+// between its fixed radius bounds above.
+export function radialStaggerPayload(doc) {
+  const bands = radialStaggerBands(doc);
+  const isDefault = bands.every(
+    (b, i) => b.rings === RADIAL_STAGGER_DEFAULT_BANDS[i].rings && b.count === RADIAL_STAGGER_DEFAULT_BANDS[i].count
+  );
+  if (isDefault) return { type: "radial_stagger" };
+  const band_counts = bands.map((b) => b.count);
+  const band_ring_counts = bands.map((b) => b.rings);
+  const ring_radii_m = bands.flatMap((b, i) => {
+    const [lo, hi] = RADIAL_STAGGER_BAND_RADIUS_BOUNDS_M[i];
+    return linspace(lo, hi, b.rings);
+  });
+  return { type: "radial_stagger", band_counts, band_ring_counts, ring_radii_m };
+}
+
 // Exported so js/project.js's serializeProject() builds the exact same
 // layout shape a geometry/trace request sends -- one function, not two
-// copies that could drift. doc.field.layout picks which of two shapes:
-// "manuscript" sends the paper's own positions verbatim (the cache
-// fetchManuscriptField() filled at startup -- see main.js), "fermat" sends
-// the parametric `{type: "fermat", n, r_min_m?, r_max_m?}` spiral it always
-// did. A manuscript request with an empty cache (the startup fetch failed)
-// falls back to the fermat payload so the app still has something to draw
-// rather than sending an empty positions list.
+// copies that could drift. doc.field.layout picks which of three shapes:
+// "radial_stagger" sends the parametric staggered-ring layout above (the
+// default), "manuscript" sends the paper's own positions verbatim (the
+// cache fetchManuscriptField() filled at startup -- see main.js), "fermat"
+// sends the parametric `{type: "fermat", n, r_min_m?, r_max_m?}` spiral. A
+// manuscript request with an empty cache (the startup fetch failed) falls
+// back to the fermat payload so the app still has something to draw rather
+// than sending an empty positions list.
 export function currentLayoutPayload(doc) {
   if (doc.field.layout === "manuscript") {
     const xy = getManuscriptField();
     if (xy && xy.length) return { type: "positions", xy_mm: xy };
+  }
+  if (doc.field.layout === "radial_stagger") {
+    return radialStaggerPayload(doc);
   }
   const f = doc.field.fermat;
   const layout = { type: "fermat", n: f.n };

@@ -48,7 +48,6 @@ let lastContainer = null;
 // -- day-sweep run state (module-local -- see header) ----------------------
 let formDate = DEFAULT_DATE;
 let formHourStep = DEFAULT_HOUR_STEP;
-let formFidelity = null; // set from ui.fidelity the first time build() runs
 
 let jobId = null;
 let jobSnapshot = null; // last /api/day/status (or /start) response
@@ -140,7 +139,8 @@ function fieldSummary(doc, geometry) {
     const rmax = f.r_max_m != null ? f.r_max_m : "—";
     return `${count} heliostats (Fermat ${rmin}–${rmax} m)`;
   }
-  return `${count} heliostats (manuscript field)`;
+  if (doc.field.layout === "manuscript") return `${count} heliostats (Manuscript 643)`;
+  return `${count} heliostats (radial staggered)`;
 }
 
 function designSummary(doc) {
@@ -201,10 +201,7 @@ function startSweep() {
 
   const doc = store.get("doc");
   const ui = store.get("ui");
-  // docs/ui-spec.md 4: the day sweep chooses its own fidelity, independent
-  // of the run bar's -- ui.fidelity is only this screen's starting default.
-  const uiForRequest = Object.assign({}, ui, { fidelity: formFidelity });
-  const body = buildDayRequest(doc, uiForRequest, { site, hour_step: formHourStep });
+  const body = buildDayRequest(doc, ui, { site, hour_step: formHourStep });
   sweepRequest = body;
   sweepPhysicsKey = physicsKey(body);
 
@@ -335,6 +332,10 @@ function physicsKey(body) {
     layout: body.layout || null,
     heliostat_x_mm: body.heliostat_x_mm,
     heliostat_y_mm: body.heliostat_y_mm,
+    // Fidelity is one app-wide setting, and it changes the numbers, so a
+    // run traced at a different one no longer describes the current setup.
+    mode: body.mode,
+    n_rays: body.n_rays != null ? body.n_rays : null,
   });
 }
 
@@ -453,8 +454,6 @@ function build(container) {
   container.innerHTML = "";
   container.className = "tabpage";
 
-  formFidelity = store.get("ui.fidelity") || "fast_accurate";
-
   // -- subject strip --------------------------------------------------------
   const subject = document.createElement("div");
   subject.className = "an-subject";
@@ -531,10 +530,11 @@ function build(container) {
   fidelitySeg.className = "seg";
   fidelitySeg.style.marginBottom = "0";
   const fidelityBtns = {};
+  // One fidelity for the whole app: this and the workspace run bar are the
+  // same setting seen from two screens.
   for (const [key, label] of FIDELITY) {
-    fidelityBtns[key] = segButton(fidelitySeg, label, key === formFidelity, () => {
-      formFidelity = key;
-      paint();
+    fidelityBtns[key] = segButton(fidelitySeg, label, key === store.get("ui.fidelity"), () => {
+      store.set("ui.fidelity", key);
     });
   }
 
@@ -756,7 +756,8 @@ function paintSweepControls() {
   const running = jobSnapshot && jobSnapshot.state === "running";
   setVal(els.dateInput, formDate);
   setVal(els.stepInput, formHourStep);
-  for (const [key, btn] of Object.entries(els.fidelityBtns)) btn.classList.toggle("active", key === formFidelity);
+  const fidelity = store.get("ui.fidelity");
+  for (const [key, btn] of Object.entries(els.fidelityBtns)) btn.classList.toggle("active", key === fidelity);
 
   const busy = starting || running;
   els.startBtn.classList.toggle("disabled-link", busy);

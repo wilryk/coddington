@@ -7,9 +7,10 @@
 // in through setGeometry() -- same reason inspector.js takes it as a ctx
 // argument rather than reading it off the store.
 //
-// SCOPE (phase 3b): a live VIEW with click-select only. Drag-to-move,
-// double-click-to-add, roads, and the layout picker land in a later batch
-// -- the bottom-left chip says so explicitly (main.js owns that text).
+// SCOPE: a live VIEW with click-select and a layout picker (Radial
+// staggered / Fermat spiral / Manuscript 643). Drag-to-move, double-
+// click-to-add, and roads remain a later batch -- the bottom-left chip
+// says so explicitly (main.js owns that text).
 //
 // World frame matches the server exactly (src/heliostat/web/scene.py): x
 // east, y north, mm on the wire. Drawn with north UP, so screen y is the
@@ -122,7 +123,7 @@ function niceRoundMetres(targetPx, scale) {
 
 // -- layers -----------------------------------------------------------------
 
-function ringsSvg(doc, proj) {
+function ringsSvg(doc, proj, heliostats) {
   // Rings at the layout radii only make sense for a parametric field
   // (docs/ui-spec.md "Faint rings at the layout radii ... only in field
   // mode"); single-heliostat mode draws just that one heliostat + tower.
@@ -131,6 +132,7 @@ function ringsSvg(doc, proj) {
   // there is nothing honest to draw a ring at; the positions speak for
   // themselves.
   if (doc.field.mode !== "field" || doc.field.layout === "manuscript") return "";
+  if (doc.field.layout === "radial_stagger") return radialRingsSvg(heliostats, proj);
   const f = doc.field.fermat;
   let s = "";
   for (const rm of [f.r_min_m, f.r_max_m]) {
@@ -142,6 +144,26 @@ function ringsSvg(doc, proj) {
     s +=
       '<text x="' + (proj.cx + r + 4).toFixed(1) + '" y="' + (proj.cy - 4).toFixed(1) +
       '" font-size="10.5" fill="#64748b">' + rm + " m</text>";
+  }
+  return s;
+}
+
+// One faint ring per distinct radius the live field actually holds --
+// drawn from the geometry response itself rather than recomputing the
+// layout's own ring radii, so the picture can never disagree with what is
+// actually placed. Bucketed to the nearest 0.1 m: consecutive ring radii
+// are metres apart, but a heliostat's own radius is JSON round-tripped
+// through the wire and can be off by a fraction of a millimetre, which a
+// finer bucket would occasionally split into two rings.
+function radialRingsSvg(heliostats, proj) {
+  const radiiM = new Set();
+  for (const h of heliostats) radiiM.add(Math.round(Math.hypot(h.x_mm, h.y_mm) / 100) / 10);
+  let s = "";
+  for (const rm of radiiM) {
+    const r = rm * proj.scale;
+    s +=
+      '<circle cx="' + proj.cx.toFixed(1) + '" cy="' + proj.cy.toFixed(1) + '" r="' + r.toFixed(1) +
+      '" fill="none" stroke="rgba(110,130,150,0.3)" stroke-width="1"></circle>';
   }
   return s;
 }
@@ -321,7 +343,7 @@ export function render(container) {
 
   const proj = computeProjection(heliostats, w, h);
 
-  els.layers.rings.innerHTML = ringsSvg(doc, proj);
+  els.layers.rings.innerHTML = ringsSvg(doc, proj, heliostats);
   els.layers.aperture.innerHTML = apertureSvg(doc, geometry, ui, proj);
   els.layers.heliostats.innerHTML = heliostatsSvg(heliostats, ui, proj, geometry);
   els.layers.selection.innerHTML = selectionSvg(heliostats, ui, proj, w, h);

@@ -20,6 +20,7 @@ import pytest
 pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient  # noqa: E402
+from pydantic import ValidationError  # noqa: E402
 
 from heliostat import __version__  # noqa: E402
 from heliostat.geometry.design import _petal_at_angle, flower, grid_facets  # noqa: E402
@@ -44,10 +45,14 @@ from heliostat.web.app import (  # noqa: E402
     MAX_DAY_FLUX_MAPS,
     MAX_FIELD_HELIOSTATS,
     PRIME_FOCUS_HEIGHT_MM,
+    RADIAL_STAGGER_BAND_COUNTS,
+    RADIAL_STAGGER_BAND_RING_COUNTS,
+    RADIAL_STAGGER_RING_RADII_M,
     WINDOW_MM,
+    DayTraceRequest,
     FermatLayout,
     FlowerParams,
-    DayTraceRequest,
+    RadialStaggeredLayout,
     _build_trace_design,
     _day_flux_step_indices,
     _day_timesteps,
@@ -1440,6 +1445,120 @@ def test_fermat_layout_matches_the_library_generator():
 
     expected = generate("fermat", 40, a_m=FERMAT_A_M, b=FERMAT_B).xy_mm
     assert np.array_equal(FermatLayout(n=40).positions_mm(), expected)
+
+
+# ---------------------------------------------------------------------------
+# radial-staggered field layout (the classic DELSOL/Campo pattern,
+# docs/ui-spec.md 2.2) -- 12 rings in 3 bands, whose defaults reproduce the
+# field the app has always shipped as a fixed CSV.
+
+
+def test_radial_stagger_default_is_643_positions_in_twelve_rings():
+    xy = RadialStaggeredLayout().positions_mm()
+    assert xy.shape == (643, 2)
+    r_m = np.hypot(xy[:, 0], xy[:, 1]) / 1000.0
+    distinct_radii = np.unique(np.round(r_m, 3))
+    assert distinct_radii.size == 12
+    assert np.allclose(sorted(distinct_radii), RADIAL_STAGGER_RING_RADII_M, atol=1e-3)
+
+
+def test_radial_stagger_ring_membership_matches_band_counts():
+    """Each ring holds exactly its band's heliostat count, uniformly spaced
+    in azimuth at pitch = 360 / that count."""
+    xy = RadialStaggeredLayout().positions_mm()
+    r_mm = np.hypot(xy[:, 0], xy[:, 1])
+    az_deg = np.degrees(np.arctan2(xy[:, 0], xy[:, 1])) % 360.0
+
+    expected_counts = []
+    for band_count, n_rings in zip(RADIAL_STAGGER_BAND_COUNTS, RADIAL_STAGGER_BAND_RING_COUNTS):
+        expected_counts.extend([band_count] * n_rings)
+
+    for radius_m, expected_n in zip(RADIAL_STAGGER_RING_RADII_M, expected_counts):
+        ring_mask = np.isclose(r_mm / 1000.0, radius_m, atol=1e-3)
+        assert int(ring_mask.sum()) == expected_n
+        ring_az = np.sort(az_deg[ring_mask])
+        pitch = 360.0 / expected_n
+        spacing = np.diff(np.concatenate([ring_az, [ring_az[0] + 360.0]]))
+        assert np.allclose(spacing, pitch, atol=1e-6)
+
+
+def test_radial_stagger_restarts_the_half_pitch_offset_each_band():
+    """The half-pitch stagger alternates ring to ring, and restarts (the
+    first ring of a band always carries the offset) at each band's first
+    ring rather than continuing across the boundary, since the pitch itself
+    changes there."""
+    xy = RadialStaggeredLayout().positions_mm()
+    r_mm = np.hypot(xy[:, 0], xy[:, 1])
+    az_deg = np.degrees(np.arctan2(xy[:, 0], xy[:, 1])) % 360.0
+
+    ring_i = 0
+    for band_count, n_rings in zip(RADIAL_STAGGER_BAND_COUNTS, RADIAL_STAGGER_BAND_RING_COUNTS):
+        pitch = 360.0 / band_count
+        for local_ring in range(n_rings):
+            radius_m = RADIAL_STAGGER_RING_RADII_M[ring_i]
+            ring_i += 1
+            ring_mask = np.isclose(r_mm / 1000.0, radius_m, atol=1e-3)
+            first_az = np.sort(az_deg[ring_mask])[0]
+            expected_phase = pitch / 2.0 if local_ring % 2 == 0 else 0.0
+            assert np.isclose(first_az % pitch, expected_phase % pitch, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"band_counts": [32, 48], "band_ring_counts": [3, 4, 5]},
+        {"band_counts": [32, 48, 71], "band_ring_counts": [3, 4], "ring_radii_m": [30.0] * 7},
+        {"band_counts": [0, 48, 71]},
+        {"band_ring_counts": [3, 0, 5]},
+        {"band_counts": [32, 48, 71], "band_ring_counts": [3, 4, 5], "ring_radii_m": [0.0] * 12},
+    ],
+)
+def test_radial_stagger_rejects_mismatched_or_nonpositive_shapes(kwargs):
+    with pytest.raises(ValidationError):
+        RadialStaggeredLayout(**kwargs)
+
+
+def test_radial_stagger_over_the_trace_cap_is_422(client):
+    """band_counts x band_ring_counts exceeding MAX_FIELD_HELIOSTATS is
+    rejected the same way an oversized Fermat ``n`` is."""
+    layout = {"type": "radial_stagger", "band_counts": [2000], "band_ring_counts": [1], "ring_radii_m": [50.0]}
+    assert client.post("/api/field/trace", json=_field_payload(layout=layout)).status_code == 422
+
+
+def test_radial_stagger_layout_via_field_trace(client):
+    """The trace endpoint accepts the layout and traces one heliostat per
+    generated position.
+
+    A deliberately tiny field: tracing the 643-position default here costs
+    minutes to prove only that the layout reaches the tracer, which six
+    mirrors establish just as well. The default's own shape is covered by
+    test_radial_stagger_matches_the_manuscript_field, which needs no trace.
+    """
+    layout = {"type": "radial_stagger", "band_counts": [6], "band_ring_counts": [1], "ring_radii_m": [45.0]}
+    resp = client.post("/api/field/trace", json=_field_payload(layout=layout))
+    assert resp.status_code == 200
+    assert len(resp.json()["heliostats"]) == 6
+
+
+def test_radial_stagger_matches_the_manuscript_field(client):
+    """The regression guard: the default radial-staggered field must still
+    BE the field the app has always shipped, not merely the same size.
+
+    Nearest-neighbour match against the manuscript's own positions
+    (/api/field/manuscript) -- established bounds: every generated position
+    within 100 mm of a real one, and at least 630 of 643 within 0.1 mm (11
+    manuscript rows carry a hand-rounded coordinate no formula reproduces
+    exactly)."""
+    manuscript_xy = np.asarray(client.get("/api/field/manuscript").json()["xy_mm"])
+    generated_xy = RadialStaggeredLayout().positions_mm()
+    assert generated_xy.shape[0] == manuscript_xy.shape[0] == 643
+
+    # O(n^2) nearest-neighbour distance, fine at n=643.
+    diff = generated_xy[:, None, :] - manuscript_xy[None, :, :]
+    dist_mm = np.sqrt((diff**2).sum(axis=-1)).min(axis=1)
+
+    assert dist_mm.max() <= 100.0
+    assert int((dist_mm <= 0.1).sum()) >= 630
 
 
 def test_index_carries_the_field_controls(client):

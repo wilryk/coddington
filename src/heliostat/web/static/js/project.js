@@ -95,8 +95,21 @@ export function applyProject(document) {
     if (!xyMatchesManuscriptField(field.layout.xy_mm)) {
       return "custom position layouts arrive with the layout picker";
     }
+  } else if (field.layout && field.layout.type === "radial_stagger") {
+    const bc = field.layout.band_counts;
+    const brc = field.layout.band_ring_counts;
+    // A bare {"type": "radial_stagger"} (no band_counts/band_ring_counts)
+    // is the all-defaults layout and always loads. An explicit shape only
+    // loads if it is the 3-band structure this workspace's editor knows how
+    // to represent -- anything else (a different band count) has nowhere to
+    // land in the sidebar.
+    if (bc !== undefined || brc !== undefined) {
+      if (!Array.isArray(bc) || !Array.isArray(brc) || bc.length !== 3 || brc.length !== 3) {
+        return "radial-staggered layouts with other than 3 bands aren't supported by this workspace's editor";
+      }
+    }
   } else if (field.layout && field.layout.type !== "fermat") {
-    return `field layout "${field.layout.type}" isn't supported yet (only the Fermat spiral is)`;
+    return `field layout "${field.layout.type}" isn't supported yet (only Fermat spiral and radial staggered are)`;
   }
   const receiver = document && document.receiver;
   if (!receiver || OPTICS_KEYS.indexOf(receiver.optics) === -1) {
@@ -128,6 +141,22 @@ export function applyProject(document) {
       n: field.layout.n,
       r_min_m: field.layout.r_min_m != null ? field.layout.r_min_m : null,
       r_max_m: field.layout.r_max_m != null ? field.layout.r_max_m : null,
+    });
+  } else if (field.layout && field.layout.type === "radial_stagger") {
+    // Validated above: either the bare default, or an explicit 3-band shape
+    // this editor can represent.
+    const defaults = DEFAULT_DOC.field.radialStagger;
+    const bc = field.layout.band_counts;
+    const brc = field.layout.band_ring_counts;
+    store.set("doc.field.mode", "field");
+    store.set("doc.field.layout", "radial_stagger");
+    store.set("doc.field.radialStagger", {
+      band0Rings: brc ? brc[0] : defaults.band0Rings,
+      band0Count: bc ? bc[0] : defaults.band0Count,
+      band1Rings: brc ? brc[1] : defaults.band1Rings,
+      band1Count: bc ? bc[1] : defaults.band1Count,
+      band2Rings: brc ? brc[2] : defaults.band2Rings,
+      band2Count: bc ? bc[2] : defaults.band2Count,
     });
   } else if (field.layout && field.layout.type === "positions") {
     // Validated above: xy_mm matches the cached manuscript field exactly,

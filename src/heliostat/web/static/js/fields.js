@@ -101,7 +101,8 @@ export function apertureSummaryText(doc) {
   return `custom outline, ${n} vertices`;
 }
 
-// -- Field stage: single-heliostat (x, y) and Fermat-spiral fields ---------
+// -- Field stage: single-heliostat (x, y), Fermat-spiral and radial-
+// staggered fields -----------------------------------------------------
 
 export const FIELD_SINGLE_FIELDS = [
   { key: "x_mm", label: "X (mm)", path: "doc.field.single.x_mm" },
@@ -112,6 +113,36 @@ export const FIELD_FERMAT_FIELDS = [
   { key: "n", label: "Heliostats", path: "doc.field.fermat.n", min: 1, max: 10000, step: 1 },
   { key: "r_min_m", label: "Nearest radius (m)", path: "doc.field.fermat.r_min_m", min: 0 },
   { key: "r_max_m", label: "Farthest radius (m)", path: "doc.field.fermat.r_max_m", min: 0 },
+];
+
+// Rings per band and heliostats per ring, one pair per band -- the field's
+// radii are not user-editable here (see api.js's radialStaggerPayload for
+// how an edited ring count reshapes them).
+export const FIELD_RADIAL_STAGGER_FIELDS = [
+  { key: "band0Rings", label: "Inner rings", path: "doc.field.radialStagger.band0Rings", min: 1, step: 1 },
+  {
+    key: "band0Count",
+    label: "Inner heliostats/ring",
+    path: "doc.field.radialStagger.band0Count",
+    min: 1,
+    step: 1,
+  },
+  { key: "band1Rings", label: "Middle rings", path: "doc.field.radialStagger.band1Rings", min: 1, step: 1 },
+  {
+    key: "band1Count",
+    label: "Middle heliostats/ring",
+    path: "doc.field.radialStagger.band1Count",
+    min: 1,
+    step: 1,
+  },
+  { key: "band2Rings", label: "Outer rings", path: "doc.field.radialStagger.band2Rings", min: 1, step: 1 },
+  {
+    key: "band2Count",
+    label: "Outer heliostats/ring",
+    path: "doc.field.radialStagger.band2Count",
+    min: 1,
+    step: 1,
+  },
 ];
 
 // -- Receiver & Tower stage --------------------------------------------------

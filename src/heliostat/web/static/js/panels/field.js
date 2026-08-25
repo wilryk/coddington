@@ -1,14 +1,21 @@
-// Field stage: where the mirrors stand (docs/ui-spec.md 2.2). Phase 3a:
-// Single heliostat (x, y) or Field (Fermat spiral -- the only layout
-// built; the picker itself is a later phase). Plan-view drag-to-move is
+// Field stage: where the mirrors stand (docs/ui-spec.md 2.2). Single
+// heliostat (x, y) or Field, with a layout picker of Radial staggered
+// (default), Fermat spiral, or Manuscript 643. Plan-view drag-to-move is
 // deferred; this stage only edits the parametric numbers. Field
 // descriptors live in ../fields.js alongside the other three stages',
 // even though the Field stage has no in-scene inspector counterpart today
 // (docs/ui-spec.md 2.4 only selects a heliostat, the secondary, the
 // receiver, or the sun) -- kept there for one consistent home per stage.
 import { store } from "../store.js";
-import { numberRow, setVal, segButton, FIELD_SINGLE_FIELDS, FIELD_FERMAT_FIELDS } from "../fields.js";
-import { getManuscriptField } from "../api.js";
+import {
+  numberRow,
+  setVal,
+  segButton,
+  FIELD_SINGLE_FIELDS,
+  FIELD_FERMAT_FIELDS,
+  FIELD_RADIAL_STAGGER_FIELDS,
+} from "../fields.js";
+import { getManuscriptField, radialStaggerBands } from "../api.js";
 
 const MAX_GEOMETRY_HELIOSTATS = 10000;
 const MAX_TRACE_HELIOSTATS = 1000;
@@ -58,10 +65,13 @@ function build(container) {
   layoutRow.appendChild(layoutLabel);
   const layoutSeg = document.createElement("div");
   layoutSeg.className = "seg";
+  const radialBtn = segButton(layoutSeg, "Radial staggered", false, () =>
+    store.set("doc.field.layout", "radial_stagger")
+  );
+  const fermatBtn = segButton(layoutSeg, "Fermat spiral", false, () => store.set("doc.field.layout", "fermat"));
   const manuscriptBtn = segButton(layoutSeg, "Manuscript 643", false, () =>
     store.set("doc.field.layout", "manuscript")
   );
-  const fermatBtn = segButton(layoutSeg, "Fermat spiral", false, () => store.set("doc.field.layout", "fermat"));
   layoutRow.appendChild(layoutSeg);
   fieldFields.appendChild(layoutRow);
 
@@ -75,6 +85,14 @@ function build(container) {
   const rMin = numberRow(fermatFields, FIELD_FERMAT_FIELDS[1]);
   const rMax = numberRow(fermatFields, FIELD_FERMAT_FIELDS[2]);
   fieldFields.appendChild(fermatFields);
+
+  const radialFields = document.createElement("div");
+  const radialInputs = FIELD_RADIAL_STAGGER_FIELDS.map((f) => numberRow(radialFields, f));
+  fieldFields.appendChild(radialFields);
+  const radialHint = document.createElement("div");
+  radialHint.className = "hint";
+  radialHint.textContent = "Concentric staggered rings, band by band (the classic DELSOL/Campo pattern)";
+  fieldFields.appendChild(radialHint);
 
   const hint = document.createElement("div");
   hint.className = "hint";
@@ -93,6 +111,7 @@ function build(container) {
     fieldFields,
     singleX,
     singleY,
+    radialBtn,
     manuscriptBtn,
     fermatBtn,
     manuscriptHint,
@@ -100,6 +119,9 @@ function build(container) {
     nInput,
     rMin,
     rMax,
+    radialFields,
+    radialInputs,
+    radialHint,
     hint,
   };
   built = true;
@@ -126,22 +148,40 @@ export function render(container) {
   setVal(els.singleX, doc.field.single.x_mm);
   setVal(els.singleY, doc.field.single.y_mm);
 
-  const layout = doc.field.layout === "fermat" ? "fermat" : "manuscript";
+  const layout =
+    doc.field.layout === "fermat" || doc.field.layout === "manuscript" ? doc.field.layout : "radial_stagger";
+  els.radialBtn.classList.toggle("active", layout === "radial_stagger");
   els.manuscriptBtn.classList.toggle("active", layout === "manuscript");
   els.fermatBtn.classList.toggle("active", layout === "fermat");
   els.manuscriptHint.style.display = layout === "manuscript" ? "" : "none";
   els.fermatFields.style.display = layout === "fermat" ? "" : "none";
+  els.radialFields.style.display = layout === "radial_stagger" ? "" : "none";
+  els.radialHint.style.display = layout === "radial_stagger" ? "" : "none";
 
   const f = doc.field.fermat;
   setVal(els.nInput, f.n);
   setVal(els.rMin, f.r_min_m);
   setVal(els.rMax, f.r_max_m);
 
+  const bands = radialStaggerBands(doc);
+  const radialValues = [
+    bands[0].rings,
+    bands[0].count,
+    bands[1].rings,
+    bands[1].count,
+    bands[2].rings,
+    bands[2].count,
+  ];
+  els.radialInputs.forEach((input, i) => setVal(input, radialValues[i]));
+  const radialN = bands.reduce((sum, b) => sum + b.rings * b.count, 0);
+
   // The manuscript layout is always exactly 643 (the cached fetch's own
   // length when it landed, else the paper's known count) and always within
   // the trace cap, so its hint never carries the "geometry only" caveat.
   const manuscriptXY = getManuscriptField();
-  const nHeliostats = layout === "manuscript" ? (manuscriptXY ? manuscriptXY.length : PAPER_N_HELIOSTATS) : f.n;
+  let nHeliostats = f.n;
+  if (layout === "manuscript") nHeliostats = manuscriptXY ? manuscriptXY.length : PAPER_N_HELIOSTATS;
+  else if (layout === "radial_stagger") nHeliostats = radialN;
   els.hint.textContent =
     `Viewing up to ${MAX_GEOMETRY_HELIOSTATS.toLocaleString()} · tracing up to ${MAX_TRACE_HELIOSTATS.toLocaleString()}` +
     (nHeliostats > MAX_TRACE_HELIOSTATS ? " (this field is too large to trace -- geometry only)" : "");
