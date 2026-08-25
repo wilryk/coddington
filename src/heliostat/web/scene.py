@@ -910,7 +910,6 @@ def field_corner_rays(
     reached[on_sec] = reached_sub
     hit_ok = on_sec & reached
 
-    rec_z = getattr(receiver, "z_mm", float("nan"))
     # Receiver.intersect's contract: `reached_sub` masks its (3, K) input,
     # but `uv_sub` comes back ALREADY filtered to the hits, in ray order --
     # so `rec` is aligned with pre[:, reached_sub] as built and must not be
@@ -920,7 +919,13 @@ def field_corner_rays(
     # (e.g. a 30-degree axicon reflecting steep corner rays upward), because
     # a gentler geometry leaves reached_sub all-True and the double indexing
     # a no-op.
-    rec = np.vstack([uv_sub[0], uv_sub[1], np.full(uv_sub.shape[1], rec_z)])
+    #
+    # World xyz of that hit comes from the receiver's own uv_to_world --
+    # exact for any receiver kind, not the old bare z_mm lookup that only
+    # existed on FlatWindowReceiver and left every corner ray on a cylinder
+    # or frustum with a NaN fourth vertex, dropped whole by the `finite`
+    # filter below.
+    rec = receiver.uv_to_world(uv_sub)
     paths = np.stack([src[:, hit_ok], hit[:, hit_ok], pre[:, reached_sub], rec])
     finite = np.isfinite(paths).all(axis=(0, 1))
     paths = paths[:, :, finite]

@@ -59,6 +59,29 @@ def test_single_heliostat_geometry(client):
     assert data["optics_resolved"]["focus_height_mm"] == pytest.approx(35335.0)
 
 
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"receiver_type": "cylinder", "cylinder_radius_mm": 3000.0, "cylinder_height_mm": 6000.0},
+        {"receiver_type": "frustum"},
+    ],
+    ids=["cylinder", "frustum"],
+)
+def test_corner_rays_draw_on_a_curved_receiver(client, params):
+    """The live, no-trace geometry preview (docs/ui-spec.md 2.1: "live from
+    the first frame", updated on every edit before any Run trace) drew its
+    corner rays via a receiver-hit reconstruction that only worked for a
+    flat window -- cylinder and frustum always produced a NaN fourth
+    vertex, silently dropped, so switching a prime-focus setup to either
+    curved shape showed a receiver with no rays on it at all, without ever
+    surfacing an error (a failed ray pass is deliberately silent)."""
+    resp = client.post("/api/scene/geometry", json=_payload(optics_params=params))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["rays_source"] == "corner_chief"
+    assert len(data["rays"]) == 4  # one heliostat, four corner rays, same as the flat default
+
+
 def test_geometry_matches_the_trace_endpoints_solve(client):
     """No trace happens here, but the pointing this endpoint reports must be
     the exact pointing /api/trace would solve and use -- same helper
