@@ -25,6 +25,7 @@ import * as planView from "./views/plan.js";
 import * as elevationView from "./views/elevation.js";
 import * as library from "./library.js";
 import * as shapeTab from "./tabs/shape.js";
+import * as analysisTab from "./tabs/analysis.js";
 
 const OPTICS_NAME = Object.fromEntries(OPTICS_LABELS);
 
@@ -38,6 +39,10 @@ const scene = createScene(sceneContainer, { onSelect: (sel) => store.set("ui.sel
 const sunBanner = document.getElementById("sun-banner");
 const errorStrip = document.getElementById("geometry-error-strip");
 const raysChip = document.getElementById("rays-chip");
+const raysChipText = document.getElementById("rays-chip-text");
+const raysToggleLabel = document.getElementById("rays-toggle-label");
+const raysToggle = document.getElementById("rays-toggle");
+const refreshPill = document.getElementById("refresh-pill");
 const orbitHint = document.getElementById("orbit-hint");
 const inspectorEl = document.getElementById("inspector");
 
@@ -68,26 +73,21 @@ libraryBtn.addEventListener("click", () => {
   store.set("ui.libraryOpen", !store.get("ui.libraryOpen"));
 });
 
-// -- full-screen tabs (docs/ui-spec.md 1, 3, phase 3c wave 1) -------------
-// Workspace / Heliostat Shape / Analysis. Analysis stays inert (wave 2) --
-// its click handler is a no-op while index.html keeps it .disabled.
 const apptabWorkspace = document.getElementById("apptab-workspace");
 const apptabShape = document.getElementById("apptab-shape");
 const apptabAnalysis = document.getElementById("apptab-analysis");
 const tabShapeSection = document.getElementById("tab-shape");
+const tabAnalysisSection = document.getElementById("tab-analysis");
 const shellEl = document.querySelector(".shell");
 
 apptabWorkspace.addEventListener("click", () => store.set("ui.tab", "workspace"));
 apptabShape.addEventListener("click", () => store.set("ui.tab", "shape"));
-apptabAnalysis.addEventListener("click", () => {
-  if (apptabAnalysis.classList.contains("disabled")) return;
-  store.set("ui.tab", "analysis");
-});
+apptabAnalysis.addEventListener("click", () => store.set("ui.tab", "analysis"));
 
 // The 3D scene (and plan/elevation) keep running underneath -- only
-// visibility toggles, nothing is destroyed. shapeTab.render() is only
-// called while its section is actually visible, matching its own "fetch on
-// tab open, do nothing while hidden" refresh policy (js/tabs/shape.js).
+// visibility toggles, nothing is destroyed. A tab module is rendered only
+// while its own section is visible; both fetch on open rather than while
+// hidden.
 function renderTabs() {
   const tab = store.get("ui.tab");
   apptabWorkspace.classList.toggle("active", tab === "workspace");
@@ -96,8 +96,11 @@ function renderTabs() {
   shellEl.hidden = tab !== "workspace";
   runbar.hidden = tab !== "workspace";
   tabShapeSection.hidden = tab !== "shape";
+  tabAnalysisSection.hidden = tab !== "analysis";
   if (tab === "shape") {
     shapeTab.render(tabShapeSection, { geometry: lastGeometryResponse });
+  } else if (tab === "analysis") {
+    analysisTab.render(tabAnalysisSection, { geometry: lastGeometryResponse });
   }
 }
 
@@ -132,6 +135,7 @@ function renderAllPanels() {
   library.render(libraryDrawer, libraryBackdrop);
   renderTopbar();
   renderTabs();
+  renderRefreshPill();
 
   renderViewportMode();
 }
@@ -155,13 +159,17 @@ function renderViewportMode() {
   if (view === "plan") viewPillMode.textContent = "Plan";
   else if (view === "elevation") viewPillMode.textContent = "Elevation";
 
+  raysToggleLabel.hidden = view !== "3d";
   if (view === "3d") {
     const heliostats = (lastGeometryResponse && lastGeometryResponse.heliostats) || [];
-    raysChip.textContent = `Corner chief rays — viewing aid, no shading · ${heliostats.length.toLocaleString()} heliostat${heliostats.length === 1 ? "" : "s"}`;
+    const count = `${heliostats.length.toLocaleString()} heliostat${heliostats.length === 1 ? "" : "s"}`;
+    raysChipText.textContent = raysVisible()
+      ? `Corner chief rays — viewing aid, no shading · ${count}`
+      : `Rays hidden · ${count}`;
   } else if (view === "plan") {
-    raysChip.textContent = "Plan view — click a heliostat to inspect it · drag-to-move lands with the layout picker";
+    raysChipText.textContent = "Plan view — click a heliostat to inspect it · drag-to-move lands with the layout picker";
   } else {
-    raysChip.textContent = "Elevation — dimensions are live and referenced to the heliostat plane";
+    raysChipText.textContent = "Elevation — dimensions are live and referenced to the heliostat plane";
   }
 
   if (view === "plan") planView.render(planContainer);
@@ -170,8 +178,66 @@ function renderViewportMode() {
 
 // -- geometry: live scene refresh on every doc edit ------------------------
 
+// Geometry lands in two passes: the shapes first, then the corner rays.
+// Measured on the 643-heliostat field, a geometry-only response takes about
+// 130 ms against 220 ms with rays, so switching optics or layout redraws
+// the scene noticeably sooner and the rays catch up. The ray pass is
+// debounced longer than the shape pass, so a burst of typing pays only the
+// cheap request until it settles.
 let lastGeometryResponse = null;
+let lastRaysResponse = null;
 const scheduleGeometry = createGeometryRequester(300);
+const scheduleRays = createGeometryRequester(450);
+
+// ui.showRays is undefined until the toggle is first used, which reads as on.
+function raysVisible() {
+  return store.get("ui.showRays") !== false;
+}
+
+raysToggle.addEventListener("change", () => {
+  store.set("ui.showRays", raysToggle.checked);
+  applyRayVisibility();
+  renderViewportMode();
+});
+
+// The plan and elevation views draw the same corner rays the 3D scene does,
+// so they are fed from whichever pass last landed: the ray-bearing one when
+// rays are on, otherwise the shapes with an empty ray list.
+function viewGeometry() {
+  if (raysVisible() && lastRaysResponse) return lastRaysResponse;
+  if (!lastGeometryResponse) return null;
+  return Object.assign({}, lastGeometryResponse, { rays: [] });
+}
+
+function pushGeometryToViews() {
+  const geometry = viewGeometry();
+  if (!geometry) return;
+  planView.setGeometry(geometry);
+  elevationView.setGeometry(geometry);
+}
+
+function applyRayVisibility() {
+  if (raysVisible()) {
+    if (lastRaysResponse) scene.updateRays(lastRaysResponse);
+  } else {
+    scene.updateRays({ rays: [], miss: null });
+  }
+  pushGeometryToViews();
+}
+
+// One "still working" indicator for both geometry passes and a trace, so a
+// change that has not finished landing everywhere says so.
+let pendingShapes = 0;
+let pendingRays = 0;
+
+function renderRefreshPill() {
+  const busy = pendingShapes > 0 || pendingRays > 0 || store.get("ui.traceBusy");
+  refreshPill.hidden = !busy;
+  if (!busy) return;
+  if (store.get("ui.traceBusy")) refreshPill.textContent = "Tracing…";
+  else if (pendingShapes > 0) refreshPill.textContent = "Updating geometry…";
+  else refreshPill.textContent = "Updating rays…";
+}
 
 function parseGeometryError(err) {
   const message = err && err.message ? err.message : "geometry request failed";
@@ -184,6 +250,7 @@ function parseGeometryError(err) {
 }
 
 function handleGeometrySuccess(data) {
+  pendingShapes = 0;
   store.set("ui.geometryError", null);
   if (data.sun_below_horizon) {
     store.set("ui.sunBelowHorizon", true);
@@ -198,16 +265,19 @@ function handleGeometrySuccess(data) {
   // fields.js's apertureMissMessage() and scene3d.js's miss tinting.
   store.set("ui.miss", data.miss || null);
   lastGeometryResponse = data;
+  // The shapes pass carries no rays, so anything the previous pass drew is
+  // now stale -- drop it rather than hang mismatched rays off new geometry.
+  lastRaysResponse = null;
   scene.updateGeometry(data);
   // Cache into the plan/elevation views too (never on error -- both keep
   // drawing their last valid geometry, same rule as the 3D scene) so
   // switching views renders instantly instead of waiting on the next edit.
-  planView.setGeometry(data);
-  elevationView.setGeometry(data);
+  pushGeometryToViews();
   renderAllPanels();
 }
 
 function handleGeometryError(err) {
+  pendingShapes = 0;
   const parsed = parseGeometryError(err);
   store.set("ui.geometryError", parsed);
   // Scene keeps its last valid geometry (docs/ui-spec.md 2.3) -- no scene
@@ -215,14 +285,56 @@ function handleGeometryError(err) {
   renderAllPanels();
 }
 
-function refreshGeometryNow() {
+// Second pass: rays and the miss warnings that ride with them, applied
+// without rebuilding the meshes the first pass just built.
+function handleRaysSuccess(data) {
+  pendingRays = 0;
+  if (data.sun_below_horizon) return;
+  lastRaysResponse = data;
+  store.set("ui.miss", data.miss || null);
+  if (lastGeometryResponse) lastGeometryResponse.miss = data.miss || null;
+  applyRayVisibility(); // also refeeds the plan/elevation views
+  renderAllPanels();
+}
+
+function geometryBody(withRays) {
   const body = buildGeometryRequest(store.get("doc"), { maxCornerSources: 500 });
-  postGeometry(body).then(handleGeometrySuccess).catch(handleGeometryError);
+  body.include_corner_rays = withRays;
+  return body;
+}
+
+function requestRays() {
+  if (!raysVisible()) {
+    pendingRays = 0;
+    return;
+  }
+  pendingRays = 1;
+  scheduleRays(geometryBody(true), {
+    onSuccess: handleRaysSuccess,
+    // A failed ray pass is silent: the shape pass owns the error strip, and
+    // reporting the same 422 twice would only fight with it.
+    onError: () => {
+      pendingRays = 0;
+      renderRefreshPill();
+    },
+  });
+}
+
+function refreshGeometryNow() {
+  pendingShapes = 1;
+  renderRefreshPill();
+  postGeometry(geometryBody(false)).then(handleGeometrySuccess).catch(handleGeometryError);
+  requestRays();
 }
 
 function refreshGeometryDebounced() {
-  const body = buildGeometryRequest(store.get("doc"), { maxCornerSources: 500 });
-  scheduleGeometry(body, { onSuccess: handleGeometrySuccess, onError: handleGeometryError });
+  pendingShapes = 1;
+  renderRefreshPill();
+  scheduleGeometry(geometryBody(false), {
+    onSuccess: handleGeometrySuccess,
+    onError: handleGeometryError,
+  });
+  requestRays();
 }
 
 // -- run bar: trace ----------------------------------------------------------
@@ -287,7 +399,13 @@ const runActions = { onRunTrace: runTrace, onExportCsv: exportFluxCsv, onOpenFlu
 // at all times" -- the owning stage stays expanded (only ui.view resets).
 viewPillBack.addEventListener("click", (e) => {
   e.preventDefault();
-  store.set("ui.view", "3d");
+  // Collapsing the stage that opened this view is what returns to 3D (the
+  // store subscriber below does it), and it leaves the sidebar showing only
+  // what is still relevant.
+  const view = store.get("ui.view");
+  if (view === "plan") store.set("ui.expanded.field", false);
+  else if (view === "elevation") store.set("ui.expanded.receiver", false);
+  else store.set("ui.view", "3d");
 });
 
 fluxOverlayClose.addEventListener("click", closeFluxOverlay);

@@ -177,10 +177,31 @@ function apertureSvg(doc, geometry, ui, proj) {
   return s;
 }
 
-function heliostatsSvg(heliostats, ui, proj) {
+// Half-extents in metres of the shared mirror outline, so a plan heliostat
+// is drawn at the size it actually is instead of a fixed marker.
+function mirrorHalfExtentsM(geometry) {
+  const outline = geometry && geometry.outline_local;
+  if (!outline || !outline.length) return { u: 2.5, v: 1.5 };
+  let maxU = 0;
+  let maxV = 0;
+  for (const [u, v] of outline) {
+    if (Math.abs(u) > maxU) maxU = Math.abs(u);
+    if (Math.abs(v) > maxV) maxV = Math.abs(v);
+  }
+  return { u: maxU / 1000, v: maxV / 1000 };
+}
+
+// Below this a mirror is a dot you can still see and click; a 90 m field in
+// a 500 px pane puts a 5 m mirror at about 11 px, so the floor only bites
+// on very large fields.
+const MIN_HELIOSTAT_PX = 2.5;
+
+function heliostatsSvg(heliostats, ui, proj, geometry) {
   const miss = ui.miss;
   const missIds = new Set([...((miss && miss.aperture_miss_ids) || []), ...((miss && miss.total_miss_ids) || [])]);
   const sel = ui.selection;
+  const half = mirrorHalfExtentsM(geometry);
+  const fullW = Math.max(2 * half.u * proj.scale, MIN_HELIOSTAT_PX);
   let s = "";
   for (const h of heliostats) {
     const [sx, sy] = toScreen(proj, h.x_mm / 1000, h.y_mm / 1000);
@@ -190,19 +211,25 @@ function heliostatsSvg(heliostats, ui, proj) {
     if (h.rot_az_deg == null) {
       // Sun below horizon (docs/ui-spec.md 2.1): no orientation solved --
       // draw an unoriented square rather than a rotated rect.
-      const sz = 7;
+      const sz = Math.max(fullW, MIN_HELIOSTAT_PX);
       s +=
         '<rect data-kind="heliostat" data-id="' + h.id + '" x="' + (sx - sz / 2).toFixed(1) + '" y="' +
-        (sy - sz / 2).toFixed(1) + '" width="' + sz + '" height="' + sz + '" fill="' + fill + '" stroke="' +
-        HELIOSTAT_STROKE + '" stroke-width="0.8"></rect>';
+        (sy - sz / 2).toFixed(1) + '" width="' + sz.toFixed(1) + '" height="' + sz.toFixed(1) + '" fill="' + fill +
+        '" stroke="' + HELIOSTAT_STROKE + '" stroke-width="0.8"></rect>';
     } else {
+      // A tilted mirror covers less ground than its face: the dimension
+      // across the tilt foreshortens by sin(elevation of the normal), which
+      // is why a field that looks crowded drawn face-on is not.
+      const foreshorten = Math.abs(Math.sin((h.rot_el_deg * Math.PI) / 180));
+      const fullH = Math.max(2 * half.v * proj.scale * foreshorten, MIN_HELIOSTAT_PX);
       // Screen rotate = -az_deg: rot_az_deg is a math-standard angle (0=+x
       // east, 90=+y north, per scene3d.js's mirrorFrame docstring), and
       // north-up screen space flips y, which negates the visual angle.
       const rot = -h.rot_az_deg;
       s +=
-        '<rect data-kind="heliostat" data-id="' + h.id + '" x="' + (sx - 5).toFixed(1) + '" y="' + (sy - 3).toFixed(1) +
-        '" width="10" height="6" fill="' + fill + '" stroke="' + HELIOSTAT_STROKE + '" stroke-width="0.8" transform="rotate(' +
+        '<rect data-kind="heliostat" data-id="' + h.id + '" x="' + (sx - fullW / 2).toFixed(1) + '" y="' +
+        (sy - fullH / 2).toFixed(1) + '" width="' + fullW.toFixed(1) + '" height="' + fullH.toFixed(1) + '" fill="' + fill +
+        '" stroke="' + HELIOSTAT_STROKE + '" stroke-width="0.8" transform="rotate(' +
         rot.toFixed(1) + " " + sx.toFixed(1) + " " + sy.toFixed(1) + ')"></rect>';
     }
   }
@@ -296,7 +323,7 @@ export function render(container) {
 
   els.layers.rings.innerHTML = ringsSvg(doc, proj);
   els.layers.aperture.innerHTML = apertureSvg(doc, geometry, ui, proj);
-  els.layers.heliostats.innerHTML = heliostatsSvg(heliostats, ui, proj);
+  els.layers.heliostats.innerHTML = heliostatsSvg(heliostats, ui, proj, geometry);
   els.layers.selection.innerHTML = selectionSvg(heliostats, ui, proj, w, h);
   els.layers.chrome.innerHTML = chromeSvg(doc, proj, w, h);
 }

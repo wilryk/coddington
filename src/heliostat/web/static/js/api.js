@@ -119,6 +119,48 @@ export function getSetup(name) {
 }
 
 // ---------------------------------------------------------------------------
+// day sweeps: a background job on the server, polled by the caller.
+// /api/day/result 409s while the job is still running.
+
+export function postDayStart(body, signal) {
+  return postJSON("/day/start", body, signal);
+}
+
+export function getDayStatus(jobId) {
+  return getJSON(`/day/status/${encodeURIComponent(jobId)}`);
+}
+
+export function postDayCancel(jobId) {
+  return postJSON(`/day/cancel/${encodeURIComponent(jobId)}`, {});
+}
+
+export function getDayResult(jobId) {
+  return getJSON(`/day/result/${encodeURIComponent(jobId)}`);
+}
+
+export function dayExportUrl(jobId) {
+  return `${API_BASE}/day/export/${encodeURIComponent(jobId)}.csv`;
+}
+
+// A finished sweep's own flux map for one timestep, already rendered
+// server-side -- an <img> src, not a fetch wrapper, since that is all it is
+// for. 404s if that step's map was not kept (see the result row's
+// `has_flux_map`) or the job has since been evicted.
+export function dayFluxUrl(jobId, stepIndex) {
+  return `${API_BASE}/day/flux/${encodeURIComponent(jobId)}/${stepIndex}.png`;
+}
+
+// `hour_step` is a MAXIMUM spacing: the server divides sunrise-to-sunset into
+// equal intervals no larger than it, so both ends are always sampled. The
+// request's own sun angles are ignored -- the sweep computes its own per step.
+export function buildDayRequest(doc, ui, opts) {
+  const body = buildTraceRequest(doc, ui);
+  body.site = opts.site;
+  body.hour_step = opts.hour_step;
+  return body;
+}
+
+// ---------------------------------------------------------------------------
 // the manuscript field: the paper's real 643-heliostat positions
 // (/api/field/manuscript), fetched once at startup (main.js) and cached here
 // module-level -- the same reason FIELD_MC_SEED-style caching lives on the

@@ -1,4 +1,4 @@
-// Single source of truth for the Coddington workspace (Phase 3a).
+// Single source of truth for the Coddington workspace.
 //
 // `doc` is the design under edit -- everything a geometry/trace request is
 // built from. `ui` is transient view state: which stage is expanded, the
@@ -6,17 +6,9 @@
 // here talks to the network or the DOM; main.js and the panels do that by
 // reading/writing through get/set and reacting to subscribe().
 //
-// docs/ui-spec.md 2.2's per-layout defaults (the manuscript baseline):
-// rect 5000x3000 twisting, axicon selected (apex 27000, half angle 20,
-// aperture 14000, receiver 7000, window 2000/2000), field mode "field"
-// with layout "manuscript" -- the paper's real 643-heliostat positions
-// (field_645.csv, served by /api/field/manuscript) -- sun az 165.2 / el
-// 61.4. doc.field.fermat's 643-heliostat 30-90 m spiral stays around as the
-// parametric alternative a user can switch to (see panels/field.js's
-// layout picker), it just is not what a fresh document opens on. prime_focus
-// and cassegrain keep their own manuscript numbers too, so switching optics
-// layout shows real geometry rather than a blank slate (spec 2.2, "each
-// layout keeps its own last-used numbers").
+// doc.field.layout "manuscript" is a real dataset: the paper's own
+// 643-heliostat field positions, served by /api/field/manuscript. "fermat"
+// is the parametric spiral alternative (doc.field.fermat).
 
 function clone(x) {
   return JSON.parse(JSON.stringify(x));
@@ -26,11 +18,8 @@ const DEFAULT_DOC = {
   design: {
     type: "rect",
     surface: "twisting",
-    // Phase 3c wave 1 (docs/ui-spec.md 3, "Optical errors"): part of the
-    // heliostat design, not a per-trace setting -- feeds Monte Carlo and
-    // rides through SolTrace/SolarPILOT export. The UI keeps the operator's
-    // usual unit (reflectance as a percent); api.js's currentDesignPayload
-    // converts to the wire's 0-1 fraction. Manuscript defaults: 0 / 0 / 90%.
+    // Reflectance is kept in the operator's usual unit (percent);
+    // api.js's currentDesignPayload converts to the wire's 0-1 fraction.
     errors: { slope_error_mrad: 0, specularity_mrad: 0, reflectance_pct: 90 },
   },
   designParams: {
@@ -41,14 +30,18 @@ const DEFAULT_DOC = {
       facet_w_mm: 1200,
       facet_h_mm: 1200,
       gap_mm: 40,
+      // cant_focal_mm is aim only: null = per-heliostat slant range, 0 =
+      // uncanted/parallel, >0 = one fixed focal for the whole field.
       cant_focal_mm: null,
+      // facet_focal_mm is the facet's own curvature, independent of aim:
+      // null = follows the canting focal (today's behaviour), 0 = truly
+      // flat facets, >0 = that focal.
+      facet_focal_mm: null,
     },
-    // Custom outline (docs/ui-spec.md 3): a closed polygon of straight
-    // segments, SolidWorks-sketch style. `vertices_mm` is the SKETCH the
-    // user edits -- the right half of the shape when `mirror` is true (see
-    // api.js's currentDesignPayload/expandCustomVertices for how mirror
-    // symmetry closes it into the wire's full vertex list). Default: a
-    // 5m x 3m rectangle sketched as its own four corners, mirror off.
+    // `vertices_mm` is the SKETCH the user edits -- the right half of the
+    // shape when `mirror` is true (see api.js's currentDesignPayload /
+    // expandCustomVertices for how mirror symmetry closes it into the
+    // wire's full vertex list).
     custom: { vertices_mm: [[-2500, -1500], [2500, -1500], [2500, 1500], [-2500, 1500]], mirror: false },
   },
   optics: "axicon",
@@ -86,12 +79,9 @@ const DEFAULT_DOC = {
 
 const DEFAULT_UI = {
   expanded: { heliostat: true, field: true, receiver: true, sun: true },
-  // docs/ui-spec.md 2.1: "the viewport follows the active stage" -- "3d" |
-  // "plan" | "elevation". Driven entirely by main.js's store.subscribe on
-  // the ui.expanded.field / ui.expanded.receiver paths (expand -> that
-  // stage's view, collapse the owning stage -> back to "3d") plus the view
-  // pill's own "back to 3D" link; never derived fresh from ui.expanded here,
-  // so a manual "back to 3D" isn't clobbered by an already-expanded stage.
+  // "3d" | "plan" | "elevation". Not derived fresh from ui.expanded on
+  // read, so a manual "back to 3D" isn't clobbered by an already-expanded
+  // stage.
   view: "3d",
   fidelity: "fast_accurate",
   mcRays: null,
@@ -103,25 +93,19 @@ const DEFAULT_UI = {
   traceResult: null, // last successful trace response, plus derived fields
   staleResults: false,
   fluxOverlayOpen: false,
-  // In-scene selection + miss warnings (docs/ui-spec.md 2.3, 2.4).
+  // In-scene selection + miss warnings.
   selection: null, // null | { kind: "heliostat" | "secondary" | "receiver" | "sun", id: number|null }
   miss: null, // /api/scene/geometry's top-level `miss` key, verbatim (or null if absent/not-yet-live)
-  // Phase 3b: Library slide-over + save/load (docs/ui-spec.md 5). `dirty`
-  // is set by main.js's store.subscribe on the first `doc.*` write after a
-  // load/save; `projectName` is null until a project has been saved to or
-  // loaded from the library (js/library.js and js/project.js own both).
+  // `dirty` is set on the first doc.* write after a load/save; `projectName`
+  // is null until a project has been saved to or loaded from the library.
   libraryOpen: false,
   libraryTab: "receivers", // "designs" | "receivers" | "projects"
   projectName: null,
   dirty: false,
-  // Phase 3c wave 1 (docs/ui-spec.md 1, 3): which full-screen tab is showing
-  // -- "workspace" | "shape" | "analysis" (Analysis stays inert until wave
-  // 2). js/main.js's renderTabs() owns showing/hiding .shell, #runbar and
-  // #tab-shape off this. `shapeHeliostatId` is which heliostat the
-  // Heliostat Shape tab previews (docs/ui-spec.md 3's "the previewed
-  // heliostat is always named") -- null means "no explicit pick yet", so
-  // js/tabs/shape.js falls back to a deterministic median-radius heliostat
-  // from the live field rather than storing a fabricated default here.
+  // Which full-screen tab is showing -- "workspace" | "shape" | "analysis".
+  // `shapeHeliostatId` is which heliostat the Heliostat Shape tab previews;
+  // null means "no explicit pick yet", so js/tabs/shape.js falls back to a
+  // deterministic median-radius heliostat from the live field.
   tab: "workspace",
   shapeHeliostatId: null,
 };

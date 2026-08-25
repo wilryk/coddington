@@ -1,5 +1,4 @@
-/* Coddington workspace (Phase 3a) -- tokens and layout lifted from the
-   signed-off mockups (docs/ui-spec.md, "Coddington Workspace" rev 5). */
+/* Coddington workspace: shared tokens and layout. */
 
 :root {
   --accent: #45739e;
@@ -23,8 +22,7 @@
 }
 
 /* The UA's [hidden] rule loses to any author `display` declaration, and
-   several toggled elements here (the flux overlay, banners) carry one --
-   same trap, same fix as the previous frontend. */
+   several toggled elements here carry one. */
 [hidden] {
   display: none !important;
 }
@@ -166,10 +164,6 @@ a:hover {
   padding: 8px 16px;
   flex: 0 0 auto;
 }
-/* docs/ui-spec.md 2.1 + mockup M3/M4: the stage that owns the current
-   viewport mode (Field -> plan, Receiver & Tower -> elevation) highlights
-   in the sidebar. Toggled by that stage's own panel (field.js/receiver.js)
-   off ui.view, not here -- this is presentation only. */
 .stage.selectedstage {
   background: #f2f7fd;
   box-shadow: inset 3px 0 0 var(--select);
@@ -228,10 +222,6 @@ a:hover {
   border-color: var(--accent-dark);
   color: #fff;
 }
-/* docs/ui-spec.md 3: "the seg gets the .disabled treatment" -- the
-   Heliostat Shape tab's Canting seg under Twisting/non-grid designs
-   (js/tabs/shape.js). Buttons stay individually `disabled` too; this is
-   just the visual half. */
 .seg.disabled button {
   opacity: 0.5;
   cursor: default;
@@ -343,10 +333,9 @@ input.val::-webkit-inner-spin-button {
   display: block;
 }
 
-/* Phase 3b: the plan/elevation views (js/views/plan.js, js/views/elevation.js)
-   are siblings of #scene-container, shown one at a time via [hidden]
-   (docs/ui-spec.md 2.1, "the viewport follows the active stage") -- the 3D
-   scene is never disposed on switch, just covered. */
+/* The plan/elevation views are siblings of #scene-container, shown one at
+   a time via [hidden] -- the 3D scene is never disposed on switch, just
+   covered. */
 #plan-view,
 #elevation-view {
   position: absolute;
@@ -359,12 +348,11 @@ input.val::-webkit-inner-spin-button {
   height: 100%;
 }
 
-/* Elevation view's dimension callouts (docs/ui-spec.md 2.2: "every callout
-   is an editable value box bound to the same fields as the sidebar") --
-   absolutely-positioned over the SVG, repositioned every render from the
-   same projection the leader lines are drawn with. Pointer events are
-   off on the layer so empty space still reaches the SVG's click-to-deselect,
-   and on again per callout so its input is actually usable. */
+/* Elevation view's dimension callouts: absolutely-positioned over the SVG,
+   repositioned every render from the same projection the leader lines are
+   drawn with. Pointer events are off on the layer so empty space still
+   reaches the SVG's click-to-deselect, and on again per callout so its
+   input is actually usable. */
 .elevation-callouts {
   position: absolute;
   inset: 0;
@@ -403,8 +391,7 @@ input.val::-webkit-inner-spin-button {
   color: var(--muted);
   pointer-events: none;
 }
-/* docs/ui-spec.md 2.1: "a view pill in the corner names the current mode
-   and offers 'back to 3D' at all times" -- hidden in 3D itself (main.js). */
+/* Hidden in 3D itself (main.js). */
 .viewpill {
   position: absolute;
   right: 14px;
@@ -462,7 +449,7 @@ input.val::-webkit-inner-spin-button {
   max-width: 70%;
 }
 
-/* -- floating in-scene inspector (docs/ui-spec.md 2.4, mockup M2) -------- */
+/* -- floating in-scene inspector ------------------------------------------ */
 
 .inspector {
   position: absolute;
@@ -612,11 +599,8 @@ input.val::-webkit-inner-spin-button {
   border: none;
 }
 
-/* -- Library slide-over (docs/ui-spec.md 5, mockup M5) -------------------
-   Classes/colors lifted from the mockup's own <style> (docs/mockups/
-   coddington-workspace.html, screen 5) onto this app's tokens -- .dim and
-   .drawer are fixed/full-app here (see index.html's comment) rather than
-   scoped to the mockup's .stagearea, so the sidebar dims along with the
+/* -- Library slide-over ---------------------------------------------------
+   .dim and .drawer are fixed/full-app, so the sidebar dims along with the
    viewport while the drawer is open. */
 
 .dim {
@@ -776,10 +760,9 @@ input.val::-webkit-inner-spin-button {
   margin-bottom: 6px;
 }
 
-/* -- Heliostat Shape tab (docs/ui-spec.md 3, mockup M6) -------------------
-   Full-screen: a sibling of .shell shown instead of it (js/main.js's
-   renderTabs()) so the 3D scene keeps running, just covered. Panel/seg/frow
-   look lifted from the same tokens the sidebar and mockup already share. */
+/* -- Heliostat Shape tab ---------------------------------------------------
+   Full-screen: a sibling of .shell shown instead of it, so the 3D scene
+   keeps running, just covered. */
 
 .tabpage {
   flex: 1 1 auto;
@@ -921,7 +904,7 @@ input.val::-webkit-inner-spin-button {
 }
 
 /* Custom-outline sketch canvas: draggable vertex handles, ghost mirror
-   half, segment length labels -- js/tabs/shape.js. */
+   half, segment length labels. */
 .sketch-vertex {
   fill: #ffffff;
   stroke: var(--select);

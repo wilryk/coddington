@@ -1,26 +1,29 @@
-// Heliostat Shape tab (docs/ui-spec.md 3, mockup M6): the full-screen
-// detail editor for the mirror -- shape, figure, canting, optical errors,
-// a live server-rendered aperture-layout preview, and the sag map. Wired
-// from js/main.js's renderTabs() exactly like the four sidebar panels are
-// wired from renderAllPanels(): build-once/els, render(container, ctx) on
-// every store change while the tab is actually visible, focused-input
-// guards everywhere a persistent input could be mid-keystroke.
+// Heliostat Shape tab: the full-screen detail editor for the mirror --
+// shape, figure, facet curvature, canting, optical errors, a live
+// server-rendered aperture-layout preview, and the sag map.
 //
 // Two things live here that the sidebar panels don't have to deal with:
 //
 // 1. Server-rendered previews (aperture PNG, sag PNG) are not store state --
 //    they are fetched over the network, debounced, abortable, and cached as
 //    object URLs. Those object URLs, in-flight abort controllers, and the
-//    last-request cache keys are module-locals (see the brief's "no private
-//    edit state, except ... objectURLs, in-flight fetch handles" carve-out)
-//    -- nothing a user *reads a value out of* lives only here.
+//    last-request cache keys are module-locals -- nothing a user *reads a
+//    value out of* lives only here.
 // 2. The Custom outline sketch canvas is an interactive SVG editor (drag
 //    vertices, click to add, click a length to type it exactly) layered
 //    over the same store paths the vertex table's number inputs use --
 //    doc.designParams.custom.vertices_mm.{i}.{0|1} -- so a drag and a typed
 //    number are the same edit, not two pathways.
 import { store } from "../store.js";
-import { numberRow, setVal, segButton, HELIOSTAT_RECT_FIELDS, HELIOSTAT_GRID_FIELDS, HELIOSTAT_SURFACE_OPTIONS } from "../fields.js";
+import {
+  numberRow,
+  setVal,
+  segButton,
+  HELIOSTAT_RECT_FIELDS,
+  HELIOSTAT_GRID_FIELDS,
+  HELIOSTAT_SURFACE_OPTIONS,
+  apertureSummaryText,
+} from "../fields.js";
 import {
   buildSagRequest,
   currentDesignPayload,
@@ -31,19 +34,30 @@ import {
 } from "../api.js";
 
 // -- local field descriptors -------------------------------------------
-// Optical errors (docs/ui-spec.md 3) are only edited from this tab, so
-// they don't need a home in fields.js's shared descriptor tables the way
-// the sidebar-shared ones do.
+// Optical errors are only edited from this tab, so they don't need a home
+// in fields.js's shared descriptor tables the way the sidebar-shared ones
+// do.
 const ERROR_FIELDS = [
   { key: "slope_error_mrad", label: "Slope error (mrad)", path: "doc.design.errors.slope_error_mrad", min: 0, step: 0.1 },
   { key: "specularity_mrad", label: "Specularity (mrad)", path: "doc.design.errors.specularity_mrad", min: 0, step: 0.1 },
   { key: "reflectance_pct", label: "Reflectance (%)", path: "doc.design.errors.reflectance_pct", min: 0, max: 100, step: 0.5 },
 ];
 
+// cant_focal_mm is aim only: null = per-heliostat slant range, 0 =
+// uncanted/parallel, >0 = one fixed focal for the whole field.
 const CANT_FOCAL_FIELD = {
   key: "cant_focal_mm",
   label: "Field-wide focal (mm)",
   path: "doc.designParams.grid.cant_focal_mm",
+  min: 1,
+};
+
+// facet_focal_mm is the facet's own curvature, independent of aim: null =
+// follows the canting focal, 0 = truly flat facets, >0 = that focal.
+const FACET_FOCAL_FIELD = {
+  key: "facet_focal_mm",
+  label: "Facet focal (mm)",
+  path: "doc.designParams.grid.facet_focal_mm",
   min: 1,
 };
 
@@ -60,9 +74,8 @@ let lastPreviewKey = null;
 let lastSagKey = null;
 let lastSagResult = null; // {contourIntervalMm, peakToValleyMm, slantRangeM} of the currently-shown sag PNG
 
-// Ephemeral view-only toggles (docs/ui-spec.md "no separate edit pathway"
-// is about doc.* edits -- these don't hold a value the user typed, just
-// which of two already-live views is showing).
+// Ephemeral view-only toggles -- these don't hold a value the user typed,
+// just which of two already-live views is showing.
 let popoverOpen = false;
 let showServerRenderForCustom = false;
 let saveOpen = false;
@@ -78,8 +91,7 @@ let locatorProj = null;
 
 // Re-render hook set at the top of render() so async callbacks (a preview
 // fetch landing, a save-as completing) and drag handlers can trigger a
-// fresh paint without going through a store write -- same reason
-// js/library.js keeps its own module-level `update()` closure.
+// fresh paint without going through a store write.
 let lastContainer = null;
 let lastCtx = null;
 function rerender() {
@@ -98,27 +110,18 @@ function cantMode(cantFocalMm) {
   return "focal";
 }
 
-// Same wording convention as panels/heliostat.js's stage summary (phase
-// 3c wave 1 extends it with the custom case there too).
-function designSummaryText(doc) {
-  const type = doc.design.type;
-  const surface = doc.design.surface;
-  if (type === "rect") {
-    const p = doc.designParams.rect;
-    return `${(p.width_mm / 1000).toFixed(1)} × ${(p.height_mm / 1000).toFixed(1)} m rectangle — ${surface} figure`;
-  }
-  if (type === "grid") {
-    const p = doc.designParams.grid;
-    return `${p.n_u}×${p.n_v} facet grid — ${surface} figure`;
-  }
-  const p = doc.designParams.custom;
-  const n = (p && p.vertices_mm && p.vertices_mm.length) || 0;
-  return `custom outline, ${n} vertices — ${surface} figure`;
+function curvatureMode(facetFocalMm) {
+  if (facetFocalMm === null || facetFocalMm === undefined) return "auto";
+  if (facetFocalMm === 0) return "off";
+  return "focal";
 }
 
-// docs/ui-spec.md 3: "Default preview: a representative mid-field
-// heliostat" -- deterministic median-by-radius pick so re-rendering the
-// same geometry always lands on the same heliostat, ties broken by id.
+function designSummaryText(doc) {
+  return `${apertureSummaryText(doc)} — ${doc.design.surface} figure`;
+}
+
+// Deterministic median-by-radius pick so re-rendering the same geometry
+// always lands on the same heliostat, ties broken by id.
 function pickPreviewHeliostat(ui, geometry) {
   const list = (geometry && geometry.heliostats) || [];
   if (!list.length) return null;
@@ -141,7 +144,7 @@ function slantRangeLabel(previewHeliostat) {
 }
 
 // -- debounced, abortable blob fetch (shared shape by the aperture and sag
-// panels -- docs/ui-spec.md 3's two "existing server renders") -----------
+// panels) ------------------------------------------------------------
 
 function createBlobRequester(delay) {
   let timer = null;
@@ -255,11 +258,9 @@ function currentCustomVertices() {
 }
 
 // Sutherland-Hodgman clip of a closed outline against the half-plane
-// u >= 0. Turning mirror ON runs the current outline through this, so the
-// sketch becomes the right half of whatever was drawn -- the SolidWorks
-// intuition ("mirror about the axis"), and the only way a full-width
-// symmetric outline (like the default rectangle) survives an on/off
-// round-trip unchanged instead of expanding into a self-overlapping
+// u >= 0. Turning mirror ON runs the current outline through this so a
+// full-width symmetric outline (like the default rectangle) survives an
+// on/off round-trip unchanged, instead of expanding into a self-overlapping
 // polygon whose doubly-covered area the trace's even-odd membership test
 // counts as OUTSIDE the mirror.
 function clipRightHalf(vertices) {
@@ -371,7 +372,7 @@ function insertVertexNearestSegment(u, v) {
 
 function removeCustomVertex(index) {
   const vertices = currentCustomVertices();
-  if (vertices.length <= 3) return; // docs/ui-spec.md 3: a closed outline needs >= 3 vertices
+  if (vertices.length <= 3) return; // a closed outline needs >= 3 vertices
   const next = vertices.slice();
   next.splice(index, 1);
   store.set("doc.designParams.custom.vertices_mm", next);
@@ -608,8 +609,11 @@ function build(container) {
   for (const [key, label] of HELIOSTAT_SURFACE_OPTIONS) {
     surfaceBtns[key] = segButton(surfaceSeg, label, key === "twisting", () => {
       store.set("doc.design.surface", key);
-      if (key === "twisting" && store.get("doc.designParams.grid.cant_focal_mm") !== null) {
-        store.set("doc.designParams.grid.cant_focal_mm", null);
+      if (key === "twisting") {
+        if (store.get("doc.designParams.grid.cant_focal_mm") !== null) store.set("doc.designParams.grid.cant_focal_mm", null);
+        if (store.get("doc.designParams.grid.facet_focal_mm") !== null) store.set("doc.designParams.grid.facet_focal_mm", null);
+      } else if (key === "flat" && store.get("doc.designParams.grid.facet_focal_mm") === null) {
+        store.set("doc.designParams.grid.facet_focal_mm", 0);
       }
     });
   }
@@ -618,16 +622,69 @@ function build(container) {
   surfaceHint.className = "hint";
   surfaceHint.style.marginLeft = "0";
   surfaceHint.textContent =
-    "Twisting re-solves the figure as the sun moves — the manuscript's upper bound. Spherical freezes one figure (long focals give weakly focusing, not-quite-flat facets); flat has none.";
+    "Twisting re-solves the figure as the sun moves. Spherical freezes one figure (long focals give weakly focusing, not-quite-flat facets); flat has none by default, though a facet grid can still be made weakly focusing below.";
   controls.appendChild(surfaceHint);
 
-  // Heading is set per surface in renderDesignControls: today ONE server
-  // number (cant_focal_mm) sets both the facet curvature and the facet aim
-  // (app.py's _build_trace_design -> Spherical("slant") + cant_on_axis at
-  // the same focal), so calling this section "canting" would only be honest
-  // under Flat, where there is no curvature for it to also be setting.
+  // -- facet curvature: the facet's own surface shape, independent of
+  // where it's aimed. Locked under Twisting (the astigmatic figure is
+  // solved for you there); simplified to a single checkbox under Flat.
+  const curvSub = document.createElement("div");
+  curvSub.className = "subhead";
+  curvSub.textContent = "Facet curvature";
+  controls.appendChild(curvSub);
+  function curvDisabledNow() {
+    const doc = store.get("doc");
+    return doc.design.type !== "grid" || doc.design.surface === "twisting";
+  }
+  const curvSeg = document.createElement("div");
+  curvSeg.className = "seg";
+  const curvBtns = {
+    off: segButton(curvSeg, "No curvature", false, () => {
+      if (curvDisabledNow()) return;
+      store.set("doc.designParams.grid.facet_focal_mm", 0);
+    }),
+    auto: segButton(curvSeg, "Follow canting", false, () => {
+      if (curvDisabledNow()) return;
+      store.set("doc.designParams.grid.facet_focal_mm", null);
+    }),
+    focal: segButton(curvSeg, "Fixed focal…", false, () => {
+      if (curvDisabledNow()) return;
+      const cur = store.get("doc.designParams.grid.facet_focal_mm");
+      if (!(cur > 0)) store.set("doc.designParams.grid.facet_focal_mm", 60000);
+    }),
+  };
+  controls.appendChild(curvSeg);
+  const curvWeakRow = document.createElement("div");
+  curvWeakRow.className = "frow";
+  const curvWeakLabel = document.createElement("label");
+  curvWeakLabel.textContent = "Weakly focusing";
+  const curvWeakInput = document.createElement("input");
+  curvWeakInput.type = "checkbox";
+  curvWeakInput.addEventListener("change", () => {
+    if (curvDisabledNow()) return;
+    if (curvWeakInput.checked) {
+      const cur = store.get("doc.designParams.grid.facet_focal_mm");
+      store.set("doc.designParams.grid.facet_focal_mm", cur > 0 ? cur : 200000);
+    } else {
+      store.set("doc.designParams.grid.facet_focal_mm", 0);
+    }
+  });
+  curvWeakRow.appendChild(curvWeakLabel);
+  curvWeakRow.appendChild(curvWeakInput);
+  controls.appendChild(curvWeakRow);
+  const curvFocalRow = document.createElement("div");
+  const curvFocalInput = numberRow(curvFocalRow, FACET_FOCAL_FIELD);
+  controls.appendChild(curvFocalRow);
+  const curvHint = document.createElement("div");
+  curvHint.className = "hint";
+  curvHint.style.marginLeft = "0";
+  controls.appendChild(curvHint);
+
+  // -- canting: where each facet is aimed, independent of its curvature.
+  // Locked under Twisting for the same reason as curvature.
   const cantSub = document.createElement("div");
   cantSub.className = "subhead";
+  cantSub.textContent = "Canting (facet aiming)";
   controls.appendChild(cantSub);
   const cantSeg = document.createElement("div");
   cantSeg.className = "seg";
@@ -640,11 +697,11 @@ function build(container) {
       if (cantDisabledNow()) return;
       store.set("doc.designParams.grid.cant_focal_mm", 0);
     }),
-    auto: segButton(cantSeg, "Auto — slant range", false, () => {
+    auto: segButton(cantSeg, "Per heliostat", false, () => {
       if (cantDisabledNow()) return;
       store.set("doc.designParams.grid.cant_focal_mm", null);
     }),
-    focal: segButton(cantSeg, "Focal…", false, () => {
+    focal: segButton(cantSeg, "Fixed focal…", false, () => {
       if (cantDisabledNow()) return;
       const cur = store.get("doc.designParams.grid.cant_focal_mm");
       if (!(cur > 0)) store.set("doc.designParams.grid.cant_focal_mm", 60000);
@@ -668,8 +725,7 @@ function build(container) {
   const errorHint = document.createElement("div");
   errorHint.className = "hint";
   errorHint.style.marginLeft = "0";
-  errorHint.textContent =
-    "Manuscript baseline: 90% reflectance, no slope or specularity error. Used by Monte Carlo traces and carried through SolTrace / SolarPILOT export.";
+  errorHint.textContent = "Used by Monte Carlo traces and carried through SolTrace / SolarPILOT export.";
   controls.appendChild(errorHint);
 
   // -- previews: aperture layout + sag map -----------------------------
@@ -829,7 +885,13 @@ function build(container) {
     vertexTableWrap,
     mirrorInput,
     surfaceBtns,
-    cantSub,
+    curvSeg,
+    curvBtns,
+    curvWeakRow,
+    curvWeakInput,
+    curvFocalRow,
+    curvFocalInput,
+    curvHint,
     cantSeg,
     cantBtns,
     cantFocalRow,
@@ -919,7 +981,6 @@ function renderEditbar(doc, ui, previewHeliostat) {
   }
   els.popover.hidden = !popoverOpen;
   if (popoverOpen) {
-    // setVal's own focus guard covers "don't yank a mid-keystroke value".
     setVal(els.popInput, ui.shapeHeliostatId != null ? ui.shapeHeliostatId : previewHeliostat ? previewHeliostat.id : "");
   }
 
@@ -948,9 +1009,7 @@ function renderDesignControls(doc, previewHeliostat) {
   els.rectFields.style.display = type === "rect" ? "" : "none";
   els.gridFields.style.display = type === "grid" ? "" : "none";
   els.customFields.style.display = type === "custom" ? "" : "none";
-  // The mockup's Custom teaser line -- once Custom is actually active the
-  // sketch canvas caption explains itself, so the teaser would just read
-  // like spec text pasted into the product.
+  // Once Custom is active the sketch canvas caption explains itself.
   els.typeHint.style.display = type === "custom" ? "none" : "";
 
   if (type === "rect") {
@@ -973,44 +1032,74 @@ function renderDesignControls(doc, previewHeliostat) {
   const surface = doc.design.surface;
   for (const [key, btn] of Object.entries(els.surfaceBtns)) btn.classList.toggle("active", key === surface);
 
-  // -- canting (docs/ui-spec.md 3: Off / Auto / Focal, locked under
-  // Twisting, meaningless outside Facet grid) --------------------------
   const isGrid = type === "grid";
   const isTwisting = surface === "twisting";
+  const isFlat = surface === "flat";
   const disabled = !isGrid || isTwisting;
-  els.cantSeg.classList.toggle("disabled", disabled);
-  const rawMode = isGrid ? cantMode(doc.designParams.grid.cant_focal_mm) : "auto";
-  const displayMode = disabled ? "auto" : rawMode;
-  els.cantBtns.off.classList.toggle("active", displayMode === "off");
-  els.cantBtns.auto.classList.toggle("active", displayMode === "auto");
-  els.cantBtns.focal.classList.toggle("active", displayMode === "focal");
-  for (const btn of Object.values(els.cantBtns)) btn.disabled = disabled;
-  els.cantFocalRow.style.display = displayMode === "focal" ? "" : "none";
-  if (displayMode === "focal") setVal(els.cantFocalInput, doc.designParams.grid.cant_focal_mm);
-  // Flat facets have no curvature, so there the focal really is only an
-  // aim; under Spherical (and Twisting) the same number also figures the
-  // facets, which the heading has to admit.
-  els.cantSub.textContent = surface === "flat" ? "Canting (facet aiming)" : "Facet focal (curvature + aiming)";
 
-  // One hint per mode rather than one sentence listing all three: the
-  // difference that matters is per-heliostat (Auto) vs one number for the
-  // whole field (Focal), which a combined line buries.
+  // -- facet curvature: seg (spherical) or a single checkbox (flat) -----
+  const facetFocalMm = isGrid ? doc.designParams.grid.facet_focal_mm : null;
+  const curvRawMode = isGrid ? curvatureMode(facetFocalMm) : "auto";
+  const curvDisplayMode = disabled ? "auto" : curvRawMode;
+  const showCurvSeg = isGrid && !isTwisting && !isFlat;
+  const showCurvCheckbox = isGrid && !isTwisting && isFlat;
+  els.curvSeg.style.display = showCurvSeg ? "" : "none";
+  els.curvSeg.classList.toggle("disabled", disabled);
+  els.curvBtns.off.classList.toggle("active", curvDisplayMode === "off");
+  els.curvBtns.auto.classList.toggle("active", curvDisplayMode === "auto");
+  els.curvBtns.focal.classList.toggle("active", curvDisplayMode === "focal");
+  for (const btn of Object.values(els.curvBtns)) btn.disabled = disabled;
+
+  els.curvWeakRow.style.display = showCurvCheckbox ? "" : "none";
+  els.curvWeakInput.disabled = disabled;
+  if (showCurvCheckbox && document.activeElement !== els.curvWeakInput) els.curvWeakInput.checked = facetFocalMm > 0;
+
+  const showCurvFocal = (showCurvSeg && curvDisplayMode === "focal") || (showCurvCheckbox && facetFocalMm > 0);
+  els.curvFocalRow.style.display = showCurvFocal ? "" : "none";
+  if (showCurvFocal) setVal(els.curvFocalInput, facetFocalMm);
+
+  if (!isGrid) {
+    els.curvHint.textContent = "Single mirror — no facets to curve.";
+  } else if (isTwisting) {
+    els.curvHint.textContent = "Twisting solves each facet's own curvature for you, along with its aim.";
+  } else if (isFlat) {
+    els.curvHint.textContent =
+      facetFocalMm > 0
+        ? "Facets share one long fixed focal, giving the panel a gentle concentrating figure while staying flat to build."
+        : "Facets are flat panels — check to give them a long, gentle fixed curvature without leaving Flat.";
+  } else if (curvDisplayMode === "off") {
+    els.curvHint.textContent = "Facets are flat panels — no curvature of their own.";
+  } else if (curvDisplayMode === "auto") {
+    els.curvHint.textContent = "Each facet curves to match its own canting distance, so it focuses exactly where it's aimed.";
+  } else {
+    els.curvHint.textContent = "One curvature for every facet in the field, independent of where each one is aimed.";
+  }
+
+  // -- canting: where each facet is aimed --------------------------------
+  const cantRawMode = isGrid ? cantMode(doc.designParams.grid.cant_focal_mm) : "auto";
+  const cantDisplayMode = disabled ? "auto" : cantRawMode;
+  els.cantSeg.classList.toggle("disabled", disabled);
+  els.cantBtns.off.classList.toggle("active", cantDisplayMode === "off");
+  els.cantBtns.auto.classList.toggle("active", cantDisplayMode === "auto");
+  els.cantBtns.focal.classList.toggle("active", cantDisplayMode === "focal");
+  for (const btn of Object.values(els.cantBtns)) btn.disabled = disabled;
+  els.cantFocalRow.style.display = cantDisplayMode === "focal" ? "" : "none";
+  if (cantDisplayMode === "focal") setVal(els.cantFocalInput, doc.designParams.grid.cant_focal_mm);
+
   if (!isGrid) {
     els.cantHint.textContent = "Single mirror — no facets to cant.";
   } else if (isTwisting) {
     els.cantHint.textContent = "Twisting solves figure and aim together, so canting is chosen for you.";
-  } else if (displayMode === "off") {
+  } else if (cantDisplayMode === "off") {
     els.cantHint.textContent = "Facets stay parallel — the mirror acts as one flat panel, so each facet sends its own separate spot.";
-  } else if (displayMode === "auto") {
+  } else if (cantDisplayMode === "auto") {
     els.cantHint.textContent =
-      `Each heliostat uses its own distance to the aim point${cantSlantM ? ` — ${cantSlantM} m for the previewed H-${cantPreviewId}` : ""}, ` +
-      "so every position in the field is individually optimal. Different field positions get physically different heliostats." +
-      (surface === "flat" ? "" : " Facet curvature and facet aim both follow that distance.");
+      `Each heliostat aims its facets at its own distance to the aim point${cantSlantM ? ` — ${cantSlantM} m for the previewed H-${cantPreviewId}` : ""}, ` +
+      "so every position in the field is individually optimal. Different field positions get physically different heliostats.";
   } else {
     els.cantHint.textContent =
-      `One focal length for the whole field — every heliostat is built the same${cantSlantM ? `, whether it stands at ${cantSlantM} m like the previewed H-${cantPreviewId} or anywhere else` : ""}. ` +
-      "That is the buildable case: one part number, at the cost of performance away from this range." +
-      (surface === "flat" ? "" : " Note it sets facet curvature AND facet aim together — they are not independent yet.");
+      `One aim distance for the whole field — every heliostat points its facets the same way${cantSlantM ? `, whether it stands at ${cantSlantM} m like the previewed H-${cantPreviewId} or anywhere else` : ""}. ` +
+      "That is the buildable case: one part number, at the cost of performance away from this range.";
   }
 
   const errors = doc.design.errors;
@@ -1115,7 +1204,6 @@ function renderSagCaption(doc) {
   // A faceted design's map is each facet's OWN figure, measured from its own
   // mounting plane -- the canting tilt that aims the facets is a rigid
   // rotation the trace applies separately, so it is not in these numbers.
-  // Saying so stops the repeated per-facet pattern from reading as an error.
   const perFacet = doc.design.type === "grid" ? " · per facet, canting removed" : "";
   els.sagCaption.textContent =
     `surface sag (mm) · contours every ${contour} mm${perFacet} · ${doc.design.surface} figure at ` +

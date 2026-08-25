@@ -26,6 +26,7 @@ from heliostat.geometry.design import _petal_at_angle, flower, grid_facets  # no
 from heliostat.geometry.heliostat import zernike_sag_and_slopes  # noqa: E402
 from heliostat.geometry.secondary import solve_cassegrain_relay  # noqa: E402
 from heliostat.trace.mc import MIRROR_HALF_X_MM, MIRROR_HALF_Y_MM  # noqa: E402
+from heliostat.web import app as app_module  # noqa: E402
 from heliostat.web.app import (  # noqa: E402
     AXICON_APERTURE_RADIUS_MM,
     AXICON_APEX_HEIGHT_MM,
@@ -40,12 +41,16 @@ from heliostat.web.app import (  # noqa: E402
     FERMAT_A_M,
     FERMAT_B,
     FLUX_GRID,
+    MAX_DAY_FLUX_MAPS,
     MAX_FIELD_HELIOSTATS,
     PRIME_FOCUS_HEIGHT_MM,
     WINDOW_MM,
     FermatLayout,
     FlowerParams,
+    DayTraceRequest,
     _build_trace_design,
+    _day_flux_step_indices,
+    _day_timesteps,
     _field_geometry,
     _geometry_for,
     _slant_range_mm,
@@ -164,17 +169,21 @@ def test_trace_rect_ultra_fast_is_concentrated(client):
 
 
 def test_trace_flower_auto_focus_concentrates_spot(client):
-    """Blank cant_focal_mm on a grid/flower design now auto-focuses at the
-    heliostat's own solved slant range instead of defaulting to flat;
-    explicit cant_focal_mm=0 still opts into flat. rms should drop well
-    below the deliberately-flat case -- measured ~1092 mm (auto) vs
-    ~1415 mm (flat) at the default heliostat position/sun; the 0.85 factor
-    below leaves comfortable margin."""
+    """Blank cant_focal_mm on a twisting grid/flower design auto-focuses
+    (canted at the heliostat's own solved slant range, and figured with the
+    solve's own astigmatism) against a genuinely flat, unfocused mirror
+    (surface="flat" with cant_focal_mm=0 too, so neither curvature nor aim
+    is doing anything) -- measured ~538 mm vs ~1415 mm at the default
+    heliostat position/sun; the 0.5 factor below leaves comfortable margin.
+    cant_focal_mm=0 alone is not this comparison's "flat" any more: a
+    twisting design's astigmatic figure does not depend on canting, so an
+    uncanted twisting mirror still carries it (see _build_trace_design)."""
     auto = client.post("/api/trace", json=_trace_payload(FLOWER_DESIGN)).json()
     flat = client.post(
-        "/api/trace", json=_trace_payload({**FLOWER_DESIGN, "cant_focal_mm": 0})
+        "/api/trace",
+        json=_trace_payload({**FLOWER_DESIGN, "surface": "flat", "cant_focal_mm": 0}),
     ).json()
-    assert auto["rms_radius_mm"] < 0.85 * flat["rms_radius_mm"]
+    assert auto["rms_radius_mm"] < 0.5 * flat["rms_radius_mm"]
 
 
 def test_trace_fast_accurate_plausible(client):
@@ -536,18 +545,32 @@ def test_spherical_rect_is_not_the_legacy_path(client):
 
 
 @pytest.mark.parametrize("design", [GRID_DESIGN, FLOWER_DESIGN])
-def test_flat_surface_equals_todays_explicit_cant_zero(client, design):
-    """`surface="flat"` and today's `cant_focal_mm=0` describe the same
-    mirror when both are asked for at once -- Flat() and the builders' own
-    all-zero ZernikeAstig default are the same figure."""
-    legacy_flat = client.post(
+def test_flat_surface_equals_explicit_facet_focal_zero(client, design):
+    """`surface="flat"` and an explicit `facet_focal_mm=0` describe the same
+    mirror -- Flat() either way -- whatever `surface` itself says, since
+    facet_focal_mm=0 overrides curvature regardless of surface mode."""
+    named_flat = client.post("/api/trace", json=_trace_payload({**design, "surface": "flat"})).json()
+    zero_facet_focal = client.post(
+        "/api/trace",
+        json=_trace_payload({**design, "surface": "twisting", "facet_focal_mm": 0}),
+    ).json()
+    assert _comparable(named_flat) == _comparable(zero_facet_focal)
+
+
+@pytest.mark.parametrize("design", [GRID_DESIGN, FLOWER_DESIGN])
+def test_twisting_cant_zero_is_no_longer_flat(client, design):
+    """Curvature and canting are independent: an uncanted twisting design
+    (cant_focal_mm=0) still carries the solve's astigmatic figure, so it
+    must trace tighter than a mirror that is actually flat (surface="flat"
+    with cant_focal_mm=0 too)."""
+    uncanted_twisting = client.post(
         "/api/trace", json=_trace_payload({**design, "cant_focal_mm": 0})
     ).json()
-    named_flat = client.post(
+    truly_flat = client.post(
         "/api/trace",
-        json=_trace_payload({**design, "cant_focal_mm": 0, "surface": "flat"}),
+        json=_trace_payload({**design, "surface": "flat", "cant_focal_mm": 0}),
     ).json()
-    assert _comparable(legacy_flat) == _comparable(named_flat)
+    assert uncanted_twisting["rms_radius_mm"] < 0.97 * truly_flat["rms_radius_mm"]
 
 
 @pytest.mark.parametrize("design", [GRID_DESIGN, FLOWER_DESIGN])
@@ -600,6 +623,111 @@ def test_surface_is_accepted_but_ignored_by_the_preview(client):
         )
         assert resp.status_code == 200
         assert resp.content[:8] == PNG_MAGIC
+
+
+# ---------------------------------------------------------------------------
+# facet_focal_mm: facet curvature, independent of cant_focal_mm's aim
+#
+# A real manuscript-field heliostat (id 627 of field_645.csv, off-axis
+# rather than the arbitrary default position) is reused below where the
+# comparison needs realistic astigmatism -- its default-figure rectangle
+# traces to rms_radius_mm ~416, peak ~14.8 kW/m^2 on axicon/fast_accurate.
+_MANUSCRIPT_HELIOSTAT_X_MM = -88536.98462
+_MANUSCRIPT_HELIOSTAT_Y_MM = -13822.15877
+_MANUSCRIPT_GRID_DESIGN = {
+    "type": "grid",
+    "n_u": 4,
+    "n_v": 3,
+    "facet_w_mm": 1250,
+    "facet_h_mm": 1000,
+    "gap_mm": 0,
+}
+
+
+def _manuscript_payload(design):
+    payload = _trace_payload(design, mode="fast_accurate", optics="axicon")
+    payload["heliostat_x_mm"] = _MANUSCRIPT_HELIOSTAT_X_MM
+    payload["heliostat_y_mm"] = _MANUSCRIPT_HELIOSTAT_Y_MM
+    return payload
+
+
+def test_facet_focal_mm_three_states_are_distinct(client):
+    """None (backward compatible), 0 (explicitly flat) and a positive value
+    (a fixed sphere) are three different mirrors."""
+    absent = client.post("/api/trace", json=_trace_payload(GRID_DESIGN)).json()
+    zero = client.post(
+        "/api/trace", json=_trace_payload({**GRID_DESIGN, "facet_focal_mm": 0})
+    ).json()
+    positive = client.post(
+        "/api/trace", json=_trace_payload({**GRID_DESIGN, "facet_focal_mm": 90000})
+    ).json()
+    for data in (absent, zero, positive):
+        assert data["power_w"] > 0
+        assert math.isfinite(data["rms_radius_mm"])
+    assert absent["rms_radius_mm"] != zero["rms_radius_mm"]
+    assert absent["rms_radius_mm"] != positive["rms_radius_mm"]
+    assert zero["rms_radius_mm"] != positive["rms_radius_mm"]
+
+
+@pytest.mark.parametrize("extra", [{}, {"surface": "spherical"}, {"surface": "flat"}])
+def test_facet_focal_mm_absent_matches_explicit_none(client, extra):
+    """Leaving facet_focal_mm out and sending it as an explicit null must
+    trace identically -- the field's whole backward-compatibility contract
+    reduces to this at the wire level; pydantic gives both the same `None`."""
+    without = client.post("/api/trace", json=_trace_payload({**GRID_DESIGN, **extra})).json()
+    with_none = client.post(
+        "/api/trace", json=_trace_payload({**GRID_DESIGN, **extra, "facet_focal_mm": None})
+    ).json()
+    assert _comparable(without) == _comparable(with_none)
+
+
+def test_weakly_focusing_flat_beats_true_flat_but_not_slant_focus(client):
+    """surface="flat" with a long facet_focal_mm is a real, buildable
+    middle ground: gently curved facets, materially tighter than a truly
+    flat mirror but looser than each facet auto-focused at its own slant
+    range."""
+    truly_flat = client.post(
+        "/api/trace", json=_manuscript_payload({**_MANUSCRIPT_GRID_DESIGN, "surface": "flat"})
+    ).json()
+    weakly_focusing = client.post(
+        "/api/trace",
+        json=_manuscript_payload(
+            {**_MANUSCRIPT_GRID_DESIGN, "surface": "flat", "facet_focal_mm": 200000}
+        ),
+    ).json()
+    slant_focused = client.post(
+        "/api/trace", json=_manuscript_payload({**_MANUSCRIPT_GRID_DESIGN, "surface": "spherical"})
+    ).json()
+    assert weakly_focusing["rms_radius_mm"] < 0.9 * truly_flat["rms_radius_mm"]
+    assert weakly_focusing["rms_radius_mm"] > slant_focused["rms_radius_mm"]
+
+
+def test_twisting_grid_beats_the_old_spherical_facet_grid(client):
+    """A twisting grid now carries astigmatism rather than spherical facets
+    auto-focused at slant range, so it traces tighter and brighter than the
+    old default did -- surface="spherical" with blank cant_focal_mm is
+    exactly the figure a twisting grid used to build."""
+    old_style = client.post(
+        "/api/trace", json=_manuscript_payload({**_MANUSCRIPT_GRID_DESIGN, "surface": "spherical"})
+    ).json()
+    twisting = client.post("/api/trace", json=_manuscript_payload(_MANUSCRIPT_GRID_DESIGN)).json()
+    assert twisting["rms_radius_mm"] < old_style["rms_radius_mm"]
+    assert twisting["peak_flux_kw_m2"] > old_style["peak_flux_kw_m2"]
+
+
+def test_cant_focal_mm_still_controls_aim_alone(client):
+    """With facet_focal_mm pinning curvature, cant_focal_mm still moves
+    where the field aims -- it is aim, not figure, so the delivered power
+    and spot still change with it."""
+    fixed_curvature = {**GRID_DESIGN, "facet_focal_mm": 90000}
+    near = client.post(
+        "/api/trace", json=_trace_payload({**fixed_curvature, "cant_focal_mm": 95000})
+    ).json()
+    far = client.post(
+        "/api/trace", json=_trace_payload({**fixed_curvature, "cant_focal_mm": 200000})
+    ).json()
+    assert near["power_w"] != far["power_w"]
+    assert near["rms_radius_mm"] != far["rms_radius_mm"]
 
 
 # ---------------------------------------------------------------------------
@@ -1678,6 +1806,138 @@ def test_day_export_is_csv_with_a_row_per_timestep(client):
 def test_unknown_day_job_is_404(client):
     assert client.get("/api/day/status/nosuchjob").status_code == 404
     assert client.get("/api/day/result/nosuchjob").status_code == 404
+
+
+# -- day sweep flux maps ------------------------------------------------------
+
+
+def test_day_flux_step_indices_keeps_everything_under_the_cap():
+    assert _day_flux_step_indices(5, cap=10) == set(range(5))
+
+
+def test_day_flux_step_indices_strides_above_the_cap():
+    kept = _day_flux_step_indices(100, cap=10)
+    assert len(kept) == 10
+    assert min(kept) == 0
+    assert max(kept) == 99
+
+
+def test_day_result_rows_say_which_have_a_stored_flux_map(client):
+    """has_flux_map is the client's only way to know a click will be
+    instant rather than falling back to a live trace."""
+    _job_id, data = _run_day(client, hour_step=2.0)
+    assert data["steps"]
+    assert len(data["steps"]) <= MAX_DAY_FLUX_MAPS
+    assert all("has_flux_map" in s for s in data["steps"])
+    assert all(s["has_flux_map"] for s in data["steps"])
+
+
+def test_day_flux_png_is_a_real_png(client):
+    job_id, data = _run_day(client, hour_step=2.0)
+    kept = [i for i, s in enumerate(data["steps"]) if s["has_flux_map"]]
+    assert kept
+    resp = client.get(f"/api/day/flux/{job_id}/{kept[0]}.png")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/png"
+    assert resp.content[:8] == PNG_MAGIC
+
+
+def test_day_flux_png_matches_a_direct_trace_of_the_same_timestep(client):
+    """The stored map for a step is the same trace a direct /api/trace at
+    that step's own sun angles produces -- ultra_fast is a deterministic
+    cone trace (no RNG), so the peak flux must match to the precision the
+    day result reports it at (rounded to 4 decimals).
+
+    The replay uses the timestep's exact, unrounded sun angles from
+    _day_timesteps -- the JSON row itself rounds solar_az_deg/solar_el_deg
+    to 3 decimals, and echoing that rounded angle back into a fresh trace
+    would compare two different sun positions, not the same one twice.
+
+    The PNG bytes are deliberately NOT compared: _render_flux_png titles the
+    image with how long the trace took, so two renders of identical flux
+    data still differ byte-for-byte. Asserting byte equality here would be
+    flaky on timing alone, not a real regression signal.
+    """
+    payload = _trace_payload(RECT_DESIGN)
+    payload["hour_step"] = 2.0
+    job_id, data = _run_day(client, hour_step=2.0)
+    step = data["steps"][0]
+    assert step["has_flux_map"]
+    resp = client.get(f"/api/day/flux/{job_id}/0.png")
+    assert resp.status_code == 200
+    assert resp.content[:8] == PNG_MAGIC
+
+    exact_step = _day_timesteps(DayTraceRequest(**payload))[0]
+    direct_payload = _trace_payload(RECT_DESIGN, solar_el_deg=exact_step.solar_el_deg)
+    direct_payload["solar_az_deg"] = exact_step.solar_az_deg
+    direct = client.post("/api/trace", json=direct_payload).json()
+    assert direct["peak_flux_kw_m2"] == pytest.approx(step["peak_flux_kw_m2"], abs=5e-5)
+
+
+def test_day_flux_png_matches_a_direct_field_trace(client):
+    """Same determinism check as above, for a field: occlusion and the
+    per-heliostat Monte Carlo seed (FIELD_MC_SEED) are both fixed by
+    heliostat id, so a field's stored map is exactly reproducible too."""
+    payload = _field_payload(RECT_DESIGN, layout={"type": "fermat", "n": 5})
+    payload["hour_step"] = 3.0
+    job_id, data = _run_day(client, hour_step=3.0, layout={"type": "fermat", "n": 5})
+    step = data["steps"][0]
+    assert step["has_flux_map"]
+    resp = client.get(f"/api/day/flux/{job_id}/0.png")
+    assert resp.status_code == 200
+
+    exact_step = _day_timesteps(DayTraceRequest(**payload))[0]
+    direct_payload = _field_payload(RECT_DESIGN, layout={"type": "fermat", "n": 5})
+    direct_payload["solar_az_deg"] = exact_step.solar_az_deg
+    direct_payload["solar_el_deg"] = exact_step.solar_el_deg
+    direct = client.post("/api/field/trace", json=direct_payload).json()
+    assert direct["peak_flux_kw_m2"] == pytest.approx(step["peak_flux_kw_m2"], abs=5e-5)
+
+
+def test_day_flux_map_cap_strides_the_kept_steps(client, monkeypatch):
+    """Above the cap, only a strided subset of steps keeps a map -- every
+    row still says which via has_flux_map, and only those steps' endpoints
+    serve a PNG. The rest are a 404, not a silently different response
+    shape, so the client can always tell the two cases apart."""
+    monkeypatch.setattr(app_module, "MAX_DAY_FLUX_MAPS", 3)
+    job_id, data = _run_day(client, hour_step=1.0)
+    steps = data["steps"]
+    assert len(steps) > 3
+
+    kept = [i for i, s in enumerate(steps) if s["has_flux_map"]]
+    assert len(kept) == 3
+    assert kept[0] == 0
+    assert kept[-1] == len(steps) - 1
+    for i in kept:
+        assert client.get(f"/api/day/flux/{job_id}/{i}.png").status_code == 200
+
+    skipped = [i for i in range(len(steps)) if i not in kept]
+    assert skipped
+    assert client.get(f"/api/day/flux/{job_id}/{skipped[0]}.png").status_code == 404
+
+
+def test_day_flux_png_404s_for_unknown_job(client):
+    assert client.get("/api/day/flux/nosuchjob/0.png").status_code == 404
+
+
+def test_day_flux_png_404s_for_an_out_of_range_step(client):
+    job_id, data = _run_day(client, hour_step=2.0)
+    out_of_range = len(data["steps"])
+    assert client.get(f"/api/day/flux/{job_id}/{out_of_range}.png").status_code == 404
+    assert client.get(f"/api/day/flux/{job_id}/-1.png").status_code == 404
+
+
+def test_day_flux_png_409s_while_running(client):
+    """Same still-running semantics as /api/day/result: racy by nature (the
+    background thread may finish before this request lands), which is why
+    test_day_progress_is_reported_and_result_waits_for_it accepts the same
+    two outcomes for /api/day/result."""
+    payload = _trace_payload(RECT_DESIGN)
+    payload["hour_step"] = 0.2
+    payload["layout"] = {"type": "fermat", "n": 20}
+    job_id = client.post("/api/day/start", json=payload).json()["job_id"]
+    resp = client.get(f"/api/day/flux/{job_id}/0.png")
+    assert resp.status_code in (200, 409)
 
 
 def test_flux_csv_export_is_a_labelled_grid(client):

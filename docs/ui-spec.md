@@ -1,6 +1,8 @@
-# Coddington workspace UI — specification (rev 5, SIGNED OFF)
+# Coddington workspace UI — specification (rev 6 draft; rev 5 SIGNED OFF)
 
-Status: **approved by Ryker, 2026-08-22** — this document plus the "Coddington Workspace" mockups (rev 5) are the build contract. Deviations go back to Ryker before implementation.
+Status: rev 5 was **approved by Ryker, 2026-08-22**; this document plus the "Coddington Workspace" mockups are the build contract. Deviations go back to Ryker before implementation.
+
+**Rev 6 (draft, awaiting sign-off)** records corrections Ryker made while testing the Heliostat Shape tab: facet curvature and canting are independent controls, a flat heliostat can be made weakly focusing, a twisting figure induces astigmatism on facets too, and the Workspace's Heliostat stage reports the aperture rather than editing it. Marked in §2.2 and §3.
 Companion mockups: the "Coddington Workspace" artifact (seven screens, referenced as M1–M7).
 Rev 2 incorporated the first review (axicon orientation, plan/elevation edit modes, warning-vs-error contract, interchange, Custom outlines, explicit canting, jet sag maps, per-timestep irradiance maps). Rev 3 incorporated the second (near-heliostat miss detection, layout picker + roads, heliostat-plane datum, choosable storage, saved analysis runs, slow-operation Apply). Rev 4 incorporated the third (flexible roads, honeycomb, optical errors, shape-preview selector, confirmed datum). Rev 5 incorporates the fourth: manuscript error defaults (90 % reflectance, no slope/specularity error), the receiver as a real design (types per layout + entrance-aperture offset), graceful degenerate geometries, the annual Year estimate, and Ryker Optics branding placement.
 
@@ -38,7 +40,7 @@ Top bar (always visible): project name, Workspace / Heliostat Shape / Analysis t
 
 Collapsible sections in workflow order. Each edits live against the viewport.
 
-**Heliostat** — which mirror design the field uses: picker from the Library + "Edit shape…" opening the Heliostat Shape tab, with a one-line summary (type, size, figure).
+**Heliostat** — which mirror design the field uses: picker from the Library + "Edit shape…" opening the Heliostat Shape tab, with a one-line summary (type, size, figure). **The aperture is reported here, not edited here** — shape and dimensions belong to the Heliostat Shape tab, so this stage stays a clean statement of what the heliostat is. The surface-figure toggle (Twisting / Spherical / Flat) is the one exception that stays in reach.
 
 **Field** — where the mirrors stand.
 - Mode: *Single heliostat* (x, y) or *Field*.
@@ -95,8 +97,11 @@ Full-screen. Left: shape controls — **Rectangle** (width/height), **Facet grid
 - **Optical errors** are part of the heliostat design: **slope error (mrad)**, **specularity (mrad)**, **reflectance (%)**. They feed the Monte Carlo trace and ride through SolTrace/SolarPILOT export. **Defaults are the manuscript's: 0 / 0 / 90 %.**
 
 - **Custom** (replaces flower): sketch a closed outline of straight segments with typed dimensions, SolidWorks-sketch style; optional mirror symmetry. Arcs/constraints are out of scope for v1.
-- **Surface figure**: Twisting / Spherical / Flat, with copy noting that spherical at long focals gives weakly focusing, not-quite-flat facets.
-- **Canting is explicit**: Off / Auto (slant range) / Custom focal. Rules: **Twisting solves figure and aim together, so the canting control is locked to Auto and labeled as solved for you.** Under Spherical or Flat the user chooses; Off means parallel facets.
+- **Surface figure**: Twisting / Spherical / Flat. Twisting induces both slant focusing and astigmatism, and does so on facets as well as on a solid mirror — a faceted twisting design carries the astigmatic figure per facet, not merely a spherical approximation of it.
+- **Facet curvature and canting are independent controls**, because they are independent in practice: a mirror's own surface shape is one decision, where each facet points is another.
+  - **Facet curvature**: none / follow canting / fixed focal. A **flat heliostat can be made weakly focusing** — the common real case, where nominally flat facets are built with a single long curvature — via an explicit choice on the Flat figure rather than by borrowing the canting number.
+  - **Canting (facet aiming)**: Off (parallel facets) / per-heliostat (each heliostat cants to its own slant range, so different field positions are physically different heliostats) / fixed focal (one number for the whole field — one part number, at the cost of performance away from that range). Canting stays customisable per slant distance regardless of what the curvature is set to.
+  - Under Twisting the figure and aim are solved together, so the canting control is locked and labeled as solved for you.
 - **Sag map uses the jet colormap** (the standard one, full saturation), with the contour interval stated in the caption (default: contours every 1.0 mm of sag).
 
 ## 4. Analysis tab (M7)

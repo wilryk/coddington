@@ -39,6 +39,11 @@ class Job:
     detail: str = ""
     error: str | None = None
     result: Any = None
+    #: Binary payloads too large or too non-JSON to belong in ``result`` --
+    #: e.g. a day sweep's per-timestep flux PNGs -- keyed however the caller
+    #: likes. Lives and dies with the job exactly like ``result`` does:
+    #: nothing here persists past eviction.
+    blobs: dict[str, bytes] = field(default_factory=dict)
     started_at: float = field(default_factory=time.monotonic)
     finished_at: float | None = None
     _cancel: threading.Event = field(default_factory=threading.Event)

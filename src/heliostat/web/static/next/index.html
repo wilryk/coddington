@@ -6,6 +6,7 @@
   <title>Coddington</title>
   <link rel="icon" type="image/svg+xml" href="/static/img/coddington-icon.svg" />
   <link rel="stylesheet" href="/static/css/app.css" />
+  <link rel="stylesheet" href="/static/css/analysis.css" />
   <script type="importmap">
     {
       "imports": {
@@ -24,7 +25,7 @@
       <div class="apptabs">
         <div class="tab active" id="apptab-workspace">Workspace</div>
         <div class="tab" id="apptab-shape">Heliostat Shape</div>
-        <div class="tab disabled" id="apptab-analysis" title="Analysis tab -- coming in a later phase">Analysis</div>
+        <div class="tab" id="apptab-analysis">Analysis</div>
       </div>
       <div class="right">
         <div class="btn" id="library-btn">Library</div>
@@ -57,7 +58,13 @@
         </div>
         <div class="error-strip" id="geometry-error-strip" hidden></div>
         <div id="inspector" hidden></div>
-        <div class="chip" id="rays-chip">Corner chief rays — viewing aid, no shading</div>
+        <div class="chip" id="rays-chip">
+          <label id="rays-toggle-label" style="pointer-events: auto; cursor: pointer; margin-right: 8px" hidden>
+            <input type="checkbox" id="rays-toggle" checked style="vertical-align: -1px" /> Rays
+          </label>
+          <span id="rays-chip-text">Corner chief rays — viewing aid, no shading</span>
+        </div>
+        <div class="chip" id="refresh-pill" style="bottom: 46px" hidden>Updating…</div>
         <div class="viewhint" id="orbit-hint">drag to orbit · right-drag to pan · scroll to zoom · click an object to edit it</div>
         <div class="viewpill" id="view-pill" hidden>
           <span class="mode" id="view-pill-mode">Plan</span>
@@ -72,6 +79,7 @@
          mutually exclusively without touching the 3D scene, which keeps
          running underneath -- js/tabs/shape.js owns everything inside. -->
     <section id="tab-shape" class="tabpage" hidden></section>
+    <section id="tab-analysis" class="tabpage" hidden></section>
 
     <div id="runbar" class="runbar"></div>
   </div>

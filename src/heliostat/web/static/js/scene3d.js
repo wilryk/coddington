@@ -555,6 +555,19 @@ export function createScene(container, callbacks) {
       applySelectionVisuals(); // materials were just rebuilt from scratch
     },
 
+    // Corner and miss rays from a second, ray-bearing geometry response,
+    // without touching the meshes the first one already built.
+    updateRays(resp) {
+      state.cornerRays = resp.rays || [];
+      const miss = resp.miss || null;
+      const apertureIds = (miss && miss.aperture_miss_ids) || [];
+      const totalIds = (miss && miss.total_miss_ids) || [];
+      state.missIds = new Set([...apertureIds, ...totalIds]);
+      state.missRays = (miss && miss.rays) || [];
+      renderRays();
+      applySelectionVisuals(); // miss ids recolour heliostats
+    },
+
     // A real trace's own rays (response.scene.rays), shown in place of the
     // live corner rays (and the miss rays) until the next edit makes
     // results stale.

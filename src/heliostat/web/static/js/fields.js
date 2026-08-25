@@ -1,15 +1,8 @@
-// Shared field descriptors + row-building helpers for the four sidebar
-// stages (Heliostat, Field, Receiver & Tower, Sun).
-//
-// Extracted out of panels/heliostat.js, panels/field.js, panels/receiver.js
-// and panels/sun.js (which used to each carry their own numberRow/
-// isFocused/setVal trio) so the floating in-scene inspector
-// (js/inspector.js) can render "exactly the same fields as that object's
-// sidebar stage, bound to the same values" (docs/ui-spec.md 2.4) without a
-// second copy of the field lists. Both the sidebar panels and the
-// inspector build their rows from the descriptors below, and every row's
+// Shared field descriptors + row-building helpers for the sidebar stages
+// (Heliostat, Field, Receiver & Tower, Sun) and the floating inspector,
+// which renders the same fields bound to the same store paths. Every row's
 // `input` event is the only place a typed value turns into a store.set --
-// so there really is one edit pathway, not two kept in sync by hand.
+// one edit pathway, not two kept in sync by hand.
 import { store } from "./store.js";
 
 export function isFocused(el) {
@@ -25,18 +18,13 @@ export function setVal(input, value) {
 // A field's `path` is either a store path string or a function(doc) that
 // returns one -- the Receiver & Tower fields need the latter because the
 // real path depends on which optics layout (doc.optics) is selected.
-// Exported so the elevation view's dimension callouts (js/views/elevation.js)
-// can bind their own hand-built <input> boxes to the same field descriptors
-// without a second copy of this one-liner (docs/ui-spec.md 2.2's "every
-// callout is an editable value box bound to the same fields as the sidebar").
 export function resolvePath(path, doc) {
   return typeof path === "function" ? path(doc) : path;
 }
 
 // Builds one <div class="frow"><label>...</label><input class="val"></div>
-// row wired straight to the field's store path -- identical markup and
-// behavior (focused-input guard included, via setVal called from each
-// render()) to the panels' former private numberRow helpers.
+// row wired straight to the field's store path, with setVal's focus guard
+// applied on every render.
 export function numberRow(parent, field) {
   const row = document.createElement("div");
   row.className = "frow";
@@ -72,7 +60,7 @@ export function segButton(parent, label, active, onClick) {
   return btn;
 }
 
-// -- Heliostat stage: design fields (rect, grid, surface figure) -----------
+// -- Heliostat Shape tab: design fields (rect, grid, surface figure) -------
 
 export const HELIOSTAT_RECT_FIELDS = [
   { key: "width_mm", label: "Width (mm)", path: "doc.designParams.rect.width_mm", min: 1 },
@@ -93,6 +81,26 @@ export const HELIOSTAT_SURFACE_OPTIONS = [
   ["flat", "Flat"],
 ];
 
+// Read-only report of the current aperture: type + key dimensions. Shared
+// by the sidebar's Heliostat stage and the floating inspector so both say
+// the same thing about the same design.
+export function apertureSummaryText(doc) {
+  const type = doc.design.type;
+  if (type === "rect") {
+    const p = doc.designParams.rect;
+    const wM = (p.width_mm / 1000).toFixed(1);
+    const hM = (p.height_mm / 1000).toFixed(1);
+    return `${wM} × ${hM} m rectangle`;
+  }
+  if (type === "grid") {
+    const p = doc.designParams.grid;
+    return `${p.n_u}×${p.n_v} facet grid · ${p.facet_w_mm} × ${p.facet_h_mm} mm facets`;
+  }
+  const p = doc.designParams.custom;
+  const n = (p && p.vertices_mm && p.vertices_mm.length) || 0;
+  return `custom outline, ${n} vertices`;
+}
+
 // -- Field stage: single-heliostat (x, y) and Fermat-spiral fields ---------
 
 export const FIELD_SINGLE_FIELDS = [
@@ -109,8 +117,7 @@ export const FIELD_FERMAT_FIELDS = [
 // -- Receiver & Tower stage --------------------------------------------------
 // Field names match heliostat.web.app's *Optics models exactly, so what
 // the user types is what /api/scene/geometry and /api/trace read back
-// under `optics_params` (docs/ui-spec.md 2.2's per-layout table -- no
-// shared "tower height" alias).
+// under `optics_params` -- no shared "tower height" alias.
 
 function opticsPath(key) {
   return (doc) => `doc.opticsParams.${doc.optics}.${key}`;
@@ -153,27 +160,23 @@ export const SUN_FIELDS = [
   { key: "el", label: "Elevation (°)", path: "doc.sun.el", min: -90, max: 90, step: 0.1 },
 ];
 
-// -- Aperture-radius miss warning (docs/ui-spec.md 2.3 + 2.4) --------------
+// -- Aperture-radius miss warning ------------------------------------------
 //
 // Shared by the Receiver & Tower panel and the inspector so the identical
-// amber message appears in both places whenever ui.miss (set from
-// /api/scene/geometry's top-level `miss` key) names any heliostats that
-// miss the aperture or can't reach the secondary at all. Defensive against
-// `miss` being undefined/null (the backend contract isn't necessarily live
-// yet) or either id list being absent -- both read as "no warning".
+// amber message appears in both places. Defensive against `miss` being
+// undefined/null or either id list being absent -- both read as "no
+// warning".
 export function apertureMissMessage(miss) {
   if (!miss) return null;
   const apertureIds = miss.aperture_miss_ids || [];
   const totalIds = miss.total_miss_ids || [];
   if (!apertureIds.length && !totalIds.length) return null;
 
-  // Two different physics, two different messages (Ryker's correction):
-  // an aperture miss is fixable -- the reflected ray would land in the
+  // An aperture miss is fixable -- the reflected ray would land in the
   // receiver window, the rim just cuts it off first, so "needs >= X" is a
   // real purchase recommendation. A total miss is not: that heliostat's
-  // light never reaches the receiver via this secondary (a near heliostat
-  // that can't reach the cone, or a steep cone folding light away), and no
-  // aperture size helps, so the message must not suggest one.
+  // light never reaches the receiver via this secondary, and no aperture
+  // size helps, so the message must not suggest one.
   let message;
   if (apertureIds.length) {
     const needed = miss.needed_aperture_radius_mm;

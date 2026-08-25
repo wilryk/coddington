@@ -430,7 +430,7 @@ def _solve_for(
 class _DesignBase(BaseModel):
     """Shared design fields -- in practice, the mirror's optical figure.
 
-    **Two independent axes, and mixing them up is the easy mistake.**
+    **Independent axes, and mixing them up is the easy mistake.**
 
     ``surface`` is the *optical figure* carried by each facet: the sag and
     slope of its own reflecting surface, which is what curves the light.
@@ -444,16 +444,25 @@ class _DesignBase(BaseModel):
     ``surface="flat"`` means "flat facets, still canted wherever
     ``cant_focal_mm`` says", not "flat and parallel".
 
+    ``facet_focal_mm`` (grid and flower only) is a third, independent axis:
+    the facet's own manufactured *curvature*, as a fixed spherical focal
+    length (or explicitly none, at ``0``). Real heliostats often carry a
+    fixed, weakly-focusing curvature that has nothing to do with how each
+    heliostat is individually canted -- this field lets a design say so.
+    Left blank, curvature follows ``surface``/``cant_focal_mm`` exactly as
+    it always has; set, it overrides that figure on every facet regardless
+    of ``surface`` or canting. See :func:`_build_trace_design`.
+
     ``surface`` values:
 
     * ``"twisting"`` (default) -- whatever solve-driven figure this app
-      judges best for the design type, i.e. exactly what it did before this
-      field existed. For a rectangle that is the aiming solve's own
-      astigmatic figure, the twisting mirror of the companion paper; for a
-      grid or flower it is *spherical* facets auto-focused at the
-      heliostat's slant range (blank ``cant_focal_mm``) or at the given
-      focal. "Twisting" names the choice being made for you, not a single
-      distinct kind of surface.
+      judges best for the design type. For a rectangle that is the aiming
+      solve's own astigmatic figure, the twisting mirror of the companion
+      paper; a grid or flower carries the same astigmatic figure, applied
+      per facet in that facet's own local frame (an approximation -- see
+      :func:`_build_trace_design`). ``facet_focal_mm``, when set on a grid
+      or flower, overrides this with a fixed spherical (or flat) facet
+      curvature instead.
     * ``"spherical"`` -- a spherical cap on every facet (or on the single
       rectangle), at the resolved cant focal: blank ``cant_focal_mm`` means
       this heliostat's own slant range, an explicit value means that focal.
@@ -503,6 +512,12 @@ class GridParams(_DesignBase):
     # uncanted -- see _resolved_cant_focal_mm. Must accept 0 for that to be
     # expressible, hence ge=0 rather than gt=0.
     cant_focal_mm: float | None = Field(default=None, ge=0)
+    # Facet CURVATURE, independent of cant_focal_mm's aim -- see
+    # _DesignBase. None follows surface/cant_focal_mm exactly as before this
+    # field existed; 0 is explicitly flat facets; a positive value fixes
+    # every facet to Spherical(facet_focal_mm) regardless of surface or
+    # canting -- see _build_trace_design.
+    facet_focal_mm: float | None = Field(default=None, ge=0)
 
 
 class FlowerParams(_DesignBase):
@@ -512,6 +527,7 @@ class FlowerParams(_DesignBase):
     petal_width_mm: float = Field(gt=0)
     hub_radius_mm: float = Field(default=0.0, ge=0)
     cant_focal_mm: float | None = Field(default=None, ge=0)
+    facet_focal_mm: float | None = Field(default=None, ge=0)
 
 
 class CustomParams(_DesignBase):
@@ -1163,7 +1179,10 @@ def _build_design(
     if isinstance(params, CustomParams):
         return custom_heliostat(vertices_mm=params.vertices_mm)
     cant = _resolved_cant_focal_mm(params.cant_focal_mm, auto_focal_mm)
-    surface = Spherical("slant") if cant is not None else None
+    if params.facet_focal_mm is not None:
+        surface = Spherical(params.facet_focal_mm) if params.facet_focal_mm > 0 else Flat()
+    else:
+        surface = Spherical("slant") if cant is not None else None
     return _faceted(params, surface, cant)
 
 
@@ -1187,10 +1206,17 @@ def _build_trace_design(
     Rect's twisting figure is carried as ``ZernikeAstig(c3, -c4, -c5)`` per
     the sign convention documented in ``tests/test_design_tracing.py`` (the
     legacy path negates c4/c5 internally; a design equivalent to legacy
-    (c3, c4, c5) needs that flip applied up front).
+    (c3, c4, c5) needs that flip applied up front). A twisting grid or
+    flower carries the same ``ZernikeAstig(c3, -c4, -c5)``, unchanged, on
+    every facet, evaluated in that facet's own local frame -- the standard
+    canted-and-figured approximation of a continuously twisted surface
+    (every facet sees the same coefficients rather than its own re-solve).
 
     Canting stays on ``cant_focal_mm`` under every surface mode -- see
-    :class:`_DesignBase` for why those are two axes and not one.
+    :class:`_DesignBase`. A grid or flower's curvature is additionally
+    overridable by ``facet_focal_mm``: when set it fixes every facet's own
+    sphere (or removes curvature at 0) regardless of ``surface`` or
+    ``cant_focal_mm``; left blank, curvature follows ``surface`` as above.
     """
     if isinstance(params, RectParams):
         if params.surface == "twisting":
@@ -1217,26 +1243,32 @@ def _build_trace_design(
             figure = Spherical(slant_range_mm)
         return custom_heliostat(vertices_mm=params.vertices_mm, surface=figure)
 
-    if params.surface == "twisting":
-        return _build_design(params, auto_focal_mm=slant_range_mm)
-
     cant = _resolved_cant_focal_mm(params.cant_focal_mm, slant_range_mm)
+
+    if params.facet_focal_mm is not None:
+        curvature: Surface = (
+            Spherical(params.facet_focal_mm) if params.facet_focal_mm > 0 else Flat()
+        )
+        return _faceted(params, curvature, cant)
+
+    if params.surface == "twisting":
+        return _faceted(params, ZernikeAstig(sol.c3, -sol.c4, -sol.c5), cant)
     if params.surface == "flat":
-        surface: Surface = Flat()
-    elif cant is None:
-        # cant_focal_mm=0 is the caller explicitly asking for no focal point
-        # at all, which leaves a spherical figure nothing to be figured
-        # against. Inventing a focal here (slant range, say) would trace a
-        # perfectly plausible spot for a mirror nobody asked for.
+        return _faceted(params, Flat(), cant)
+    if cant is None:
+        # cant_focal_mm=0 with no facet_focal_mm either is the caller
+        # explicitly asking for no focal point at all, which leaves a
+        # spherical figure nothing to be figured against. Inventing a focal
+        # here (slant range, say) would trace a perfectly plausible spot for
+        # a mirror nobody asked for.
         raise ValueError(
             "surface='spherical' needs a focal length to figure the facets at, "
-            "but cant_focal_mm=0 asks for no focus at all. Leave cant_focal_mm "
-            "blank to figure at this heliostat's slant range, or give it a "
-            "positive focal length."
+            "but cant_focal_mm=0 asks for no focus and facet_focal_mm is not "
+            "set either. Leave cant_focal_mm blank to figure at this "
+            "heliostat's slant range, give it a positive focal length, or set "
+            "facet_focal_mm directly."
         )
-    else:
-        surface = Spherical("slant")
-    return _faceted(params, surface, cant)
+    return _faceted(params, Spherical("slant"), cant)
 
 
 def _design_is_flat(design: HeliostatDesign | None, c3: float, c4: float, c5: float) -> bool:
@@ -1247,13 +1279,15 @@ def _design_is_flat(design: HeliostatDesign | None, c3: float, c4: float, c5: fl
     solve (the defocus term ``c3`` is nonzero for any finite aim distance),
     so this branch is really only reachable in principle. The design path
     is flat when every facet's surface is :class:`Flat` or an all-zero
-    :class:`ZernikeAstig`. Two ways to get there: ``surface="flat"`` on any
-    design type (including a rectangle, which is then deliberately routed
-    off the legacy path so this check can see it), or an explicit
-    ``cant_focal_mm=0`` on a twisting grid/flower design, which leaves the
-    builders' own all-zero ``ZernikeAstig`` default in place (see
-    :func:`_resolved_cant_focal_mm`). Canting does not count: a canted flat
-    facet is still flat, and still needs the denser sampling.
+    :class:`ZernikeAstig`: ``surface="flat"`` on any design type (including
+    a rectangle, which is then deliberately routed off the legacy path so
+    this check can see it), or an explicit ``facet_focal_mm=0`` on a
+    grid/flower design (see :func:`_build_trace_design`). A twisting
+    grid/flower's astigmatic figure is generally not all-zero even when the
+    facets are left uncanted (``cant_focal_mm=0``), since it does not
+    depend on canting -- so that combination no longer counts as flat.
+    Canting does not count either way: a canted flat facet is still flat,
+    and still needs the denser sampling.
     """
     if design is None:
         return c3 == 0.0 and c4 == 0.0 and c5 == 0.0
@@ -1539,6 +1573,38 @@ def _zero_power_note(counters: dict, power_w: float | None) -> str | None:
     return "No light reached the receiver with this geometry."
 
 
+#: Per-timestep flux maps a day sweep keeps, capped so a fine hour_step
+#: cannot turn one job into an unbounded pile of PNGs. The finest allowed
+#: hour_step (0.05 h) over a long day is worth hundreds of steps; at roughly
+#: 100-200 KB per PNG and up to MAX_FINISHED_JOBS jobs alive at once,
+#: keeping every one would be tens of megabytes per job. 60 covers a sweep
+#: at a half-hour step or coarser (<=30 samples) with no striding at all,
+#: and bounds the rest.
+MAX_DAY_FLUX_MAPS = 60
+
+
+def _day_flux_step_indices(total: int, cap: int = MAX_DAY_FLUX_MAPS) -> set[int]:
+    """Which of ``total`` timesteps get a stored flux map.
+
+    Every step if the day fits under ``cap``; otherwise an evenly spaced
+    subset of ``cap`` of them, always including the first and last, so a
+    coarse sweep still shows the day's extremes rather than an arbitrary
+    prefix.
+    """
+    if total <= cap:
+        return set(range(total))
+    if cap <= 1:
+        return {0} if total else set()
+    return {round(i * (total - 1) / (cap - 1)) for i in range(cap)}
+
+
+def _day_flux_blob_key(step: int) -> str:
+    """The key a day job's flux PNG for ``step`` is stored under in
+    ``Job.blobs`` -- one place both the writer and the reader use, so they
+    cannot drift apart."""
+    return f"day-flux/{step}"
+
+
 def _day_timesteps(req: "DayTraceRequest") -> list:
     """The day's sample times, from true sunrise to true sunset."""
     site = req.site
@@ -1558,7 +1624,7 @@ def _day_timesteps(req: "DayTraceRequest") -> list:
 
 
 def _trace_instant_metrics(
-    req: "DayTraceRequest", solar_az_deg: float, solar_el_deg: float
+    req: "DayTraceRequest", solar_az_deg: float, solar_el_deg: float, want_flux: bool = False
 ) -> dict:
     """Power and spot metrics at one instant, for one heliostat or a field.
 
@@ -1567,7 +1633,10 @@ def _trace_instant_metrics(
     and :func:`_trace_core` -- so a day's numbers are the numbers those
     endpoints would report, timestep by timestep. Nothing here re-implements
     physics; it only skips the parts a time series has no use for (the flux
-    PNG, the 3-D scene, the per-heliostat table).
+    PNG, the 3-D scene, the per-heliostat table) unless ``want_flux`` asks
+    for the grid back too, under ``flux``/``u_edges``/``v_edges``, so a
+    caller that already paid for this trace can render a PNG from it instead
+    of tracing the timestep again.
     """
     optics_params = resolve_optics_params(req.optics, req.optics_params)
     secondary, receiver = _geometry_for(req.optics, optics_params)
@@ -1629,7 +1698,7 @@ def _trace_instant_metrics(
             power_w += result["power_w"] * eta
 
     rms_mm, centroid = _cone_metrics(flux, u_edges, v_edges)
-    return {
+    out = {
         "power_w": float(power_w),
         "peak_flux_kw_m2": float(np.max(flux)) / 1000.0,
         "rms_radius_mm": rms_mm,
@@ -1639,6 +1708,11 @@ def _trace_instant_metrics(
         "eta_mean": float(np.mean(eta_union)),
         "n_heliostats": len(ids),
     }
+    if want_flux:
+        out["flux"] = flux
+        out["u_edges"] = u_edges
+        out["v_edges"] = v_edges
+    return out
 
 
 def _flux_grid_for(body: "TraceRequest") -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -2182,13 +2256,24 @@ def create_app():
                 ),
             )
 
+        kept_steps = _day_flux_step_indices(len(steps), cap=MAX_DAY_FLUX_MAPS)
+
         def work(job):
             rows = []
             for index, step in enumerate(steps):
                 if job.cancelled():
                     break
                 job.detail = f"{step.key} ({step.solar_el_deg:.1f}° elevation)"
-                metrics = _trace_instant_metrics(body, step.solar_az_deg, step.solar_el_deg)
+                want_flux = index in kept_steps
+                t0 = time.perf_counter()
+                metrics = _trace_instant_metrics(
+                    body, step.solar_az_deg, step.solar_el_deg, want_flux=want_flux
+                )
+                elapsed_ms = (time.perf_counter() - t0) * 1000.0
+                if want_flux:
+                    job.blobs[_day_flux_blob_key(index)] = _render_flux_png(
+                        metrics["flux"], metrics["u_edges"], metrics["v_edges"], body.mode, elapsed_ms
+                    )
                 rows.append(
                     {
                         "key": step.key,
@@ -2198,9 +2283,10 @@ def create_app():
                         **{
                             k: (None if v is None or not np.isfinite(v) else round(float(v), 4))
                             for k, v in metrics.items()
-                            if k not in ("centroid_mm", "n_heliostats")
+                            if k not in ("centroid_mm", "n_heliostats", "flux", "u_edges", "v_edges")
                         },
                         "n_heliostats": metrics["n_heliostats"],
+                        "has_flux_map": want_flux,
                     }
                 )
                 job.done = index + 1
@@ -2246,6 +2332,32 @@ def create_app():
                 "ascii"
             )
         return JSONResponse(payload)
+
+    @app.get("/api/day/flux/{job_id}/{step}.png")
+    def day_flux_png(job_id: str, step: int) -> Response:
+        """One timestep's flux map from a finished day sweep.
+
+        Rendered once, during the sweep itself (see ``day_start``), and
+        served back as-is here -- no re-trace. Same unknown-job/still-running
+        behaviour as ``/api/day/result``. A step past the run's own count,
+        or one the sweep did not keep a map for (``MAX_DAY_FLUX_MAPS``; each
+        result row says which via ``has_flux_map``), is also a 404 -- there
+        is nothing stored to serve either way.
+        """
+        job = JOBS.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"no job {job_id!r}")
+        if job.state == "running":
+            raise HTTPException(status_code=409, detail="still running")
+        if job.state == "error":
+            raise HTTPException(status_code=500, detail=job.error or "the run failed")
+        steps = (job.result or {}).get("steps") or []
+        if not 0 <= step < len(steps):
+            raise HTTPException(status_code=404, detail=f"no timestep {step} in that day's run")
+        png_bytes = job.blobs.get(_day_flux_blob_key(step))
+        if png_bytes is None:
+            raise HTTPException(status_code=404, detail="no stored flux map for that timestep")
+        return Response(content=png_bytes, media_type="image/png")
 
     @app.get("/api/day/export/{job_id}.csv")
     def day_export(job_id: str) -> Response:

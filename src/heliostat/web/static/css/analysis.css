@@ -1,0 +1,193 @@
+/* Analysis tab (docs/ui-spec.md 4, mockup M7) -- day sweeps against the
+   current project. Reuses app.css's .tabpage/.tabcontent/.panel/.frame/
+   .caption/.seg/.frow/.hint/.fielderr/.btn tokens; everything below is
+   layout and widgets those don't already cover. */
+
+/* Results measured on a setup the project has since moved away from: still
+   readable, visibly no longer current. Matches the run bar's stale results. */
+.an-stale {
+  opacity: 0.45;
+}
+
+.an-subject {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12.5px;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+}
+.an-subject strong {
+  color: var(--text);
+  font-weight: 600;
+}
+.an-subject a {
+  margin-left: auto;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.an-left {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+}
+.an-right {
+  flex: 0 0 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+}
+
+.an-controlrow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.an-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.an-field label {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.an-field input.val {
+  width: auto;
+}
+.an-field input[type="date"] {
+  width: 150px;
+}
+.an-field input[type="number"] {
+  width: 84px;
+}
+
+.an-progressrow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+.an-progressbar {
+  flex: 1 1 auto;
+  height: 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  background: #fff;
+}
+.an-progressfill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+.an-progresstext {
+  color: var(--muted);
+  font-size: 12px;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.an-energyfoot {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 10px;
+}
+.an-energyfoot .an-total {
+  color: var(--muted);
+  font-size: 12px;
+}
+.an-energyfoot .an-total strong {
+  color: var(--text);
+}
+.an-energyfoot a {
+  font-size: 12px;
+  margin-left: auto;
+}
+
+.an-yearpanel .an-yearrow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.an-yearpanel .an-yearrow h2 {
+  margin: 0;
+  flex: 0 0 auto;
+}
+.an-yeardesc {
+  color: var(--muted);
+  font-size: 12px;
+  flex: 1 1 auto;
+}
+.an-yearpanel .btn {
+  flex: 0 0 auto;
+}
+.an-yearpanel .hint {
+  margin-top: 8px;
+}
+
+.an-tspanel {
+  flex: 1 1 auto;
+  min-height: 200px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.an-tswrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+.an-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+.an-table th {
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  text-align: right;
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.an-table th:first-child,
+.an-table td:first-child {
+  text-align: left;
+}
+.an-table td {
+  text-align: right;
+  padding: 6px 8px;
+  border-bottom: 1px solid #eef1f4;
+}
+.an-table tbody tr {
+  cursor: pointer;
+}
+.an-table tbody tr:hover td {
+  background: #fafbfc;
+}
+.an-table tr.sel td {
+  background: #f2f7fd;
+  box-shadow: inset 3px 0 0 var(--select);
+}
+
+.an-fluxpanel {
+  flex: 0 0 auto;
+}

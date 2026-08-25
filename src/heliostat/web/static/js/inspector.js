@@ -1,23 +1,21 @@
-// Floating in-scene inspector (docs/ui-spec.md 2.4): shown whenever
-// ui.selection is set, editing the exact same store paths as the matching
-// sidebar stage via ./fields.js's shared descriptors -- "no separate edit
-// pathway, no hidden overrides, no Apply". main.js re-renders this on
-// every store change, the same as the four sidebar panels; it also needs
-// the last /api/scene/geometry response (to look up a selected
-// heliostat's position for its distance-from-axis readout), which isn't
-// store state, so main.js passes it in as `ctx.geometry`.
+// Floating in-scene inspector: shown whenever ui.selection is set, editing
+// the exact same store paths as the matching sidebar stage via
+// ./fields.js's shared descriptors -- no separate edit pathway. main.js
+// re-renders this on every store change, the same as the sidebar panels;
+// it also needs the last /api/scene/geometry response (to look up a
+// selected heliostat's position for its distance-from-axis readout),
+// which isn't store state, so main.js passes it in as `ctx.geometry`.
 import { store } from "./store.js";
 import {
   numberRow,
   setVal,
   segButton,
-  HELIOSTAT_RECT_FIELDS,
-  HELIOSTAT_GRID_FIELDS,
   HELIOSTAT_SURFACE_OPTIONS,
   RECEIVER_FIELD_TABLE,
   OPTICS_LABELS,
   SUN_FIELDS,
   apertureMissMessage,
+  apertureSummaryText,
 } from "./fields.js";
 
 const OPTICS_NAME = Object.fromEntries(OPTICS_LABELS);
@@ -49,10 +47,8 @@ function build(container) {
   // -- heliostat: the Heliostat stage's own fields ------------------------
   const helioWrap = document.createElement("div");
 
-  // Phase 3c wave 1 (docs/ui-spec.md 3): "clicking any heliostat in the
-  // workspace offers 'View shape'" -- locks the Heliostat Shape tab's
-  // preview to this exact heliostat rather than its own median-heliostat
-  // default.
+  // Locks the Heliostat Shape tab's preview to this exact heliostat
+  // rather than its own median-heliostat default.
   const viewShapeLink = document.createElement("a");
   viewShapeLink.href = "#";
   viewShapeLink.className = "hint";
@@ -67,21 +63,10 @@ function build(container) {
   });
   helioWrap.appendChild(viewShapeLink);
 
-  const typeSeg = document.createElement("div");
-  typeSeg.className = "seg";
-  const rectBtn = segButton(typeSeg, "Rectangle", true, () => store.set("doc.design.type", "rect"));
-  const gridBtn = segButton(typeSeg, "Facet grid", false, () => store.set("doc.design.type", "grid"));
-  helioWrap.appendChild(typeSeg);
-
-  const rectFields = document.createElement("div");
-  const rectInputs = {};
-  for (const field of HELIOSTAT_RECT_FIELDS) rectInputs[field.key] = numberRow(rectFields, field);
-  helioWrap.appendChild(rectFields);
-
-  const gridFields = document.createElement("div");
-  const gridInputs = {};
-  for (const field of HELIOSTAT_GRID_FIELDS) gridInputs[field.key] = numberRow(gridFields, field);
-  helioWrap.appendChild(gridFields);
+  const helioSummary = document.createElement("div");
+  helioSummary.className = "summary";
+  helioSummary.style.marginTop = "0";
+  helioWrap.appendChild(helioSummary);
 
   const surfaceSeg = document.createElement("div");
   surfaceSeg.className = "seg";
@@ -132,8 +117,7 @@ function build(container) {
   }
 
   // Red geometry errors show here exactly as in the sidebar's Receiver &
-  // Tower stage -- docs/ui-spec.md 2.4: "Warnings and errors appear in
-  // both places identically."
+  // Tower stage.
   const opticsErrBox = document.createElement("div");
   opticsErrBox.className = "fielderr";
   opticsErrBox.hidden = true;
@@ -156,12 +140,7 @@ function build(container) {
     h3,
     sub,
     helioWrap,
-    rectBtn,
-    gridBtn,
-    rectFields,
-    gridFields,
-    rectInputs,
-    gridInputs,
+    helioSummary,
     surfaceBtns,
     opticsWrap,
     opticsBtns,
@@ -176,8 +155,7 @@ function build(container) {
 }
 
 // The heliostat's own x/y from the last geometry response, as a "distance
-// from the tower axis" readout (docs/ui-spec.md 3's "r 45.2 m" convention,
-// reused here for the header per the phase-3b brief).
+// from the tower axis" readout, shown in the header.
 function heliostatDistanceLabel(id, geometry) {
   const list = (geometry && geometry.heliostats) || [];
   const h = list.find((x) => x.id === id);
@@ -204,26 +182,9 @@ export function render(container, ctx) {
     els.h3.textContent = `Heliostat H-${sel.id}`;
     els.sub.textContent = heliostatDistanceLabel(sel.id, geometry) || "Selected in scene";
 
-    const type = doc.design.type;
-    els.rectBtn.classList.toggle("active", type === "rect");
-    els.gridBtn.classList.toggle("active", type === "grid");
-    els.rectFields.style.display = type === "rect" ? "" : "none";
-    els.gridFields.style.display = type === "grid" ? "" : "none";
+    els.helioSummary.textContent = apertureSummaryText(doc);
     const surface = doc.design.surface;
     for (const [key, btn] of Object.entries(els.surfaceBtns)) btn.classList.toggle("active", key === surface);
-
-    if (type === "rect") {
-      const p = doc.designParams.rect;
-      setVal(els.rectInputs.width_mm, p.width_mm);
-      setVal(els.rectInputs.height_mm, p.height_mm);
-    } else {
-      const p = doc.designParams.grid;
-      setVal(els.gridInputs.n_u, p.n_u);
-      setVal(els.gridInputs.n_v, p.n_v);
-      setVal(els.gridInputs.facet_w_mm, p.facet_w_mm);
-      setVal(els.gridInputs.facet_h_mm, p.facet_h_mm);
-      setVal(els.gridInputs.gap_mm, p.gap_mm);
-    }
   } else if (sel.kind === "secondary" || sel.kind === "receiver") {
     const optics = doc.optics;
     const name = OPTICS_NAME[optics] || optics;
