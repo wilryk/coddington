@@ -4,7 +4,15 @@
 // floating inspector (../inspector.js) can render the identical rows for
 // whichever optics is selected (docs/ui-spec.md 2.4).
 import { store } from "../store.js";
-import { numberRow, setVal, RECEIVER_FIELD_TABLE, OPTICS_LABELS, apertureMissMessage } from "../fields.js";
+import {
+  numberRow,
+  setVal,
+  RECEIVER_FIELD_TABLE,
+  OPTICS_LABELS,
+  RECEIVER_TYPE_OPTIONS,
+  receiverFieldVisible,
+  apertureMissMessage,
+} from "../fields.js";
 
 let built = false;
 let els = {};
@@ -43,8 +51,27 @@ function build(container) {
   }
   body.appendChild(opticsSeg);
 
+  // prime_focus only -- receiver_type is a string, so it gets its own
+  // segmented control rather than a RECEIVER_FIELD_TABLE/numberRow entry.
+  const receiverTypeSeg = document.createElement("div");
+  receiverTypeSeg.className = "seg";
+  const receiverTypeBtns = {};
+  for (const [key, label] of RECEIVER_TYPE_OPTIONS) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = label;
+    btn.addEventListener("click", () => store.set("doc.opticsParams.prime_focus.receiver_type", key));
+    receiverTypeSeg.appendChild(btn);
+    receiverTypeBtns[key] = btn;
+  }
+  body.appendChild(receiverTypeSeg);
+
   const fieldsByOptics = {};
   const inputsByOptics = {};
+  // Row element per field key, keyed by optics -- lets prime_focus's
+  // cylinder/frustum-only rows (receiverFieldVisible) hide independently of
+  // the rest of their own optics block.
+  const rowsByOptics = {};
   // The amber aperture-miss warning (docs/ui-spec.md 2.3) belongs right
   // under the aperture_radius_mm field -- only axicon and cassegrain have
   // one, so prime_focus simply gets no warnBox.
@@ -52,9 +79,12 @@ function build(container) {
   for (const [optics, fields] of Object.entries(RECEIVER_FIELD_TABLE)) {
     const wrap = document.createElement("div");
     const inputs = {};
+    const rows = {};
     let warnBox = null;
     for (const field of fields) {
-      inputs[field.key] = numberRow(wrap, field);
+      const input = numberRow(wrap, field);
+      inputs[field.key] = input;
+      rows[field.key] = input.parentElement;
       if (field.key === "aperture_radius_mm") {
         warnBox = document.createElement("div");
         warnBox.className = "fieldwarn";
@@ -65,6 +95,7 @@ function build(container) {
     body.appendChild(wrap);
     fieldsByOptics[optics] = wrap;
     inputsByOptics[optics] = inputs;
+    rowsByOptics[optics] = rows;
     warnBoxByOptics[optics] = warnBox;
   }
 
@@ -90,7 +121,18 @@ function build(container) {
   container.appendChild(head);
   container.appendChild(body);
 
-  els = { chev, body, opticsBtns, fieldsByOptics, inputsByOptics, warnBoxByOptics, errorBox };
+  els = {
+    chev,
+    body,
+    opticsBtns,
+    receiverTypeSeg,
+    receiverTypeBtns,
+    fieldsByOptics,
+    inputsByOptics,
+    rowsByOptics,
+    warnBoxByOptics,
+    errorBox,
+  };
   built = true;
 }
 
@@ -115,6 +157,18 @@ export function render(container) {
   }
 
   const params = doc.opticsParams[optics];
+
+  els.receiverTypeSeg.style.display = optics === "prime_focus" ? "" : "none";
+  if (optics === "prime_focus") {
+    const rType = params.receiver_type || "flat";
+    for (const [key, btn] of Object.entries(els.receiverTypeBtns)) {
+      btn.classList.toggle("active", key === rType);
+    }
+    for (const field of RECEIVER_FIELD_TABLE.prime_focus) {
+      els.rowsByOptics.prime_focus[field.key].style.display = receiverFieldVisible(field, params) ? "" : "none";
+    }
+  }
+
   for (const [key, input] of Object.entries(els.inputsByOptics[optics])) {
     setVal(input, params[key]);
   }

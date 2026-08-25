@@ -269,13 +269,29 @@ def test_banner_says_when_the_default_port_was_busy():
     assert "opening your browser" not in text
 
 
-def test_banner_degrades_on_a_console_that_cannot_encode_it(monkeypatch):
-    class _AsciiOnly:
-        encoding = "ascii"
+@pytest.mark.parametrize("encoding", ["ascii", "cp1252", None, ""])
+def test_banner_degrades_unless_the_stream_is_utf8(monkeypatch, encoding):
+    """cp1252 can encode an em dash but is usually read back as mojibake, and
+    a redirected or frozen stream may report no encoding at all."""
 
-    monkeypatch.setattr(sys, "stdout", _AsciiOnly())
-    assert "—" not in cli._console_safe("a — b")
+    class _Stream:
+        pass
+
+    stream = _Stream()
+    stream.encoding = encoding
+    monkeypatch.setattr(sys, "stdout", stream)
     assert cli._console_safe("a — b") == "a - b"
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "UTF8"])
+def test_banner_keeps_its_dash_on_a_utf8_stream(monkeypatch, encoding):
+    class _Stream:
+        pass
+
+    stream = _Stream()
+    stream.encoding = encoding
+    monkeypatch.setattr(sys, "stdout", stream)
+    assert cli._console_safe("a — b") == "a — b"
 
 
 # --------------------------------------------------------------------------

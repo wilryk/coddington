@@ -189,12 +189,31 @@ function apertureSvg(doc, geometry, ui, proj) {
   }
   const receiver = geometry && geometry.receiver;
   if (receiver) {
-    const size = 20;
+    // A true-to-scale footprint at the receiver's own (possibly off-axis)
+    // centre (docs/ui-spec.md 2.2: "positionable anywhere" + "draws ... in
+    // plan as footprint") -- a circle for the round shapes, at their outer
+    // radius, or the flat window's own rectangle. A small pixel floor keeps
+    // a genuinely tiny receiver clickable/visible rather than invisible.
     const isSel = !!sel && sel.kind === "receiver";
-    s +=
-      '<rect data-kind="receiver" x="' + (proj.cx - size / 2).toFixed(1) + '" y="' + (proj.cy - size / 2).toFixed(1) +
-      '" width="' + size + '" height="' + size + '" fill="rgba(217,123,41,0.7)" stroke="' +
-      (isSel ? SELECT_COLOR : "#a8551a") + '" stroke-width="' + (isSel ? 2.2 : 1.5) + '"></rect>';
+    const stroke = isSel ? SELECT_COLOR : "#a8551a";
+    const strokeWidth = isSel ? 2.2 : 1.5;
+    const [rx, ry] = toScreen(proj, (receiver.center_x_mm || 0) / 1000, (receiver.center_y_mm || 0) / 1000);
+    if (receiver.kind === "cylinder" || receiver.kind === "frustum") {
+      const outerRm =
+        (receiver.kind === "cylinder" ? receiver.radius_mm : Math.max(receiver.r_top_mm, receiver.r_bot_mm)) /
+        1000;
+      const r = Math.max(outerRm * proj.scale, 5);
+      s +=
+        '<circle data-kind="receiver" cx="' + rx.toFixed(1) + '" cy="' + ry.toFixed(1) + '" r="' + r.toFixed(1) +
+        '" fill="rgba(217,123,41,0.55)" stroke="' + stroke + '" stroke-width="' + strokeWidth + '"></circle>';
+    } else {
+      const wPx = Math.max(((receiver.half_u_mm || 0) * 2) / 1000 * proj.scale, 10);
+      const hPx = Math.max(((receiver.half_v_mm || 0) * 2) / 1000 * proj.scale, 10);
+      s +=
+        '<rect data-kind="receiver" x="' + (rx - wPx / 2).toFixed(1) + '" y="' + (ry - hPx / 2).toFixed(1) +
+        '" width="' + wPx.toFixed(1) + '" height="' + hPx.toFixed(1) + '" fill="rgba(217,123,41,0.7)" stroke="' +
+        stroke + '" stroke-width="' + strokeWidth + '"></rect>';
+    }
   }
   return s;
 }
@@ -223,7 +242,9 @@ function heliostatsSvg(heliostats, ui, proj, geometry) {
   const missIds = new Set([...((miss && miss.aperture_miss_ids) || []), ...((miss && miss.total_miss_ids) || [])]);
   const sel = ui.selection;
   const half = mirrorHalfExtentsM(geometry);
-  const fullW = Math.max(2 * half.u * proj.scale, MIN_HELIOSTAT_PX);
+  // Across the azimuth: the mirror's own u axis is horizontal and square to
+  // the direction it faces, so this extent never foreshortens.
+  const acrossAz = Math.max(2 * half.u * proj.scale, MIN_HELIOSTAT_PX);
   let s = "";
   for (const h of heliostats) {
     const [sx, sy] = toScreen(proj, h.x_mm / 1000, h.y_mm / 1000);
@@ -233,24 +254,26 @@ function heliostatsSvg(heliostats, ui, proj, geometry) {
     if (h.rot_az_deg == null) {
       // Sun below horizon (docs/ui-spec.md 2.1): no orientation solved --
       // draw an unoriented square rather than a rotated rect.
-      const sz = Math.max(fullW, MIN_HELIOSTAT_PX);
+      const sz = Math.max(acrossAz, MIN_HELIOSTAT_PX);
       s +=
         '<rect data-kind="heliostat" data-id="' + h.id + '" x="' + (sx - sz / 2).toFixed(1) + '" y="' +
         (sy - sz / 2).toFixed(1) + '" width="' + sz.toFixed(1) + '" height="' + sz.toFixed(1) + '" fill="' + fill +
         '" stroke="' + HELIOSTAT_STROKE + '" stroke-width="0.8"></rect>';
     } else {
-      // A tilted mirror covers less ground than its face: the dimension
-      // across the tilt foreshortens by sin(elevation of the normal), which
-      // is why a field that looks crowded drawn face-on is not.
+      // Along the azimuth: the mirror's v axis is the tilted one, and its
+      // ground shadow is sin(elevation) of its true height -- which is why a
+      // field that looks crowded drawn face-on is not.
       const foreshorten = Math.abs(Math.sin((h.rot_el_deg * Math.PI) / 180));
-      const fullH = Math.max(2 * half.v * proj.scale * foreshorten, MIN_HELIOSTAT_PX);
+      const alongAz = Math.max(2 * half.v * proj.scale * foreshorten, MIN_HELIOSTAT_PX);
       // Screen rotate = -az_deg: rot_az_deg is a math-standard angle (0=+x
       // east, 90=+y north, per scene3d.js's mirrorFrame docstring), and
-      // north-up screen space flips y, which negates the visual angle.
+      // north-up screen space flips y, which negates the visual angle. That
+      // puts the rect's WIDTH along the azimuth and its height across it.
       const rot = -h.rot_az_deg;
       s +=
-        '<rect data-kind="heliostat" data-id="' + h.id + '" x="' + (sx - fullW / 2).toFixed(1) + '" y="' +
-        (sy - fullH / 2).toFixed(1) + '" width="' + fullW.toFixed(1) + '" height="' + fullH.toFixed(1) + '" fill="' + fill +
+        '<rect data-kind="heliostat" data-id="' + h.id + '" x="' + (sx - alongAz / 2).toFixed(1) + '" y="' +
+        (sy - acrossAz / 2).toFixed(1) + '" width="' + alongAz.toFixed(1) + '" height="' + acrossAz.toFixed(1) +
+        '" fill="' + fill +
         '" stroke="' + HELIOSTAT_STROKE + '" stroke-width="0.8" transform="rotate(' +
         rot.toFixed(1) + " " + sx.toFixed(1) + " " + sy.toFixed(1) + ')"></rect>';
     }

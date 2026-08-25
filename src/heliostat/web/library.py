@@ -1,14 +1,14 @@
-"""The Library: named heliostat designs, receiver configs and projects.
+"""The Library: named heliostat designs, receiver configs, projects and runs.
 
-Three collections (``designs``, ``receivers``, ``projects``), each a folder
-of named JSON documents, generalising :mod:`heliostat.web.setups`'s
+Four collections (``designs``, ``receivers``, ``projects``, ``runs``), each a
+folder of named JSON documents, generalising :mod:`heliostat.web.setups`'s
 single-collection store rather than duplicating its file-safety machinery
-three times over. This module is deliberately as opinion-free as setups.py
+four times over. This module is deliberately as opinion-free as setups.py
 is: it stores and returns whatever document it is given and does not
-interpret it -- what a receiver or a project document must actually contain
-is :mod:`heliostat.web.app`'s business (see ``ReceiverDocument``,
-``ProjectDocument`` and ``_validate_library_document`` there), not this
-one's.
+interpret it -- what a receiver, a project or a run document must actually
+contain is :mod:`heliostat.web.app`'s business (see ``ReceiverDocument``,
+``ProjectDocument``, ``SavedRunDocument`` and ``_validate_library_document``
+there), not this one's.
 
 ``setups.py`` itself is untouched: it is a separate, older store (the GUI's
 free-form "save what's on screen" snapshots, honouring its own
@@ -30,11 +30,11 @@ from pathlib import Path
 
 from .setups import _NAME_RE, _RESERVED
 
-#: The three collections a library entry can belong to. ``projects`` is a
-#: collection like the other two even though it currently has no built-ins
-#: (see ``app._BUILTIN_LIBRARY``) -- a project is always something a user
-#: built, never a manuscript default.
-COLLECTIONS: tuple[str, ...] = ("designs", "receivers", "projects")
+#: The four collections a library entry can belong to. ``projects`` and
+#: ``runs`` have no built-ins (see ``app._BUILTIN_LIBRARY``) -- a project or
+#: a finished run is always something a user made, never a manuscript
+#: default.
+COLLECTIONS: tuple[str, ...] = ("designs", "receivers", "projects", "runs")
 
 
 class LibraryError(ValueError):
@@ -136,7 +136,12 @@ def load_entry(collection: str, name: str) -> dict:
 def list_entries(collection: str) -> list[dict]:
     """Every user-saved entry in ``collection``, newest first, without
     loading its document. Built-ins are not listed here -- the endpoint
-    prepends those from the constants before this."""
+    prepends those from the constants before this.
+
+    ``size_bytes`` is the entry's file size on disk -- exactly what a
+    ``runs`` entry's "Manage saved runs" footprint reports, since the whole
+    document (including any embedded flux PNGs) lives in that one file.
+    """
     root = _collection_dir(collection)
     if not root.is_dir():
         return []
@@ -148,6 +153,7 @@ def list_entries(collection: str) -> list[dict]:
                 {
                     "name": str(payload.get("name", path.stem)),
                     "saved_at": str(payload.get("saved_at", "")),
+                    "size_bytes": path.stat().st_size,
                 }
             )
         except (OSError, json.JSONDecodeError):

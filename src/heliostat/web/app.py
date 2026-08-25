@@ -33,7 +33,7 @@ than reading module constants of their own. The resolved values come back
 on the response as ``optics_resolved``.
 
 Pointing AND figure come from :mod:`heliostat.geometry.aiming`'s per-layout
-solves (:func:`~heliostat.geometry.aiming.solve_prime_focus`,
+solves (:func:`~heliostat.geometry.aiming.solve_prime_focus_to_receiver`,
 :func:`~heliostat.geometry.aiming.solve_axicon`,
 :func:`~heliostat.geometry.aiming.solve_cassegrain`), evaluated at the
 requested sun position and heliostat position -- the same aiming and
@@ -41,7 +41,10 @@ focusing solves that reproduce the golden fixtures' pointing/figure
 columns to machine precision (``tests/test_aiming.py``). The layout
 constants passed to each solve (focus heights, axicon geometry) match
 ``_geometry_for``'s optics below exactly, since this module traces against
-the identical fixture secondaries/receivers.
+the identical fixture secondaries/receivers. Prime focus's own solve
+targets whatever :func:`_prime_focus_receiver` resolves to (flat, on-axis
+and identical to the golden fixture by default; cylindrical, frustum,
+offset or off-axis when the request's ``optics_params`` says so).
 """
 
 from __future__ import annotations
@@ -54,12 +57,14 @@ from dataclasses import replace
 from io import BytesIO, StringIO
 from pathlib import Path
 from types import SimpleNamespace
+from collections.abc import Callable
 from typing import Annotated, ClassVar, Literal, Union
 
 import numpy as np
+import pandas as pd
 
 try:
-    from fastapi import FastAPI, HTTPException, Response
+    from fastapi import FastAPI, HTTPException, Request, Response
     from fastapi.responses import HTMLResponse, JSONResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import (
@@ -74,7 +79,7 @@ try:
 except ImportError as exc:  # pragma: no cover - exercised only without the extra
     raise ImportError("heliostat.web needs the 'web' extra: pip install heliostat[web]") from exc
 
-from heliostat import __version__
+from heliostat import __version__, energy
 from heliostat.field import HeliostatField, load_field, neighbour_pairs
 from heliostat.field_layouts import generate, ring_filter
 from heliostat.geometry.aiming import (
@@ -82,7 +87,7 @@ from heliostat.geometry.aiming import (
     aim_points_mm,
     solve_axicon,
     solve_cassegrain,
-    solve_prime_focus,
+    solve_prime_focus_to_receiver,
 )
 from heliostat.geometry.aperture import Polygon
 from heliostat.geometry.design import (
@@ -97,7 +102,13 @@ from heliostat.geometry.design import (
     rect_heliostat,
 )
 from heliostat.geometry.heliostat import zernike_sag_and_slopes
-from heliostat.geometry.receiver import FlatWindowReceiver
+from heliostat.geometry.receiver import (
+    ApertureClippedReceiver,
+    CylinderReceiver,
+    FlatWindowReceiver,
+    FrustumReceiver,
+    Receiver,
+)
 from heliostat.geometry.secondary import (
     AxiconSecondary,
     CassegrainSecondary,
@@ -112,6 +123,7 @@ from heliostat.geometry.shading import (
     polygon_occlusion,
     search_radius_for,
 )
+from heliostat.dni import ClearSkyDNI
 from heliostat.solar import build_time_grid, sun_position, sunrise_sunset
 from heliostat.trace.cone import sunshape_kernel, trace_heliostat_cone
 from heliostat.trace.mc import MIRROR_HALF_X_MM, MIRROR_HALF_Y_MM, trace_heliostat
@@ -269,6 +281,14 @@ AXICON_HALF_ANGLE_DEG = 20.0
 AXICON_APERTURE_RADIUS_MM = 14000.0
 AXICON_RECEIVER_Z_MM = 7000.0
 
+# Defaults for prime focus's cylindrical/frustum receiver shapes -- plain
+# defaults, not derived from anything.
+PRIME_FOCUS_CYLINDER_RADIUS_MM = 3000.0
+PRIME_FOCUS_CYLINDER_HEIGHT_MM = 6000.0
+PRIME_FOCUS_FRUSTUM_TOP_RADIUS_MM = 2500.0
+PRIME_FOCUS_FRUSTUM_BOTTOM_RADIUS_MM = 4000.0
+PRIME_FOCUS_FRUSTUM_HEIGHT_MM = 6000.0
+
 # The Cassegrain relay's own conic constants. Fixed, not exposed: they were
 # solved together with CASSEGRAIN_FOCUS_HEIGHT_MM and the 7000 mm receiver,
 # and only that triple describes a hyperboloid stigmatic between the two.
@@ -292,12 +312,25 @@ CASSEGRAIN_RECEIVER_Z_MM = 7000.0
 
 
 class PrimeFocusOptics(BaseModel):
-    """Receiver sitting directly at the field's common focus.
+    """Receiver at the field's common focus; no secondary mirror.
 
-    ``focus_height_mm`` is one number doing two jobs, and that is physical
-    rather than a shortcut: for this layout the aim point *is* the receiver
-    (see :func:`~heliostat.geometry.aiming.solve_prime_focus`), so there is
-    no second height to disagree with.
+    ``focus_height_mm``/``window_half_u_mm``/``window_half_v_mm`` describe
+    the entrance aperture -- a flat opening at the focus, sized like the
+    receiver window every layout has always had. ``receiver_type`` picks
+    what actually absorbs behind it: ``"flat"`` (default) puts that
+    absorbing surface AT the aperture, so ``aperture_to_receiver_mm = 0``
+    reproduces today's behaviour exactly; ``"cylinder"``/``"frustum"`` are
+    only meaningful here (a beam-down axicon/Cassegrain receiver sees the
+    beam from above, where only a flat window makes sense).
+
+    ``aperture_to_receiver_mm`` (default ``0``) sets the absorbing
+    surface's height back from the aperture along the tower axis --
+    ``0`` means "at the aperture", today's behaviour for every receiver
+    type. ``receiver_center_x_mm``/``receiver_center_y_mm`` (default the
+    tower axis) move the whole receiver off-axis; the aim solve
+    (:func:`~heliostat.geometry.aiming.solve_prime_focus_to_receiver`)
+    always targets the resolved receiver's own facing point, so pointing
+    and geometry can never disagree about where it is.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -305,6 +338,40 @@ class PrimeFocusOptics(BaseModel):
     focus_height_mm: float = Field(default=PRIME_FOCUS_HEIGHT_MM, gt=0)
     window_half_u_mm: float = Field(default=WINDOW_MM, gt=0)
     window_half_v_mm: float = Field(default=WINDOW_MM, gt=0)
+
+    receiver_type: Literal["flat", "cylinder", "frustum"] = "flat"
+    receiver_center_x_mm: float = 0.0
+    receiver_center_y_mm: float = 0.0
+    aperture_to_receiver_mm: float = Field(default=0.0, ge=0)
+
+    cylinder_radius_mm: float = Field(default=PRIME_FOCUS_CYLINDER_RADIUS_MM, gt=0)
+    cylinder_height_mm: float = Field(default=PRIME_FOCUS_CYLINDER_HEIGHT_MM, gt=0)
+
+    frustum_top_radius_mm: float = Field(default=PRIME_FOCUS_FRUSTUM_TOP_RADIUS_MM, gt=0)
+    frustum_bottom_radius_mm: float = Field(default=PRIME_FOCUS_FRUSTUM_BOTTOM_RADIUS_MM, gt=0)
+    frustum_height_mm: float = Field(default=PRIME_FOCUS_FRUSTUM_HEIGHT_MM, gt=0)
+
+    @model_validator(mode="after")
+    def _receiver_above_heliostat_plane(self) -> "PrimeFocusOptics":
+        # A coarse, on-axis sanity check -- catches an obviously impossible
+        # tower at 422 time. It cannot cover every heliostat's own aim
+        # point for an off-axis or curved receiver (that depends on where
+        # the heliostat stands); solve_prime_focus_to_receiver checks the
+        # real one per heliostat at solve time.
+        z = self.focus_height_mm + self.aperture_to_receiver_mm
+        if self.receiver_type == "cylinder":
+            z_bot = z - self.cylinder_height_mm / 2.0
+        elif self.receiver_type == "frustum":
+            z_bot = z - self.frustum_height_mm / 2.0
+        else:
+            z_bot = z
+        if z_bot <= 0.0:
+            raise ValueError(
+                f"receiver sits at or below the heliostat plane (z = {z_bot:.0f} mm) -- "
+                "raise focus_height_mm, reduce aperture_to_receiver_mm, or shrink the "
+                "receiver's own height"
+            )
+        return self
 
 
 class AxiconOptics(BaseModel):
@@ -428,7 +495,8 @@ def _solve_for(
     if params is None:
         params = resolve_optics_params(optics, None)
     if optics == "prime_focus":
-        return solve_prime_focus(x_mm, y_mm, solar_az_deg, solar_el_deg, params.focus_height_mm)
+        receiver = _prime_focus_receiver(params)
+        return solve_prime_focus_to_receiver(x_mm, y_mm, solar_az_deg, solar_el_deg, receiver)
     if optics == "axicon":
         return solve_axicon(
             x_mm,
@@ -1068,8 +1136,51 @@ class DayTraceRequest(_TraceRequestBase):
     heliostat_y_mm: float = -89609.0
 
 
+class YearSite(BaseModel):
+    """Where, and which calendar year -- a year estimate has no single
+    clock time, so this drops :class:`DaySite`'s ``month``/``day``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    latitude_deg: float = Field(default=-10.0, ge=-90.0, le=90.0)
+    longitude_deg: float = Field(default=-52.0, ge=-180.0, le=180.0)
+    timezone_h: float = Field(default=-3.0, ge=-14.0, le=14.0)
+    year: int = Field(default=2026, ge=1901, le=2099)
+
+
+class YearTraceRequest(_TraceRequestBase):
+    """Annual collection, estimated from a handful of traced days
+    (docs/ui-spec.md 4, "Year estimate").
+
+    Traces the dates :func:`heliostat.energy.suggest_sweep_dates` picks
+    (``branch="ascending"``, December solstice to June solstice -- the
+    single half-year that sweeps the whole declination range without
+    tracing any sun direction twice), then integrates
+    :func:`heliostat.energy.annual_energy` through the resulting
+    (declination, hour-angle) efficiency surface, which already covers every
+    hour of the year from as few as 7 traced days.
+
+    ``fast_mode`` (default on) traces 7 dates rather than 12; the other 5 of
+    the 12 reported sample days are reconstructed by mirroring a traced
+    date's optics onto its declination twin on the far side of a solstice
+    (see :func:`_year_report_days`), not by tracing them. DNI is always
+    :class:`heliostat.dni.ClearSkyDNI` -- the only provider that needs no
+    data file (see that module's docstring) -- so the reported total is a
+    clear-sky upper bound, not a weather-corrected estimate.
+    """
+
+    site: YearSite = Field(default_factory=YearSite)
+    fast_mode: bool = True
+    hour_step: float = Field(default=1.0, gt=0.05, le=6.0)
+    sunrise_margin_min: float = Field(default=10.0, ge=0.0, le=120.0)
+    layout: FieldLayout | None = None
+    exclude_ids: list[int] = Field(default_factory=list)
+    heliostat_x_mm: float = 0.0
+    heliostat_y_mm: float = -89609.0
+
+
 # ---------------------------------------------------------------------------
-# library: named designs, receiver configs and projects
+# library: named designs, receiver configs, projects and saved runs
 #
 # heliostat.web.library is the file store (name-safe, atomic writes, skip-
 # unparseable listing -- the same machinery heliostat.web.setups uses, see
@@ -1159,23 +1270,52 @@ class ProjectRun(BaseModel):
 
 
 class ProjectDocument(BaseModel):
-    """Schema v1 of a saved project: design + field + receiver + sun + run,
-    bundled as the Library's "save my work" unit (docs/ui-spec.md 5).
+    """A saved project: design + field + receiver + sun + run, bundled as
+    the Library's "save my work" unit (docs/ui-spec.md 5).
 
     ``schema_version`` is a required literal, not a default, on purpose: a
     document that does not say which version it is gets rejected rather than
-    silently read under today's rules, so a future v2 can change what a
-    project means without reinterpreting old ones.
+    silently read under today's rules. It accepts ``1`` or ``2``: v1 predates
+    saved runs and has no ``runs`` field (it defaults to empty, not
+    "unmigrated"), v2 adds one. Both validate the same way, so a v1 project
+    keeps opening; every fresh save writes ``2``.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal[1]
+    schema_version: Literal[1, 2]
     design: DesignParams
     receiver: ReceiverDocument
     field: ProjectField
     sun: ProjectSun
     run: ProjectRun = Field(default_factory=ProjectRun)
+    #: Names of ``runs`` library entries saved against this project
+    #: (docs/ui-spec.md 4, "runs save with the project"), most recent last.
+    runs: list[str] = Field(default_factory=list)
+
+
+class SavedRunDocument(BaseModel):
+    """A finished day sweep or year estimate, persisted so it reopens
+    without re-running (docs/ui-spec.md 4).
+
+    ``request`` is the exact body the run was started with -- the client's
+    own physics-key staleness check (js/tabs/analysis.js) runs against it
+    unchanged, whether the run is still in memory or was just reloaded from
+    here. ``result`` is the matching ``/api/day/result`` or
+    ``/api/year/result`` payload. ``flux_pngs`` carries a day run's
+    per-timestep irradiance maps, base64-encoded and keyed by step index as
+    a string (empty for a year estimate, which renders none) -- the saved
+    equivalent of a live job's in-memory ``Job.blobs``, so reopening a
+    timestep costs nothing here either.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["day", "year"]
+    project_name: str | None = None
+    request: dict
+    result: dict
+    flux_pngs: dict[str, str] = Field(default_factory=dict)
 
 
 #: Which pydantic shape validates a document posted to each library
@@ -1199,6 +1339,8 @@ def _validate_library_document(collection: str, document: dict) -> None:
             ReceiverDocument.model_validate(document)
         elif collection == "projects":
             ProjectDocument.model_validate(document)
+        elif collection == "runs":
+            SavedRunDocument.model_validate(document)
         else:  # pragma: no cover - the endpoint 404s unknown collections first
             raise ValueError(f"unknown library collection {collection!r}")
     except ValidationError as exc:
@@ -1211,16 +1353,18 @@ def _validate_library_document(collection: str, document: dict) -> None:
 
 #: Built-in, read-only entries per collection -- see
 #: heliostat.web.builtin_library for the numbers and where they come from.
-#: ``projects`` has none: a project is always something a user built.
+#: ``projects`` and ``runs`` have none: both are always something a user
+#: made, never a manuscript default.
 _BUILTIN_LIBRARY: dict[str, dict[str, dict]] = {
     "designs": BUILTIN_DESIGNS,
     "receivers": BUILTIN_RECEIVERS,
     "projects": {},
+    "runs": {},
 }
 
 
 def _require_known_collection(collection: str) -> None:
-    """404 for a collection name that is not one of the three -- every
+    """404 for a collection name that is not one of the four -- every
     library route needs this same check first, so it is one function
     rather than four copies of the same ``if``."""
     if collection not in _BUILTIN_LIBRARY:
@@ -1430,6 +1574,82 @@ def _design_is_flat(design: HeliostatDesign | None, c3: float, c4: float, c5: fl
 # see the module docstring for why this is a copy, not an import)
 
 
+def _prime_focus_receiver(params: PrimeFocusOptics) -> Receiver:
+    """Prime focus's actual absorbing surface -- flat/cylinder/frustum.
+
+    This is the receiver the aim solve targets (:func:`_solve_for`) AND the
+    innermost surface the trace absorbs on (:func:`_geometry_for`, wrapped
+    in :class:`ApertureClippedReceiver` when there is an offset) -- both
+    read this one function so pointing and geometry can never disagree
+    about where the receiver actually is.
+
+    Equal top/bottom frustum radii collapse to :class:`CylinderReceiver`:
+    a frustum's own geometry (its cone apex) is undefined there (see
+    :class:`FrustumReceiver.__post_init__`), so a user typing matching
+    radii -- the "frustum that is really a cylinder" degenerate case --
+    gets a receiver that traces exactly, not a 422.
+    """
+    z = params.focus_height_mm + params.aperture_to_receiver_mm
+    cx, cy = params.receiver_center_x_mm, params.receiver_center_y_mm
+    if params.receiver_type == "cylinder":
+        return CylinderReceiver(
+            center_x_mm=cx,
+            center_y_mm=cy,
+            center_z_mm=z,
+            radius_mm=params.cylinder_radius_mm,
+            height_mm=params.cylinder_height_mm,
+        )
+    if params.receiver_type == "frustum":
+        half_h = params.frustum_height_mm / 2.0
+        if params.frustum_top_radius_mm == params.frustum_bottom_radius_mm:
+            return CylinderReceiver(
+                center_x_mm=cx,
+                center_y_mm=cy,
+                center_z_mm=z,
+                radius_mm=params.frustum_top_radius_mm,
+                height_mm=params.frustum_height_mm,
+            )
+        return FrustumReceiver(
+            center_x_mm=cx,
+            center_y_mm=cy,
+            z_bot_mm=z - half_h,
+            r_bot_mm=params.frustum_bottom_radius_mm,
+            z_top_mm=z + half_h,
+            r_top_mm=params.frustum_top_radius_mm,
+        )
+    return FlatWindowReceiver(
+        z_mm=z,
+        half_u_mm=params.window_half_u_mm,
+        half_v_mm=params.window_half_v_mm,
+        facing="down",
+        center_x_mm=cx,
+        center_y_mm=cy,
+    )
+
+
+def _prime_focus_geometry_receiver(params: PrimeFocusOptics) -> Receiver:
+    """The receiver the trace absorbs on: :func:`_prime_focus_receiver`,
+    behind the entrance aperture whenever ``aperture_to_receiver_mm > 0``.
+
+    At the default offset of ``0`` the aperture and the receiver coincide,
+    so wrapping would add nothing but a redundant clip -- this returns the
+    bare receiver in that case, which is what keeps a request naming no
+    offset tracing bit-identically to before this feature existed.
+    """
+    inner = _prime_focus_receiver(params)
+    if params.aperture_to_receiver_mm <= 0.0:
+        return inner
+    aperture = FlatWindowReceiver(
+        z_mm=params.focus_height_mm,
+        half_u_mm=params.window_half_u_mm,
+        half_v_mm=params.window_half_v_mm,
+        facing="down",
+        center_x_mm=params.receiver_center_x_mm,
+        center_y_mm=params.receiver_center_y_mm,
+    )
+    return ApertureClippedReceiver(aperture=aperture, inner=inner)
+
+
 def _geometry_for(optics: str, params: OpticsParams | None = None):
     """``(secondary, receiver)`` for ``optics``, built from ``params``.
 
@@ -1442,12 +1662,7 @@ def _geometry_for(optics: str, params: OpticsParams | None = None):
         params = resolve_optics_params(optics, None)
     if optics == "prime_focus":
         secondary = NoSecondary()
-        receiver = FlatWindowReceiver(
-            z_mm=params.focus_height_mm,
-            half_u_mm=params.window_half_u_mm,
-            half_v_mm=params.window_half_v_mm,
-            facing="down",
-        )
+        receiver = _prime_focus_geometry_receiver(params)
     elif optics == "axicon":
         secondary = AxiconSecondary(
             apex_height_mm=params.apex_height_mm,
@@ -1486,12 +1701,14 @@ def _geometry_for(optics: str, params: OpticsParams | None = None):
 # tracing + rendering helpers
 
 
-def _mc_flux_and_metrics(xy: np.ndarray, watts_per_ray: float, receiver: FlatWindowReceiver):
+def _mc_flux_and_metrics(xy: np.ndarray, watts_per_ray: float, receiver: Receiver):
     """2D-histogram flux map + spot metrics from raw Monte Carlo receiver hits."""
     (u0, u1), (v0, v1) = receiver.uv_extent()
     u_edges = np.linspace(u0, u1, FLUX_GRID + 1)
     v_edges = np.linspace(v0, v1, FLUX_GRID + 1)
-    bin_area_m2 = ((u1 - u0) / FLUX_GRID / 1000.0) * ((v1 - v0) / FLUX_GRID / 1000.0)
+    # Per-bin area, not a scalar: uniform for a flat window or cylinder, but
+    # a frustum's bins shrink toward its narrow end (Receiver.bin_areas_m2).
+    bin_area_m2 = receiver.bin_areas_m2((FLUX_GRID, FLUX_GRID))
 
     counts, _, _ = np.histogram2d(xy[1], xy[0], bins=[v_edges, u_edges])
     flux = counts * watts_per_ray / bin_area_m2  # (n_v, n_u), W/m^2
@@ -1528,7 +1745,7 @@ def _trace_core(
     solar_az_deg: float,
     solar_el_deg: float,
     secondary,
-    receiver: FlatWindowReceiver,
+    receiver: Receiver,
     mode: TraceMode,
     *,
     mc_seed=1,
@@ -1745,8 +1962,16 @@ def _day_timesteps(req: "DayTraceRequest") -> list:
     return build_time_grid(cfg, [_dt.date(site.year, site.month, site.day)])
 
 
+class _TraceCancelled(Exception):
+    """Raised out of a partially-traced field when its job was cancelled."""
+
+
 def _trace_instant_metrics(
-    req: "DayTraceRequest", solar_az_deg: float, solar_el_deg: float, want_flux: bool = False
+    req: "DayTraceRequest",
+    solar_az_deg: float,
+    solar_el_deg: float,
+    want_flux: bool = False,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> dict:
     """Power and spot metrics at one instant, for one heliostat or a field.
 
@@ -1766,7 +1991,7 @@ def _trace_instant_metrics(
     (u0, u1), (v0, v1) = receiver.uv_extent()
     u_edges = np.linspace(u0, u1, FLUX_GRID + 1)
     v_edges = np.linspace(v0, v1, FLUX_GRID + 1)
-    bin_area_m2 = ((u1 - u0) / FLUX_GRID / 1000.0) * ((v1 - v0) / FLUX_GRID / 1000.0)
+    bin_area_m2 = receiver.bin_areas_m2((FLUX_GRID, FLUX_GRID))
 
     if req.layout is None:
         xy_mm = np.array([[req.heliostat_x_mm, req.heliostat_y_mm]], dtype=float)
@@ -1794,6 +2019,11 @@ def _trace_instant_metrics(
     flux = np.zeros((FLUX_GRID, FLUX_GRID))
     power_w = 0.0
     for i in range(len(ids)):
+        # Checked per heliostat, not per timestep: one timestep of a large
+        # field runs for minutes, and a cancel that waits for it reads as a
+        # hang. Reading a threading.Event costs nothing next to a trace.
+        if should_cancel is not None and should_cancel():
+            raise _TraceCancelled
         result = _trace_core(
             designs[i],
             float(xy_mm[i, 0]),
@@ -1928,6 +2158,161 @@ def _day_energy_kwh(steps: list[dict]) -> float:
     hours = np.array([s["hour"] for s in steps], dtype=float)
     power_kw = np.array([s["power_w"] for s in steps], dtype=float) / 1000.0
     return float(np.trapz(power_kw, hours))
+
+
+# ---------------------------------------------------------------------------
+# year estimate (docs/ui-spec.md 4): a handful of traced days, integrated
+# over the whole year through heliostat.energy's (declination, hour-angle)
+# efficiency surface.
+#
+# Slow mode traces every reported sample day directly. Fast mode traces only
+# the days needed to span the full declination range once (the December ->
+# June solstice half-year -- see YearTraceRequest's docstring) and fills in
+# the rest of the reported days by re-using a traced day's optics at its
+# declination twin on the other side of a solstice
+# (heliostat.energy.traced_day_energy's own ``source_date`` argument), which
+# is exact wherever the twin's declination genuinely matches (real calendars
+# are not perfectly symmetric about a solstice, so it is a very close
+# approximation rather than identical).
+
+#: Sample days requested by docs/ui-spec.md 4: 12 by default, 7 in fast mode
+#: (the December and June solstices plus 5 interior declinations -- their 5
+#: mirror twins fill out the other 5 of the 12 reported days).
+YEAR_SLOW_N_DECLINATIONS = 12
+YEAR_FAST_N_DECLINATIONS = 7
+
+
+def _year_energy_cfg(req: "YearTraceRequest") -> SimpleNamespace:
+    """The ``cfg``-shaped object :mod:`heliostat.energy` and
+    :mod:`heliostat.solar` take -- a plain namespace, since neither module
+    prescribes a concrete config class (see ``energy.annual_energy``'s
+    docstring). ``field.mirror_area_m2`` starts at a placeholder; the caller
+    fills it in once it knows the design's own footprint.
+    """
+    return SimpleNamespace(
+        site=SimpleNamespace(
+            latitude=req.site.latitude_deg,
+            longitude=req.site.longitude_deg,
+            timezone=req.site.timezone_h,
+        ),
+        sweep=SimpleNamespace(
+            hour_step=req.hour_step,
+            sunrise_margin_min=req.sunrise_margin_min,
+            dates=[],
+        ),
+        field=SimpleNamespace(mirror_area_m2=1.0),
+    )
+
+
+def _year_mirror_area_m2(req: "YearTraceRequest", optics_params: OpticsParams) -> float:
+    """One heliostat's own aperture footprint, m^2.
+
+    This cancels exactly out of the annual MWh total: ``eta_optical``
+    (:func:`heliostat.energy.optical_efficiency`) divides traced power by
+    it, ``annual_energy`` multiplies the same factor back in. It only has to
+    be honest for the diagnostic ``annual_optical_efficiency`` the result
+    also carries, so a representative solve (an arbitrary but plausible sun
+    position, not the field's real traced ones) is enough -- the footprint
+    itself does not depend on where the sun is.
+    """
+    if req.layout is None:
+        x0, y0 = req.heliostat_x_mm, req.heliostat_y_mm
+    else:
+        xy, _ids = _field_positions(req.layout, req.exclude_ids)
+        x0, y0 = float(xy[0, 0]), float(xy[0, 1])
+    sol = _solve_for(req.optics, x0, y0, 180.0, 45.0, optics_params)
+    slant = _slant_range_mm(sol, x0, y0)
+    design = _build_trace_design(req.design, sol, slant)
+    _region, _outline, half_w, half_h = _field_geometry(design)
+    return (2.0 * half_w) * (2.0 * half_h) / 1.0e6
+
+
+def _year_trace_dates(cfg, year: int, fast_mode: bool) -> list[_dt.date]:
+    """The calendar dates actually ray-traced for a year estimate."""
+    n = YEAR_FAST_N_DECLINATIONS if fast_mode else YEAR_SLOW_N_DECLINATIONS
+    return energy.suggest_sweep_dates(cfg, n_declinations=n, year=year, branch="ascending")
+
+
+def _year_report_days(cfg, trace_dates: list[_dt.date], year: int, fast_mode: bool) -> list[dict]:
+    """The (up to 12) sample days the year-estimate plot shows.
+
+    Slow mode reports exactly the traced dates. Fast mode reports each
+    traced date plus -- for every one except the two solstice extrema, which
+    have no twin -- the calendar date on the *other* side of the nearest
+    solstice whose declination is closest to it, found by a direct scan
+    (declination is not perfectly symmetric about the calendar solstice, so
+    this is a search rather than a reflection formula). Each entry's
+    ``source_date`` is which traced day its optics actually came from;
+    ``traced`` is false only for a mirrored entry.
+    """
+    if not fast_mode:
+        return sorted(
+            ({"date": d, "source_date": d, "traced": True} for d in trace_dates),
+            key=lambda r: r["date"],
+        )
+
+    n_days = 366 if _dt.date(year, 12, 31).timetuple().tm_yday == 366 else 365
+    all_days = [_dt.date(year, 1, 1) + _dt.timedelta(days=i) for i in range(n_days)]
+    decs = np.array([energy._declination_of(cfg, d) for d in all_days])
+    lo, hi = int(np.argmin(decs)), int(np.argmax(decs))
+    ascending = set(range(lo, hi + 1)) if lo <= hi else set(range(lo, n_days)) | set(range(0, hi + 1))
+    complement = [i for i in range(n_days) if i not in ascending]
+    index_of = {d: i for i, d in enumerate(all_days)}
+
+    by_declination = sorted(trace_dates, key=lambda d: decs[index_of[d]])
+    extrema = {by_declination[0], by_declination[-1]}
+
+    report = [{"date": d, "source_date": d, "traced": True} for d in trace_dates]
+    for d in trace_dates:
+        if d in extrema or not complement:
+            continue
+        target = decs[index_of[d]]
+        twin = min(complement, key=lambda i: abs(decs[i] - target))
+        report.append({"date": all_days[twin], "source_date": d, "traced": False})
+    return sorted(report, key=lambda r: r["date"])
+
+
+def _render_year_png(days: list[dict]) -> bytes:
+    """Day energy across the year -- traced days solid, mirrored days
+    hollow, so the reconstruction fast mode relies on is visible rather than
+    a black box (docs/ui-spec.md 4)."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    dates = [_dt.date.fromisoformat(d["date"]) for d in days]
+    doy = np.array([d.timetuple().tm_yday for d in dates], dtype=float)
+    energy_kwh = np.array([d["energy_kwh"] for d in days], dtype=float)
+    traced = np.array([bool(d["traced"]) for d in days])
+    order = np.argsort(doy)
+
+    fig, ax = plt.subplots(figsize=(6.4, 4.2))
+    ax.plot(doy[order], energy_kwh[order], "-", color="#3b6ea5", alpha=0.4, zorder=1)
+    ax.plot(doy[traced], energy_kwh[traced], "o", color="#d97b29", label="traced", zorder=2)
+    if (~traced).any():
+        ax.plot(
+            doy[~traced],
+            energy_kwh[~traced],
+            "o",
+            markerfacecolor="none",
+            markeredgecolor="#d97b29",
+            label="by symmetry",
+            zorder=2,
+        )
+    ax.set_xlabel("day of year")
+    ax.set_ylabel("day energy (kWh)")
+    ax.set_ylim(bottom=0)
+    ax.grid(alpha=0.3)
+    ax.legend(loc="upper center", fontsize=9, ncol=2, frameon=False)
+    fig.tight_layout()
+
+    buf = BytesIO()
+    try:
+        fig.savefig(buf, format="png", dpi=110)
+    finally:
+        plt.close(fig)
+    return buf.getvalue()
 
 
 #: Candidate contour spacings for the sag map, millimetres, smallest first.
@@ -2278,17 +2663,28 @@ def create_app():
     """Build the FastAPI app. Import-guarded: see the module docstring."""
     app = FastAPI(title="heliostat", version=__version__)
 
+    @app.exception_handler(ValueError)
+    def _value_error_is_422(request: Request, exc: ValueError) -> JSONResponse:
+        # A safety net, not the primary path: most endpoints already catch
+        # their own ValueError (invalid optics_params, an aim point below
+        # the heliostat plane, ...) and raise HTTPException(422) with the
+        # same message. This only catches whatever a future call site
+        # forgets to -- a bad request should read as "you asked for
+        # something impossible", never as an unhandled 500.
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+
     @app.get("/", response_class=HTMLResponse)
     def index() -> HTMLResponse:
+        """The workspace. Its modules and assets load from ``/static/``."""
+        html = (STATIC_DIR / "next" / "index.html").read_text(encoding="utf-8")
+        return HTMLResponse(content=html)
+
+    @app.get("/legacy", response_class=HTMLResponse)
+    def legacy_index() -> HTMLResponse:
+        """The previous single-file UI, kept reachable for one release."""
         html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
         return HTMLResponse(content=html)
 
-    # Additive: `/` keeps serving index.html through the explicit route
-    # above exactly as before. This only adds a second, ordinary way to
-    # reach the same files (and anything else dropped in static/, such as
-    # the branding lockup in docs/ui-spec.md 5b) at their own paths, for
-    # future markup that wants to reference `/static/...` directly rather
-    # than everything being inlined into one served HTML string.
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @app.get("/api/health")
@@ -2388,9 +2784,16 @@ def create_app():
                 job.detail = f"{step.key} ({step.solar_el_deg:.1f}° elevation)"
                 want_flux = index in kept_steps
                 t0 = time.perf_counter()
-                metrics = _trace_instant_metrics(
-                    body, step.solar_az_deg, step.solar_el_deg, want_flux=want_flux
-                )
+                try:
+                    metrics = _trace_instant_metrics(
+                        body,
+                        step.solar_az_deg,
+                        step.solar_el_deg,
+                        want_flux=want_flux,
+                        should_cancel=job.cancelled,
+                    )
+                except _TraceCancelled:
+                    break
                 elapsed_ms = (time.perf_counter() - t0) * 1000.0
                 if want_flux:
                     job.blobs[_day_flux_blob_key(index)] = _render_flux_png(
@@ -2502,6 +2905,151 @@ def create_app():
                 )
             },
         )
+
+    @app.post("/api/year/start")
+    def year_start(body: YearTraceRequest) -> JSONResponse:
+        """Estimate annual collection, on a background thread. Same shape
+        as ``/api/day/start``: returns a job id immediately, poll
+        ``/api/year/status/{job_id}``."""
+        try:
+            optics_params = resolve_optics_params(body.optics, body.optics_params)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        year = body.site.year
+        cfg = _year_energy_cfg(body)
+        try:
+            trace_dates = _year_trace_dates(cfg, year, body.fast_mode)
+            cfg.sweep.dates = trace_dates
+            report_days = _year_report_days(cfg, trace_dates, year, body.fast_mode)
+            steps = build_time_grid(cfg, trace_dates)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if not steps:
+            raise HTTPException(
+                status_code=422,
+                detail="the sun does not rise at that site on any of the sample dates",
+            )
+        try:
+            cfg.field.mirror_area_m2 = _year_mirror_area_m2(body, optics_params)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        steps_per_date: dict[_dt.date, int] = {}
+        for step in steps:
+            steps_per_date[step.date] = steps_per_date.get(step.date, 0) + 1
+
+        def work(job):
+            rows: list[dict] = []
+            rows_per_date: dict[_dt.date, int] = {}
+            n_heliostats = 1
+            for index, step in enumerate(steps):
+                if job.cancelled():
+                    break
+                job.detail = f"{step.date:%Y-%m-%d} {step.hour:.2f}h ({step.solar_el_deg:.1f}° elevation)"
+                try:
+                    metrics = _trace_instant_metrics(
+                        body, step.solar_az_deg, step.solar_el_deg, should_cancel=job.cancelled
+                    )
+                except _TraceCancelled:
+                    break
+                n_heliostats = metrics["n_heliostats"]
+                rows.append(
+                    {
+                        "date": step.date,
+                        "hour": float(step.hour),
+                        "heliostat_id": 0,
+                        "power_w": float(metrics["power_w"]),
+                        "solar_az_deg": float(step.solar_az_deg),
+                        "solar_el_deg": float(step.solar_el_deg),
+                    }
+                )
+                rows_per_date[step.date] = rows_per_date.get(step.date, 0) + 1
+                job.done = index + 1
+
+            # A date cut short by cancellation is not a real day -- its
+            # partial trapezoid would read as a low-collection day rather
+            # than an unfinished one, so only fully-traced dates count.
+            complete = sorted(
+                d
+                for d in trace_dates
+                if steps_per_date.get(d, 0) > 0 and rows_per_date.get(d, 0) == steps_per_date[d]
+            )
+            if len(complete) < 2:
+                return {"days": [], "n_days_traced": len(complete), "fast_mode": body.fast_mode}
+
+            summary = pd.DataFrame(rows)
+            dni_provider = ClearSkyDNI(cfg.site)
+            annual = energy.annual_energy(summary, cfg, dni_provider, year=year, n_heliostats=n_heliostats)
+
+            days_out = []
+            for entry in report_days:
+                if entry["source_date"] not in complete:
+                    continue
+                day = energy.traced_day_energy(
+                    summary, cfg, dni_provider, date=entry["date"], source_date=entry["source_date"]
+                )
+                days_out.append(
+                    {
+                        "date": entry["date"].isoformat(),
+                        "source_date": entry["source_date"].isoformat(),
+                        "traced": entry["traced"],
+                        "declination_deg": round(
+                            float(energy._declination_of(cfg, entry["source_date"])), 3
+                        ),
+                        "energy_kwh": round(day["energy_kwh"], 3),
+                        "peak_power_kw": round(day["peak_power_kw"], 3),
+                    }
+                )
+
+            eff = annual["annual_optical_efficiency"]
+            extrap = annual["extrapolated_fraction"]
+            return {
+                "annual_energy_mwh": round(annual["annual_energy_mwh"], 3),
+                "annual_energy_kwh": round(annual["annual_energy_kwh"], 1),
+                "annual_dni_kwh_m2": round(annual["annual_dni_kwh_m2"], 1),
+                "annual_optical_efficiency": round(eff, 4) if np.isfinite(eff) else None,
+                "mirror_area_m2": round(annual["mirror_area_m2"], 2),
+                "n_heliostats": annual["n_heliostats"],
+                "n_days_traced": len(complete),
+                "fast_mode": body.fast_mode,
+                "year": year,
+                "dni_provider": dni_provider.describe(),
+                "extrapolated_fraction": round(extrap, 4) if np.isfinite(extrap) else None,
+                "days": days_out,
+            }
+
+        job = JOBS.start(len(steps), work, label=f"year estimate, {len(trace_dates)} dates traced")
+        return JSONResponse(job.snapshot())
+
+    @app.get("/api/year/status/{job_id}")
+    def year_status(job_id: str) -> JSONResponse:
+        job = JOBS.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"no job {job_id!r}")
+        return JSONResponse(job.snapshot())
+
+    @app.post("/api/year/cancel/{job_id}")
+    def year_cancel(job_id: str) -> JSONResponse:
+        if not JOBS.cancel(job_id):
+            raise HTTPException(status_code=409, detail="that job is not running")
+        return JSONResponse({"cancelled": job_id})
+
+    @app.get("/api/year/result/{job_id}")
+    def year_result(job_id: str) -> JSONResponse:
+        job = JOBS.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"no job {job_id!r}")
+        if job.state == "running":
+            raise HTTPException(status_code=409, detail="still running")
+        if job.state == "error":
+            raise HTTPException(status_code=500, detail=job.error or "the run failed")
+        payload = dict(job.result or {})
+        payload["state"] = job.state
+        payload["elapsed_s"] = round(job.elapsed_s, 2)
+        if payload.get("days"):
+            payload["plot_png"] = base64.b64encode(_render_year_png(payload["days"])).decode("ascii")
+        return JSONResponse(payload)
 
     @app.post("/api/trace/flux.csv")
     def trace_flux_csv(body: TraceRequest) -> Response:
@@ -2639,14 +3187,17 @@ def create_app():
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-        sol = _solve_for(
-            body.optics,
-            body.heliostat_x_mm,
-            body.heliostat_y_mm,
-            body.solar_az_deg,
-            body.solar_el_deg,
-            optics_params,
-        )
+        try:
+            sol = _solve_for(
+                body.optics,
+                body.heliostat_x_mm,
+                body.heliostat_y_mm,
+                body.solar_az_deg,
+                body.solar_el_deg,
+                optics_params,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         aim_x_mm = sol.extras["aim_x_mm"]
         aim_y_mm = sol.extras["aim_y_mm"]
         aim_z_mm = sol.extras["aim_z_mm"]
@@ -2821,7 +3372,7 @@ def create_app():
         (u0, u1), (v0, v1) = receiver.uv_extent()
         u_edges = np.linspace(u0, u1, FLUX_GRID + 1)
         v_edges = np.linspace(v0, v1, FLUX_GRID + 1)
-        bin_area_m2 = ((u1 - u0) / FLUX_GRID / 1000.0) * ((v1 - v0) / FLUX_GRID / 1000.0)
+        bin_area_m2 = receiver.bin_areas_m2((FLUX_GRID, FLUX_GRID))
 
         flux = np.zeros((FLUX_GRID, FLUX_GRID))
         power_w = 0.0
@@ -3075,7 +3626,12 @@ def create_app():
         _require_known_collection(collection)
         entries = [{"name": name, "builtin": True} for name in _BUILTIN_LIBRARY[collection]]
         entries += [
-            {"name": e["name"], "builtin": False, "saved_at": e["saved_at"]}
+            {
+                "name": e["name"],
+                "builtin": False,
+                "saved_at": e["saved_at"],
+                "size_bytes": e["size_bytes"],
+            }
             for e in list_entries(collection)
         ]
         return JSONResponse({"entries": entries})

@@ -273,11 +273,20 @@ def deposit(
     if mask is not None:
         vals = vals * _mask_lookup(mask, a_u, a_v, kernel.support_rad)
     patch = weight * vals / denom
+    target = weight if mask is None else weight * mask_transmitted_fraction(kernel, mask)
+    total = patch.sum() * du * dv
     if unclipped:
-        target = weight if mask is None else weight * mask_transmitted_fraction(kernel, mask)
-        total = patch.sum() * du * dv
         if total > 0 and target > 0:
             patch *= target / total
         elif target == 0:
             return
+    elif total > target > 0:
+        # A clipped footprint otherwise keeps its raw deposit, because what
+        # runs off the grid is genuine spillage the caller measures by
+        # differencing totals. That shortfall can never be an EXCESS though:
+        # a sample cannot land more power than it carries. Where the
+        # quadratic model folds, `denom` above is only floored at
+        # 1e-12 |det|, so without this the density can be amplified without
+        # bound and the trace reports more power collected than ever arrived.
+        patch = patch * (target / total)
     out[j0:j1, i0:i1] += patch

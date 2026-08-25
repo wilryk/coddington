@@ -52,7 +52,13 @@ import numpy as np
 
 from ..geometry.aperture import Rect
 from ..geometry.design import HeliostatDesign
-from ..geometry.receiver import FlatWindowReceiver, Receiver
+from ..geometry.receiver import (
+    ApertureClippedReceiver,
+    CylinderReceiver,
+    FlatWindowReceiver,
+    FrustumReceiver,
+    Receiver,
+)
 from ..geometry.secondary import (
     AxiconSecondary,
     CassegrainSecondary,
@@ -280,21 +286,68 @@ def _secondary_profile(secondary: Secondary, n_points: int = PROFILE_POINTS):
 
 
 def _receiver_dict(receiver: Receiver) -> dict | None:
-    """The receiver window as the client needs it: a flat quad and its facing.
+    """The receiver as the client needs it to draw: shape, dimensions, facing.
 
-    Only :class:`~heliostat.geometry.receiver.FlatWindowReceiver` is
-    described here -- the only receiver the web app builds. A curved
-    receiver would need its own mesh, and returning ``None`` keeps the
-    client from drawing a plausible-looking wrong rectangle.
+    ``kind`` says which shape it is -- ``"flat"``, ``"cylinder"`` or
+    ``"frustum"`` -- with that shape's own fields alongside it; a flat
+    receiver's dict keeps exactly the keys it always had
+    (``z_mm``/``half_u_mm``/``half_v_mm``/``facing``) plus the new
+    ``kind``/``center_x_mm``/``center_y_mm``, so old client code reading
+    those keys directly still works unchanged. An
+    :class:`~heliostat.geometry.receiver.ApertureClippedReceiver` describes
+    its ``inner`` surface this same way, with the clipping ``aperture``
+    (its own flat window) attached under an ``"aperture"`` key. Any other
+    receiver type returns ``None`` rather than a plausible-looking wrong
+    shape.
     """
-    if not isinstance(receiver, FlatWindowReceiver):
+    aperture = None
+    target = receiver
+    if isinstance(target, ApertureClippedReceiver):
+        ap = target.aperture
+        aperture = {
+            "z_mm": _round(ap.z_mm),
+            "half_u_mm": _round(ap.half_u_mm),
+            "half_v_mm": _round(ap.half_v_mm),
+            "center_x_mm": _round(ap.center_x_mm),
+            "center_y_mm": _round(ap.center_y_mm),
+        }
+        target = target.inner
+
+    if isinstance(target, FlatWindowReceiver):
+        out = {
+            "kind": "flat",
+            "z_mm": _round(target.z_mm),
+            "half_u_mm": _round(target.half_u_mm),
+            "half_v_mm": _round(target.half_v_mm),
+            "facing": target.facing,
+            "center_x_mm": _round(target.center_x_mm),
+            "center_y_mm": _round(target.center_y_mm),
+        }
+    elif isinstance(target, CylinderReceiver):
+        out = {
+            "kind": "cylinder",
+            "center_x_mm": _round(target.center_x_mm),
+            "center_y_mm": _round(target.center_y_mm),
+            "center_z_mm": _round(target.center_z_mm),
+            "radius_mm": _round(target.radius_mm),
+            "height_mm": _round(target.height_mm),
+        }
+    elif isinstance(target, FrustumReceiver):
+        out = {
+            "kind": "frustum",
+            "center_x_mm": _round(target.center_x_mm),
+            "center_y_mm": _round(target.center_y_mm),
+            "z_bot_mm": _round(target.z_bot_mm),
+            "r_bot_mm": _round(target.r_bot_mm),
+            "z_top_mm": _round(target.z_top_mm),
+            "r_top_mm": _round(target.r_top_mm),
+        }
+    else:
         return None
-    return {
-        "z_mm": _round(receiver.z_mm),
-        "half_u_mm": _round(receiver.half_u_mm),
-        "half_v_mm": _round(receiver.half_v_mm),
-        "facing": receiver.facing,
-    }
+
+    if aperture is not None:
+        out["aperture"] = aperture
+    return out
 
 
 # ---------------------------------------------------------------------------

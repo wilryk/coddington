@@ -15,6 +15,11 @@ Three ground-based layouts are covered:
   solve (:func:`_solve_shared_focus`). Neither needs a figure correction:
   prime focus has no second optic, and a hyperboloid is stigmatic between
   its two foci so its relay contributes no extra astigmatism.
+  :func:`solve_prime_focus_to_receiver` generalises the prime-focus half of
+  this to any :mod:`heliostat.geometry.receiver` shape or position: each
+  heliostat aims at that receiver's own ``aim_point_mm``, which is the
+  shared axis point again for a receiver centred on-axis and a genuinely
+  per-heliostat surface point for an off-axis, cylindrical or frustum one.
 * :func:`solve_axicon` — a cone has no focus, so each heliostat's aim point
   is derived from its own radial field position (:func:`receiver_correction`
   solves where the mirror-to-receiver line meets the cone). The cone also
@@ -144,19 +149,18 @@ def to_trace_zernike(c3, c4, c5, c3_corr=0.0, c4_corr=0.0, c5_corr=0.0):
 # --------------------------------------------------------------------------
 
 
-def _solve_shared_focus(x_mm, y_mm, solar_az_deg, solar_el_deg, focus_height_mm) -> Solution:
-    """Aim at the one shared point ``F1 = (0, 0, focus_height_mm)``, with no
-    figure correction. Shared body for :func:`solve_prime_focus` and
-    :func:`solve_cassegrain` — their outputs are identical for identical
-    inputs, because everything that distinguishes the two layouts (whether
-    a secondary sits above the field, how many reflections there are, the
-    receiver's own position) lives outside pointing.
+def _solve_to_aim(x_mm, y_mm, solar_az_deg, solar_el_deg, aim: np.ndarray) -> Solution:
+    """Aim at an arbitrary world point, with no figure correction.
 
-    Unlike the axicon there is no radial direction to be undefined, so a
-    heliostat at the field origin is well posed here: it simply looks
-    straight up the axis.
+    Shared body for every solve that has one target and no secondary optic
+    between the mirror and it: the fixed ``F1`` point
+    (:func:`_solve_shared_focus`, used by :func:`solve_prime_focus` and
+    :func:`solve_cassegrain`) and a per-heliostat point on a receiver's own
+    surface (:func:`solve_prime_focus_to_receiver`). Nothing here assumes
+    ``aim`` sits on the tower axis, so a heliostat at the field origin is
+    well posed whatever ``aim`` is.
     """
-    aim = np.array([0.0, 0.0, float(focus_height_mm)], dtype=float)
+    aim = np.asarray(aim, dtype=float)
     mirror_pos = np.array([float(x_mm), float(y_mm), 0.0], dtype=float)
     focal_dist = float(np.linalg.norm(aim - mirror_pos))
 
@@ -198,6 +202,20 @@ def _solve_shared_focus(x_mm, y_mm, solar_az_deg, solar_el_deg, focus_height_mm)
     )
 
 
+def _solve_shared_focus(x_mm, y_mm, solar_az_deg, solar_el_deg, focus_height_mm) -> Solution:
+    """Aim at the one shared point ``F1 = (0, 0, focus_height_mm)``.
+
+    :func:`_solve_to_aim` with that one point built for it -- see
+    :func:`solve_prime_focus` and :func:`solve_cassegrain`, whose outputs
+    are identical for identical inputs because everything that
+    distinguishes the two layouts (whether a secondary sits above the
+    field, how many reflections there are, the receiver's own position)
+    lives outside pointing.
+    """
+    aim = np.array([0.0, 0.0, float(focus_height_mm)], dtype=float)
+    return _solve_to_aim(x_mm, y_mm, solar_az_deg, solar_el_deg, aim)
+
+
 def solve_prime_focus(x_mm, y_mm, solar_az_deg, solar_el_deg, focus_height_mm) -> Solution:
     """Receiver at the field's common focus; no secondary mirror.
 
@@ -222,6 +240,33 @@ def solve_cassegrain(x_mm, y_mm, solar_az_deg, solar_el_deg, focus_height_mm) ->
     hyperboloid's own conic constants.
     """
     return _solve_shared_focus(x_mm, y_mm, solar_az_deg, solar_el_deg, focus_height_mm)
+
+
+def solve_prime_focus_to_receiver(x_mm, y_mm, solar_az_deg, solar_el_deg, receiver) -> Solution:
+    """Prime focus aimed at ``receiver``'s own per-heliostat facing point.
+
+    Generalises :func:`solve_prime_focus`: instead of the shared axis point
+    ``(0, 0, focus_height_mm)``, each heliostat aims at
+    ``receiver.aim_point_mm(x_mm, y_mm)`` --
+    :mod:`heliostat.geometry.receiver`'s own answer to "which point on this
+    surface faces this heliostat", which is the axis point itself for a
+    receiver centred on-axis (so this reduces to exactly
+    :func:`solve_prime_focus`'s aim point in that case) and a genuinely
+    different point per heliostat for an off-axis, cylindrical or frustum
+    receiver.
+
+    Raises :class:`ValueError` if the resolved aim point sits at or below
+    the heliostat plane (``z <= 0``) -- a receiver positioned or offset low
+    enough to fail that has no physical field pointed at it.
+    """
+    aim = np.asarray(receiver.aim_point_mm(np.array([float(x_mm), float(y_mm)])), dtype=float)
+    if aim[2] <= 0.0:
+        raise ValueError(
+            f"receiver aim point at ({aim[0]:.0f}, {aim[1]:.0f}, {aim[2]:.0f}) mm "
+            "is at or below the heliostat plane (z = 0) -- raise the receiver "
+            "or reduce the aperture-to-receiver offset"
+        )
+    return _solve_to_aim(x_mm, y_mm, solar_az_deg, solar_el_deg, aim)
 
 
 # --------------------------------------------------------------------------

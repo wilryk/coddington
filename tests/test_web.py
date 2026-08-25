@@ -9,12 +9,15 @@ from __future__ import annotations
 
 import base64
 import csv
+import datetime as _dt
 import json
 import math
 import time
 from io import StringIO
+from types import SimpleNamespace
 
 import numpy as np
+import pandas as pd
 import pytest
 
 pytest.importorskip("fastapi")
@@ -22,7 +25,8 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 from pydantic import ValidationError  # noqa: E402
 
-from heliostat import __version__  # noqa: E402
+from heliostat import __version__, energy  # noqa: E402
+from heliostat.dni import ClearSkyDNI  # noqa: E402
 from heliostat.geometry.design import _petal_at_angle, flower, grid_facets  # noqa: E402
 from heliostat.geometry.heliostat import zernike_sag_and_slopes  # noqa: E402
 from heliostat.geometry.secondary import solve_cassegrain_relay  # noqa: E402
@@ -44,6 +48,11 @@ from heliostat.web.app import (  # noqa: E402
     FLUX_GRID,
     MAX_DAY_FLUX_MAPS,
     MAX_FIELD_HELIOSTATS,
+    PRIME_FOCUS_CYLINDER_HEIGHT_MM,
+    PRIME_FOCUS_CYLINDER_RADIUS_MM,
+    PRIME_FOCUS_FRUSTUM_BOTTOM_RADIUS_MM,
+    PRIME_FOCUS_FRUSTUM_HEIGHT_MM,
+    PRIME_FOCUS_FRUSTUM_TOP_RADIUS_MM,
     PRIME_FOCUS_HEIGHT_MM,
     RADIAL_STAGGER_BAND_COUNTS,
     RADIAL_STAGGER_BAND_RING_COUNTS,
@@ -113,25 +122,22 @@ def test_health(client):
     assert resp.json() == {"version": __version__}
 
 
-def test_index_serves_html(client):
+def test_index_serves_the_workspace(client):
+    """`/` is the workspace shell, not the previous single-file UI."""
     resp = client.get("/")
     assert resp.status_code == 200
     assert "text/html" in resp.headers["content-type"]
-    assert "heliostat" in resp.text.lower()
+    assert 'id="app"' in resp.text
+    assert "/static/js/main.js" in resp.text
 
 
-def test_static_mount_serves_the_same_index_html(client):
-    """Additive: `/` keeps its own explicit route (test_index_serves_html
-    above), and `/static/...` is a second, ordinary way to reach the files
-    beside it -- same content, via StaticFiles rather than the hand-rolled
-    route. StaticFiles serves the file's raw bytes (CRLF, on a Windows
-    checkout); the `/` route reads it as text first, which normalises line
-    endings -- so line endings are normalised here too before comparing.
-    """
-    resp = client.get("/static/index.html")
+def test_legacy_route_serves_the_previous_ui(client):
+    """The previous single-file UI stays reachable at /legacy for one
+    release. Compared line by line so a CRLF checkout does not matter."""
+    resp = client.get("/legacy")
     assert resp.status_code == 200
     assert "text/html" in resp.headers["content-type"]
-    assert resp.text.replace("\r\n", "\n") == client.get("/").text.replace("\r\n", "\n")
+    assert resp.text.splitlines() == client.get("/static/index.html").text.splitlines()
 
 
 @pytest.mark.parametrize("design", [RECT_DESIGN, GRID_DESIGN, FLOWER_DESIGN])
@@ -315,12 +321,18 @@ def test_scene_is_well_formed(client, design_key, optics):
         assert profile[-1, 0] == pytest.approx(secondary.aperture_radius_mm)
         assert np.all(np.diff(profile[:, 0]) > 0)
 
-    # -- receiver: the fixture window, verbatim.
+    # -- receiver: the fixture window, verbatim. "kind"/"center_x_mm"/
+    # "center_y_mm" are additive (docs/ui-spec.md 2.2's positionable,
+    # per-shape receiver) -- every fixture receiver here is still the
+    # on-axis flat window this app has always traced.
     assert scene["receiver"] == {
+        "kind": "flat",
         "z_mm": receiver.z_mm,
         "half_u_mm": receiver.half_u_mm,
         "half_v_mm": receiver.half_v_mm,
         "facing": receiver.facing,
+        "center_x_mm": receiver.center_x_mm,
+        "center_y_mm": receiver.center_y_mm,
     }
 
     # -- sun: a unit vector, above the horizon at the requested elevation.
@@ -406,8 +418,14 @@ def test_scene_is_deterministic_and_does_not_disturb_the_trace(client, mode):
 # combination that still traces through design=None, and these are the
 # numbers that path produced. A change here is a physics change, not a
 # refactor -- do not re-base without understanding why it moved.
-PIN_DEFAULT_RECT_POWER_W = 8225.974283127302
-PIN_DEFAULT_RECT_RMS_MM = 505.2641179604239
+# Power was pinned at 8225.974283127302 until a deposit that could exceed the
+# power its own sample carried was fixed: that value sat ABOVE the incident
+# power pinned two lines down, i.e. the default trace collected more than
+# arrived, by 15 parts per million. It now lands exactly on the incident
+# power, which is the physical bound for a spot that all falls on the
+# receiver.
+PIN_DEFAULT_RECT_POWER_W = 8225.854187898512
+PIN_DEFAULT_RECT_RMS_MM = 505.26411781070186  # moved 3e-10 relative by the same fix
 PIN_DEFAULT_RECT_INCIDENT_W = 8225.854187898514
 PIN_DEFAULT_RECT_SLANT_M = 96.32411487265273
 
@@ -452,6 +470,18 @@ def test_default_rect_matches_the_pinned_legacy_path(client):
                 "focus_height_mm": PRIME_FOCUS_HEIGHT_MM,
                 "window_half_u_mm": WINDOW_MM,
                 "window_half_v_mm": WINDOW_MM,
+                # docs/ui-spec.md 2.2's receiver-type/offset/position fields --
+                # additive, so their defaults are today's flat, on-axis, no-
+                # offset receiver.
+                "receiver_type": "flat",
+                "receiver_center_x_mm": 0.0,
+                "receiver_center_y_mm": 0.0,
+                "aperture_to_receiver_mm": 0.0,
+                "cylinder_radius_mm": PRIME_FOCUS_CYLINDER_RADIUS_MM,
+                "cylinder_height_mm": PRIME_FOCUS_CYLINDER_HEIGHT_MM,
+                "frustum_top_radius_mm": PRIME_FOCUS_FRUSTUM_TOP_RADIUS_MM,
+                "frustum_bottom_radius_mm": PRIME_FOCUS_FRUSTUM_BOTTOM_RADIUS_MM,
+                "frustum_height_mm": PRIME_FOCUS_FRUSTUM_HEIGHT_MM,
             },
         ),
         (
@@ -1048,10 +1078,10 @@ def test_unknown_optics_param_is_422(client):
 
 
 def test_index_carries_the_surface_and_inspector_controls(client):
-    """The GUI is one hand-written file with no build step, so the only cheap
-    guard that its new controls actually shipped is that the markup is there.
-    Behaviour is the lead's visual check, not this test's."""
-    text = client.get("/").text
+    """The legacy UI is one hand-written file with no build step, so the only
+    cheap guard that its controls actually shipped is that the markup is
+    there."""
+    text = client.get("/legacy").text
     for marker in (
         'id="surface-tabs"',
         'data-surface="twisting"',
@@ -1562,8 +1592,9 @@ def test_radial_stagger_matches_the_manuscript_field(client):
 
 
 def test_index_carries_the_field_controls(client):
-    """Markup-only guard, same reasoning as the surface/inspector one."""
-    text = client.get("/").text
+    """Markup-only guard on the legacy UI, same reasoning as the
+    surface/inspector one."""
+    text = client.get("/legacy").text
     for marker in (
         'id="trace-mode-tabs"',
         'data-tracemode="single"',
@@ -2057,6 +2088,176 @@ def test_day_flux_png_409s_while_running(client):
     job_id = client.post("/api/day/start", json=payload).json()["job_id"]
     resp = client.get(f"/api/day/flux/{job_id}/0.png")
     assert resp.status_code in (200, 409)
+
+
+# -- year estimate ------------------------------------------------------------
+# hour_step is the widest the server allows (6h, ~3 samples/day) and the
+# field small (single heliostat, or a small Fermat spiral) throughout -- a
+# year estimate traces several days at once, so anything denser would make
+# this section of the suite slow for no benefit.
+
+_YEAR_SITE = {"latitude_deg": -10.0, "longitude_deg": -52.0, "timezone_h": -3.0, "year": 2026}
+
+
+def _year_payload(design=RECT_DESIGN, optics="prime_focus", **overrides):
+    payload = {
+        "design": design,
+        "mode": "ultra_fast",
+        "optics": optics,
+        "solar_az_deg": 180.0,
+        "solar_el_deg": 45.0,
+        "site": dict(_YEAR_SITE),
+        "hour_step": 6.0,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _run_year(client, **overrides):
+    payload = _year_payload(**overrides)
+    started = client.post("/api/year/start", json=payload)
+    assert started.status_code == 200, started.json()
+    job_id = started.json()["job_id"]
+    for _ in range(600):
+        status = client.get(f"/api/year/status/{job_id}").json()
+        if status["state"] != "running":
+            break
+        time.sleep(0.05)
+    assert status["state"] == "done", status
+    return job_id, client.get(f"/api/year/result/{job_id}").json()
+
+
+def test_year_start_reports_a_plausible_finite_annual_total(client):
+    _job_id, data = _run_year(client)
+    assert math.isfinite(data["annual_energy_mwh"])
+    assert data["annual_energy_mwh"] > 0.0
+    assert data["n_heliostats"] == 1
+    assert data["state"] == "done"
+
+
+def test_year_result_labels_the_dni_as_clearsky(client):
+    """docs/ui-spec.md 4: ClearSkyDNI is a cloud-free upper bound, and the
+    result must say so rather than presenting it as a weather-corrected
+    estimate."""
+    _job_id, data = _run_year(client)
+    assert "ClearSky" in data["dni_provider"]
+    assert "upper bound" in data["dni_provider"]
+
+
+def test_year_fast_mode_traces_seven_dates_of_twelve_reported(client):
+    _job_id, data = _run_year(client, fast_mode=True)
+    assert data["fast_mode"] is True
+    assert data["n_days_traced"] == 7
+    days = data["days"]
+    assert len(days) == 12
+    assert sum(d["traced"] for d in days) == 7
+    assert sum(not d["traced"] for d in days) == 5
+
+
+def test_year_slow_mode_traces_all_twelve(client):
+    _job_id, data = _run_year(client, fast_mode=False)
+    assert data["fast_mode"] is False
+    assert data["n_days_traced"] == 12
+    days = data["days"]
+    assert len(days) == 12
+    assert all(d["traced"] for d in days)
+
+
+def test_year_days_are_sorted_and_span_the_year(client):
+    _job_id, data = _run_year(client, fast_mode=True)
+    dates = [_dt.date.fromisoformat(d["date"]) for d in data["days"]]
+    assert dates == sorted(dates)
+    assert (dates[-1] - dates[0]).days > 300
+
+
+def test_year_fast_mode_symmetry_reconstruction_matches_a_direct_trace(client):
+    """A mirrored (untraced) reported day borrows its optics from a traced
+    twin on the other side of a solstice. Check one against an independent,
+    directly-traced day integrated the same way -- the two share no code
+    path past ``power_w`` (see energy.traced_day_energy's own docstring on
+    ``source_date``), so close agreement is real evidence the symmetry
+    argument holds, not a tautology."""
+    _job_id, data = _run_year(client, fast_mode=True)
+    mirrored = [d for d in data["days"] if not d["traced"]]
+    assert mirrored
+    entry = mirrored[0]
+    twin_date = _dt.date.fromisoformat(entry["date"])
+
+    _day_job_id, day_data = _run_day(
+        client,
+        site={
+            "latitude_deg": _YEAR_SITE["latitude_deg"],
+            "longitude_deg": _YEAR_SITE["longitude_deg"],
+            "timezone_h": _YEAR_SITE["timezone_h"],
+            "year": twin_date.year,
+            "month": twin_date.month,
+            "day": twin_date.day,
+        },
+        hour_step=6.0,
+    )
+    rows = [
+        {
+            "date": twin_date,
+            "hour": s["hour"],
+            "heliostat_id": 0,
+            "power_w": s["power_w"],
+            "solar_az_deg": s["solar_az_deg"],
+            "solar_el_deg": s["solar_el_deg"],
+        }
+        for s in day_data["steps"]
+    ]
+    summary = pd.DataFrame(rows)
+    site = SimpleNamespace(
+        latitude=_YEAR_SITE["latitude_deg"],
+        longitude=_YEAR_SITE["longitude_deg"],
+        timezone=_YEAR_SITE["timezone_h"],
+    )
+    direct = energy.traced_day_energy(summary, SimpleNamespace(site=site), ClearSkyDNI(site), date=twin_date)
+    assert entry["energy_kwh"] == pytest.approx(direct["energy_kwh"], rel=0.08)
+
+
+def test_year_cancel_stops_the_job(client, monkeypatch):
+    """Slow each traced instant down slightly so the cancel call, issued the
+    moment the job starts, reliably lands before the job would finish on its
+    own -- otherwise this is a race the test cannot control."""
+    original = app_module._trace_instant_metrics
+
+    def slow_metrics(*args, **kwargs):
+        time.sleep(0.03)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(app_module, "_trace_instant_metrics", slow_metrics)
+
+    payload = _year_payload(fast_mode=False, hour_step=1.0)
+    started = client.post("/api/year/start", json=payload)
+    job_id = started.json()["job_id"]
+    assert client.post(f"/api/year/cancel/{job_id}").status_code == 200
+
+    status = None
+    for _ in range(600):
+        status = client.get(f"/api/year/status/{job_id}").json()
+        if status["state"] != "running":
+            break
+        time.sleep(0.02)
+    assert status["state"] == "cancelled"
+    assert status["done"] < status["total"]
+
+    result = client.get(f"/api/year/result/{job_id}")
+    assert result.status_code == 200
+    assert result.json()["state"] == "cancelled"
+
+
+def test_year_field_trace_carries_occlusion(client):
+    """A field, not just a single heliostat, must actually be traceable
+    through the year job -- n_heliostats in the result says which."""
+    _job_id, data = _run_year(client, layout={"type": "fermat", "n": 8}, fast_mode=True)
+    assert data["n_heliostats"] == 8
+    assert data["annual_energy_mwh"] > 0.0
+
+
+def test_unknown_year_job_is_404(client):
+    assert client.get("/api/year/status/nosuchjob").status_code == 404
+    assert client.get("/api/year/result/nosuchjob").status_code == 404
 
 
 def test_flux_csv_export_is_a_labelled_grid(client):

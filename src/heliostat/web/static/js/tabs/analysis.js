@@ -1,34 +1,50 @@
-// Analysis tab (docs/ui-spec.md 4, mockup M7): day sweeps against the
-// current project -- a background job with progress/cancel, the
-// energy-through-the-day plot, a per-timestep table, CSV export, and an
-// on-demand irradiance map for whichever timestep is selected.
+// Analysis tab (docs/ui-spec.md 4, mockup M7): day sweeps and year estimates
+// against the current project -- background jobs with progress/cancel, the
+// energy plots, a per-timestep table, CSV export, an on-demand irradiance
+// map for whichever timestep is selected, and saved runs that persist with
+// the project.
 //
-// Build-once/els/render(container, ctx) exactly like js/tabs/shape.js. The
-// day-sweep run (job id, poll handle, last snapshot/result, the selected
-// row, the flux-map fetch's abort controller) is module-local state, not
-// store state -- js/library.js's drawer state is the same carve-out, and a
-// run has to survive a tab switch, so it cannot depend on render() being
-// called at all: the poll loop below runs on its own setTimeout chain and
-// only touches the DOM when this tab's section is not hidden.
+// Build-once/els/render(container, ctx) exactly like js/tabs/shape.js. All
+// of it -- the day-sweep and year-estimate runs (job id, poll handle, last
+// snapshot/result), the selected timestep, and the saved-runs state -- is
+// module-local, not store state (js/library.js's drawer state is the same
+// carve-out): a run has to survive a tab switch, so it cannot depend on
+// render() being called at all. The poll loops run on their own setTimeout
+// chains and only touch the DOM when this tab's section is not hidden.
 //
-// Two backend pieces this screen deliberately does NOT build a UI for,
-// because they don't exist yet: an annual estimate endpoint (the Year
-// estimate strip is a disabled button and an honest line), and persisted
-// runs (finished day-sweep jobs live in the server's memory only, capped at
-// 8 -- there is no "saved runs" list here, just a note that says so).
+// Saved runs (docs/ui-spec.md 4, "runs save with the project") live in the
+// `runs` library collection -- api.js's generic getLibrary/getLibraryEntry/
+// saveLibraryEntry/deleteLibraryEntry already work for it, so no dedicated
+// wrappers were needed there. A run's document is {kind, project_name,
+// request, result, flux_pngs} (heliostat.web.app.SavedRunDocument); this
+// module is the only writer and the only reader of that shape. When a
+// project is active (store ui.projectName set), saving a run also appends
+// its name to ui.projectRuns, which js/project.js's serializeProject reads
+// back into the saved project document's own `runs` field -- so this
+// module never edits the project document directly, it only keeps that one
+// array in step and lets the existing save path carry it along.
 import { store } from "../store.js";
 import { setVal, segButton } from "../fields.js";
 import {
   buildDayRequest,
   buildTraceRequest,
+  buildYearRequest,
   dayExportUrl,
   dayFluxUrl,
+  deleteLibraryEntry,
   getDayResult,
   getDayStatus,
+  getLibrary,
+  getLibraryEntry,
+  getYearResult,
+  getYearStatus,
   postDayCancel,
   postDayStart,
   postFieldTrace,
   postTrace,
+  postYearCancel,
+  postYearStart,
+  saveLibraryEntry,
 } from "../api.js";
 
 const FIDELITY = [
@@ -75,6 +91,49 @@ let fluxError = null;
 let fluxTimer = null;
 let fluxController = null;
 
+// -- year-estimate run state (module-local -- see header) -------------------
+let yearFastMode = true;
+let yearJobId = null;
+let yearJobSnapshot = null;
+let yearResult = null; // /api/year/result payload, once terminal
+let yearResultJobId = null;
+let yearError = null;
+let yearStarting = false;
+let yearCancelling = false;
+let yearPollTimer = null;
+let yearSweepRequest = null;
+let yearSweepPhysicsKey = null;
+
+// -- saved runs (docs/ui-spec.md 4: "runs save with the project") -----------
+// `dayRunSavedName`/`yearRunSavedName` is the library entry name the run
+// currently on screen was saved as (or reopened from) -- null means "not
+// saved", which is what disables "Discard" and enables "Save".
+let dayRunSavedName = null;
+let dayRunSaving = false;
+let dayRunError = null;
+let yearRunSavedName = null;
+let yearRunSaving = false;
+let yearRunError = null;
+// Set when the on-screen day result came from a saved run rather than a
+// live job -- its flux maps live in this object, not on the (long gone)
+// server-side job, so scheduleFluxFetch() reads them from here first.
+let reopenedDayFluxPngs = null;
+
+// The active project's own saved runs (ui.projectName's `runs` list,
+// resolved to {name, kind, saved_at}), refreshed whenever that project
+// changes -- see syncProjectRuns(). `undefined` (not null/a string) so the
+// very first paint always triggers a sync, even for the no-project case.
+let lastSyncedProjectName = undefined;
+let projectRunEntries = [];
+let projectRunsLoading = false;
+let projectRunsError = null;
+
+// "Manage saved runs" overlay: every run in the library, any project.
+let manageOpen = false;
+let manageLoading = false;
+let manageError = null;
+let manageEntries = []; // [{name, kind, project_name, saved_at, size_bytes}]
+
 // -- formatting --------------------------------------------------------------
 
 function fmtDuration(seconds) {
@@ -106,6 +165,18 @@ function fmtEnergy(kwh) {
   if (kwh == null || !Number.isFinite(kwh)) return "—";
   if (Math.abs(kwh) >= 1000) return (kwh / 1000).toFixed(2) + " MWh";
   return kwh.toFixed(1) + " kWh";
+}
+
+function fmtMWh(mwh) {
+  if (mwh == null || !Number.isFinite(mwh)) return "—";
+  return mwh.toFixed(mwh >= 100 ? 0 : mwh >= 10 ? 1 : 2) + " MWh";
+}
+
+function fmtBytes(n) {
+  if (n == null || !Number.isFinite(n)) return "—";
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + " MB";
+  if (n >= 1e3) return (n / 1e3).toFixed(0) + " KB";
+  return n + " B";
 }
 
 function fmtFlux(kwM2) {
@@ -182,6 +253,11 @@ function resetRunState() {
   sweepPhysicsKey = null;
   fluxCache.clear();
   clearFlux();
+  // A fresh sweep supersedes whatever was on screen before -- including a
+  // reopened saved run, which has no live job to poll or discard through.
+  dayRunSavedName = null;
+  dayRunError = null;
+  reopenedDayFluxPngs = null;
 }
 
 function startSweep() {
@@ -380,6 +456,18 @@ function scheduleFluxFetch() {
     paintIfVisible();
     return;
   }
+  // A reopened saved run has no live job to serve a map from -- its maps
+  // travel with the saved document itself instead (see SavedRunDocument).
+  if (reopenedDayFluxPngs) {
+    const png = reopenedDayFluxPngs[String(selectedStepIndex)];
+    fluxPngBase64 = png || null;
+    fluxSrcUrl = null;
+    fluxPeakKwM2 = null;
+    fluxError = png ? null : "This saved run kept no irradiance map for that timestep.";
+    fluxLoading = false;
+    paintIfVisible();
+    return;
+  }
   // The sweep already traced and rendered this timestep -- serve its own
   // map straight from the server, instantly, instead of re-tracing it.
   if (step.has_flux_map && resultJobId != null) {
@@ -441,6 +529,473 @@ function selectStep(i) {
   paintIfVisible();
 }
 
+// -- year-estimate lifecycle --------------------------------------------------
+// Same background-job shape as the day sweep above, one endpoint family over
+// (/api/year/* rather than /api/day/*), with no per-timestep flux map to fetch.
+
+function resetYearRunState() {
+  yearJobId = null;
+  yearJobSnapshot = null;
+  yearResult = null;
+  yearResultJobId = null;
+  yearError = null;
+  yearCancelling = false;
+  yearSweepRequest = null;
+  yearSweepPhysicsKey = null;
+  yearRunSavedName = null;
+  yearRunError = null;
+}
+
+function startYear() {
+  if (yearPollTimer) {
+    clearTimeout(yearPollTimer);
+    yearPollTimer = null;
+  }
+  resetYearRunState();
+  yearStarting = true;
+  paintIfVisible();
+
+  const doc = store.get("doc");
+  const ui = store.get("ui");
+  // No site fields exposed here, same as the day sweep's own date-only form
+  // -- the server's YearSite defaults (the manuscript's site) fill the rest.
+  const body = buildYearRequest(doc, ui, { site: {}, fastMode: yearFastMode });
+  yearSweepRequest = body;
+  yearSweepPhysicsKey = physicsKey(body);
+
+  postYearStart(body)
+    .then((snap) => {
+      yearStarting = false;
+      yearJobId = snap.job_id;
+      yearJobSnapshot = snap;
+      paintIfVisible();
+      scheduleYearPoll();
+    })
+    .catch((err) => {
+      yearStarting = false;
+      yearError = (err && err.message) || "Could not start the year estimate.";
+      paintIfVisible();
+    });
+}
+
+function cancelYear() {
+  if (!yearJobId || yearCancelling) return;
+  yearCancelling = true;
+  paintIfVisible();
+  postYearCancel(yearJobId).catch(() => {
+    // As with the day sweep, the poll loop is the source of truth for
+    // whether the job actually stopped.
+  });
+}
+
+function scheduleYearPoll() {
+  if (yearPollTimer) clearTimeout(yearPollTimer);
+  yearPollTimer = setTimeout(yearPollTick, 600);
+}
+
+function yearPollTick() {
+  yearPollTimer = null;
+  if (!yearJobId) return;
+  const thisJob = yearJobId;
+  getYearStatus(thisJob)
+    .then((snap) => {
+      if (yearJobId !== thisJob) return;
+      yearJobSnapshot = snap;
+      if (snap.state === "running") {
+        paintIfVisible();
+        scheduleYearPoll();
+        return;
+      }
+      yearCancelling = false;
+      if (snap.state === "error") {
+        yearError = snap.error || "The year estimate failed.";
+        paintIfVisible();
+        return;
+      }
+      fetchYearResult(thisJob);
+    })
+    .catch((err) => {
+      if (yearJobId !== thisJob) return;
+      yearError = (err && err.message) || "Lost track of the run.";
+      yearCancelling = false;
+      paintIfVisible();
+    });
+}
+
+function fetchYearResult(forJob) {
+  getYearResult(forJob)
+    .then((data) => {
+      if (yearJobId !== forJob) return;
+      yearResult = data;
+      yearResultJobId = forJob;
+      yearError = null;
+      paintIfVisible();
+    })
+    .catch((err) => {
+      if (yearJobId !== forJob) return;
+      yearError = (err && err.message) || "Could not load the year estimate result.";
+      paintIfVisible();
+    });
+}
+
+// physicsKey() is defined over exactly the fields YearTraceRequest shares
+// with DayTraceRequest (design/optics/optics_params/layout/heliostat
+// position/mode/n_rays), so the same function -- and the same staleness
+// definition -- applies unchanged to a year result.
+function yearResultIsStale() {
+  if (!yearResult || !yearSweepPhysicsKey) return false;
+  const current = physicsKey(buildTraceRequest(store.get("doc"), store.get("ui")));
+  return current !== yearSweepPhysicsKey;
+}
+
+// -- saved runs (docs/ui-spec.md 4) -------------------------------------------
+
+function runName(kind, label) {
+  return `${kind}-${label}-${Date.now()}`;
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const result = String(reader.result || "");
+      const comma = result.indexOf(",");
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error || new Error("could not read the flux map"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+// Appends `name` to the ACTIVE project's own saved-run list and persists
+// that one field back onto whatever project document is currently stored --
+// fetched fresh rather than re-serialized from the live store, so this
+// cannot silently resave unrelated workspace edits the user has not asked
+// to save. No-op (but still updates the local cache) when no project is
+// active: the run still saves standalone, just with nothing to attach to.
+function attachRunToProject(name) {
+  const projectName = store.get("ui.projectName");
+  const current = Array.isArray(store.get("ui.projectRuns")) ? store.get("ui.projectRuns").slice() : [];
+  if (current.indexOf(name) === -1) current.push(name);
+  store.set("ui.projectRuns", current);
+  if (!projectName) return Promise.resolve();
+  return getLibraryEntry("projects", projectName).then((entry) => {
+    const document = Object.assign({}, entry.document, { schema_version: 2, runs: current });
+    return saveLibraryEntry("projects", projectName, document);
+  });
+}
+
+function detachRunFromProjectNamed(projectName, name) {
+  if (!projectName) return Promise.resolve();
+  return getLibraryEntry("projects", projectName)
+    .then((entry) => {
+      const runs = (Array.isArray(entry.document.runs) ? entry.document.runs : []).filter((n) => n !== name);
+      const document = Object.assign({}, entry.document, { schema_version: 2, runs });
+      return saveLibraryEntry("projects", projectName, document);
+    })
+    .then(() => {
+      if (store.get("ui.projectName") === projectName) {
+        const current = Array.isArray(store.get("ui.projectRuns")) ? store.get("ui.projectRuns") : [];
+        store.set("ui.projectRuns", current.filter((n) => n !== name));
+      }
+    })
+    .catch(() => {
+      // The run itself is already deleted by the time this runs (see the
+      // callers) -- a project that fails to update its own list still
+      // leaves a stale name in it, which openSavedRun's 404 handling below
+      // treats as "not there anymore" rather than a hard failure.
+    });
+}
+
+function detachRunFromProject(name) {
+  return detachRunFromProjectNamed(store.get("ui.projectName"), name);
+}
+
+// projectRunEntries only ever changes through syncProjectRuns()'s own fetch,
+// which runs on a ui.projectName CHANGE -- saving or discarding a run does
+// not change that name, so without this the "Saved runs" bar would show a
+// run that was just attached/detached only after the user switched projects
+// and back. These update the local list directly instead of forcing a
+// refetch.
+function noteProjectRunAdded(name, kind) {
+  if (!store.get("ui.projectName")) return;
+  projectRunEntries = projectRunEntries.concat([{ name, kind, saved_at: new Date().toISOString() }]);
+}
+
+function noteProjectRunRemoved(name) {
+  projectRunEntries = projectRunEntries.filter((e) => e.name !== name);
+}
+
+function saveDayRun() {
+  if (!dayResult || !resultJobId || dayRunSaving || dayRunSavedName) return;
+  dayRunSaving = true;
+  dayRunError = null;
+  paintIfVisible();
+
+  const steps = dayResult.steps || [];
+  const fluxIndices = [];
+  steps.forEach((s, i) => {
+    if (s.has_flux_map) fluxIndices.push(i);
+  });
+
+  Promise.all(
+    fluxIndices.map((i) =>
+      fetch(dayFluxUrl(resultJobId, i))
+        .then((r) => r.blob())
+        .then(blobToBase64)
+        .then((b64) => [String(i), b64])
+    )
+  )
+    .then((pairs) => {
+      const flux_pngs = {};
+      for (const [key, val] of pairs) flux_pngs[key] = val;
+      const name = runName("day", dayResult.date || "run");
+      const document = {
+        kind: "day",
+        project_name: store.get("ui.projectName") || null,
+        request: sweepRequest,
+        result: dayResult,
+        flux_pngs,
+      };
+      return saveLibraryEntry("runs", name, document).then(() => attachRunToProject(name).then(() => name));
+    })
+    .then((name) => {
+      dayRunSaving = false;
+      dayRunSavedName = name;
+      noteProjectRunAdded(name, "day");
+      paintIfVisible();
+    })
+    .catch((err) => {
+      dayRunSaving = false;
+      dayRunError = (err && err.message) || "Could not save this run.";
+      paintIfVisible();
+    });
+}
+
+function discardDayRun() {
+  if (!dayRunSavedName || dayRunSaving) return;
+  const name = dayRunSavedName;
+  dayRunSaving = true;
+  paintIfVisible();
+  deleteLibraryEntry("runs", name)
+    .then(() => detachRunFromProject(name))
+    .then(() => {
+      dayRunSaving = false;
+      dayRunSavedName = null;
+      // The result on screen is still real, but it no longer has a saved
+      // copy backing it -- a fresh timestep click should re-trace rather
+      // than reach for a blob that is about to stop existing.
+      reopenedDayFluxPngs = null;
+      noteProjectRunRemoved(name);
+      paintIfVisible();
+    })
+    .catch((err) => {
+      dayRunSaving = false;
+      dayRunError = (err && err.message) || "Could not discard the saved run.";
+      paintIfVisible();
+    });
+}
+
+function saveYearRun() {
+  if (!yearResult || yearRunSaving || yearRunSavedName) return;
+  yearRunSaving = true;
+  yearRunError = null;
+  paintIfVisible();
+
+  const name = runName("year", yearResult.year || "run");
+  const document = {
+    kind: "year",
+    project_name: store.get("ui.projectName") || null,
+    request: yearSweepRequest,
+    result: yearResult,
+    flux_pngs: {},
+  };
+  saveLibraryEntry("runs", name, document)
+    .then(() => attachRunToProject(name))
+    .then(() => {
+      yearRunSaving = false;
+      yearRunSavedName = name;
+      noteProjectRunAdded(name, "year");
+      paintIfVisible();
+    })
+    .catch((err) => {
+      yearRunSaving = false;
+      yearRunError = (err && err.message) || "Could not save this run.";
+      paintIfVisible();
+    });
+}
+
+function discardYearRun() {
+  if (!yearRunSavedName || yearRunSaving) return;
+  const name = yearRunSavedName;
+  yearRunSaving = true;
+  paintIfVisible();
+  deleteLibraryEntry("runs", name)
+    .then(() => detachRunFromProject(name))
+    .then(() => {
+      yearRunSaving = false;
+      yearRunSavedName = null;
+      noteProjectRunRemoved(name);
+      paintIfVisible();
+    })
+    .catch((err) => {
+      yearRunSaving = false;
+      yearRunError = (err && err.message) || "Could not discard the saved run.";
+      paintIfVisible();
+    });
+}
+
+// Loads a saved run in place of running a new job -- the whole point of
+// docs/ui-spec.md 4's "reopens without re-running". `entry` is {name, kind}.
+function openSavedRun(entry) {
+  getLibraryEntry("runs", entry.name)
+    .then((full) => {
+      const document = full.document;
+      if (document.kind === "day") {
+        if (pollTimer) {
+          clearTimeout(pollTimer);
+          pollTimer = null;
+        }
+        resetRunState();
+        dayResult = document.result;
+        resultJobId = null;
+        sweepRequest = document.request;
+        sweepPhysicsKey = physicsKey(document.request);
+        reopenedDayFluxPngs = document.flux_pngs || {};
+        dayRunSavedName = entry.name;
+        if (dayResult && dayResult.steps && dayResult.steps.length) {
+          selectedStepIndex = pickDefaultStepIndex(dayResult.steps);
+          scheduleFluxFetch();
+        }
+      } else {
+        if (yearPollTimer) {
+          clearTimeout(yearPollTimer);
+          yearPollTimer = null;
+        }
+        resetYearRunState();
+        yearResult = document.result;
+        yearResultJobId = null;
+        yearSweepRequest = document.request;
+        yearSweepPhysicsKey = physicsKey(document.request);
+        yearRunSavedName = entry.name;
+        yearFastMode = !document.request || document.request.fast_mode !== false;
+      }
+      paintIfVisible();
+    })
+    .catch((err) => {
+      manageError = (err && err.message) || "Could not load that saved run.";
+      paintIfVisible();
+    });
+}
+
+// The active project's own saved runs, kept in step with ui.projectName --
+// called every paint() (cheap: it no-ops once synced) rather than through a
+// store subscription, so it needs no teardown of its own.
+function syncProjectRuns() {
+  const name = store.get("ui.projectName");
+  if (name === lastSyncedProjectName) return;
+  lastSyncedProjectName = name;
+  if (!name) {
+    projectRunEntries = [];
+    projectRunsLoading = false;
+    projectRunsError = null;
+    return;
+  }
+  projectRunsLoading = true;
+  projectRunsError = null;
+  getLibraryEntry("projects", name)
+    .then((entry) => {
+      if (store.get("ui.projectName") !== name) return; // superseded before this landed
+      const names = Array.isArray(entry.document.runs) ? entry.document.runs : [];
+      return Promise.all(
+        names.map((n) =>
+          getLibraryEntry("runs", n)
+            .then((full) => ({ name: n, kind: full.document.kind, saved_at: full.saved_at }))
+            .catch(() => null) // a run the project still lists but that was deleted elsewhere
+        )
+      ).then((entries) => {
+        if (store.get("ui.projectName") !== name) return;
+        projectRunEntries = entries.filter(Boolean);
+        projectRunsLoading = false;
+        paintIfVisible();
+      });
+    })
+    .catch((err) => {
+      if (store.get("ui.projectName") !== name) return;
+      projectRunsLoading = false;
+      projectRunsError = (err && err.message) || "Could not load this project's saved runs.";
+      paintIfVisible();
+    });
+}
+
+// -- "Manage saved runs" overlay: every run in the library, any project ------
+
+function openManage() {
+  manageOpen = true;
+  loadManageEntries();
+  paintIfVisible();
+}
+
+function closeManage() {
+  manageOpen = false;
+  paintIfVisible();
+}
+
+function loadManageEntries() {
+  manageLoading = true;
+  manageError = null;
+  paintIfVisible();
+  getLibrary("runs")
+    .then((data) => {
+      const entries = data.entries || [];
+      return Promise.all(
+        entries.map((e) =>
+          getLibraryEntry("runs", e.name)
+            .then((full) => ({
+              name: e.name,
+              saved_at: e.saved_at,
+              size_bytes: e.size_bytes,
+              kind: full.document.kind,
+              project_name: full.document.project_name,
+            }))
+            .catch(() => ({
+              name: e.name,
+              saved_at: e.saved_at,
+              size_bytes: e.size_bytes,
+              kind: "?",
+              project_name: null,
+            }))
+        )
+      );
+    })
+    .then((entries) => {
+      manageEntries = entries;
+      manageLoading = false;
+      paintIfVisible();
+    })
+    .catch((err) => {
+      manageLoading = false;
+      manageError = (err && err.message) || "Could not load saved runs.";
+      paintIfVisible();
+    });
+}
+
+function deleteManageEntry(name) {
+  const entry = manageEntries.find((e) => e.name === name);
+  deleteLibraryEntry("runs", name)
+    .then(() => detachRunFromProjectNamed(entry && entry.project_name, name))
+    .then(() => {
+      if (dayRunSavedName === name) dayRunSavedName = null;
+      if (yearRunSavedName === name) yearRunSavedName = null;
+      lastSyncedProjectName = undefined; // force the project-runs chips to refresh too
+      loadManageEntries();
+    })
+    .catch((err) => {
+      manageError = (err && err.message) || "Could not delete that run.";
+      paintIfVisible();
+    });
+}
+
 // -- repaint helper: async callbacks (a poll tick, a flux fetch landing) hit
 // this instead of a bare paint() call, so a run that keeps going after a
 // tab switch never writes into a hidden section. --------------------------
@@ -476,6 +1031,24 @@ function build(container) {
   subject.appendChild(subjSep2);
   subject.appendChild(subjDesign);
   subject.appendChild(subjLink);
+
+  // -- saved runs for this project (docs/ui-spec.md 4) ----------------------
+  const savedRunsBar = document.createElement("div");
+  savedRunsBar.className = "an-savedrunsbar";
+  const savedRunsLabel = document.createElement("span");
+  savedRunsLabel.className = "an-savedrunslabel";
+  const savedRunsList = document.createElement("div");
+  savedRunsList.className = "an-savedrunslist";
+  const manageLink = document.createElement("a");
+  manageLink.href = "#";
+  manageLink.textContent = "Manage saved runs…";
+  manageLink.addEventListener("click", (e) => {
+    e.preventDefault();
+    openManage();
+  });
+  savedRunsBar.appendChild(savedRunsLabel);
+  savedRunsBar.appendChild(savedRunsList);
+  savedRunsBar.appendChild(manageLink);
 
   // -- main content: left (sweep + energy + year), right (table + map) -----
   const content = document.createElement("div");
@@ -592,8 +1165,35 @@ function build(container) {
   const sweepHint = document.createElement("div");
   sweepHint.className = "hint";
   sweepHint.textContent =
-    "Finished runs are kept in memory for this session only (the most recent 8) — they are not saved with the project yet.";
+    "A finished sweep lives in memory until 8 more replace it. Save it to keep it with the project instead.";
   sweepPanel.appendChild(sweepHint);
+
+  const dayReopenBanner = document.createElement("div");
+  dayReopenBanner.className = "an-reopenbanner";
+  dayReopenBanner.hidden = true;
+  sweepPanel.appendChild(dayReopenBanner);
+
+  const dayRunRow = document.createElement("div");
+  dayRunRow.className = "an-runrow";
+  const dayRunSaveBtn = document.createElement("div");
+  dayRunSaveBtn.className = "btn small";
+  dayRunSaveBtn.textContent = "Save this run";
+  dayRunSaveBtn.addEventListener("click", () => saveDayRun());
+  const dayRunDiscardBtn = document.createElement("div");
+  dayRunDiscardBtn.className = "btn small";
+  dayRunDiscardBtn.textContent = "Discard this run";
+  dayRunDiscardBtn.hidden = true;
+  dayRunDiscardBtn.addEventListener("click", () => discardDayRun());
+  const dayRunStatus = document.createElement("span");
+  dayRunStatus.className = "an-runstatus";
+  dayRunRow.appendChild(dayRunSaveBtn);
+  dayRunRow.appendChild(dayRunDiscardBtn);
+  dayRunRow.appendChild(dayRunStatus);
+  sweepPanel.appendChild(dayRunRow);
+  const dayRunErrEl = document.createElement("div");
+  dayRunErrEl.className = "fielderr";
+  dayRunErrEl.hidden = true;
+  sweepPanel.appendChild(dayRunErrEl);
 
   left.appendChild(sweepPanel);
 
@@ -634,7 +1234,7 @@ function build(container) {
 
   left.appendChild(energyPanel);
 
-  // -- year estimate strip (docs/ui-spec.md 4 -- no annual endpoint yet) --
+  // -- year estimate (docs/ui-spec.md 4) -------------------------------------
   const yearPanel = document.createElement("div");
   yearPanel.className = "panel an-yearpanel";
   const yearRow = document.createElement("div");
@@ -643,18 +1243,122 @@ function build(container) {
   yearH2.textContent = "Year estimate";
   const yearDesc = document.createElement("span");
   yearDesc.className = "an-yeardesc";
-  yearDesc.textContent = "12 sample days, spaced in solar declination · DNI-weighted interpolation between them";
-  const yearBtn = document.createElement("div");
-  yearBtn.className = "btn primary disabled-link";
-  yearBtn.textContent = "Run year";
+  yearDesc.textContent = "Sample days spaced in solar declination, DNI-weighted across the year";
   yearRow.appendChild(yearH2);
   yearRow.appendChild(yearDesc);
-  yearRow.appendChild(yearBtn);
   yearPanel.appendChild(yearRow);
-  const yearHint = document.createElement("div");
-  yearHint.className = "hint";
-  yearHint.textContent = "The annual-estimate endpoint doesn't exist on the server yet — this strip lights up once it does. No number is computed here in the meantime.";
-  yearPanel.appendChild(yearHint);
+
+  const yearControlRow = document.createElement("div");
+  yearControlRow.className = "an-controlrow";
+  const yearFastSeg = document.createElement("div");
+  yearFastSeg.className = "seg";
+  yearFastSeg.style.marginBottom = "0";
+  const yearFastBtn = segButton(yearFastSeg, "Fast (7 traced)", yearFastMode, () => {
+    yearFastMode = true;
+    paintIfVisible();
+  });
+  const yearAllBtn = segButton(yearFastSeg, "All 12 traced", !yearFastMode, () => {
+    yearFastMode = false;
+    paintIfVisible();
+  });
+  const yearStartBtn = document.createElement("div");
+  yearStartBtn.className = "btn primary";
+  yearStartBtn.textContent = "Run year estimate";
+  yearStartBtn.addEventListener("click", () => {
+    if (yearStartBtn.classList.contains("disabled-link")) return;
+    startYear();
+  });
+  const yearCancelBtn = document.createElement("div");
+  yearCancelBtn.className = "btn";
+  yearCancelBtn.textContent = "Cancel";
+  yearCancelBtn.addEventListener("click", () => cancelYear());
+  yearControlRow.appendChild(yearFastSeg);
+  yearControlRow.appendChild(yearStartBtn);
+  yearControlRow.appendChild(yearCancelBtn);
+  yearPanel.appendChild(yearControlRow);
+
+  const yearProgressRow = document.createElement("div");
+  yearProgressRow.className = "an-progressrow";
+  yearProgressRow.hidden = true;
+  const yearProgressBar = document.createElement("div");
+  yearProgressBar.className = "an-progressbar";
+  const yearProgressFill = document.createElement("div");
+  yearProgressFill.className = "an-progressfill";
+  yearProgressBar.appendChild(yearProgressFill);
+  const yearProgressText = document.createElement("span");
+  yearProgressText.className = "an-progresstext";
+  yearProgressRow.appendChild(yearProgressBar);
+  yearProgressRow.appendChild(yearProgressText);
+  yearPanel.appendChild(yearProgressRow);
+
+  const yearStatusLine = document.createElement("div");
+  yearStatusLine.className = "hint";
+  yearStatusLine.hidden = true;
+  yearPanel.appendChild(yearStatusLine);
+
+  const yearStaleChip = document.createElement("div");
+  yearStaleChip.className = "fieldwarn";
+  yearStaleChip.hidden = true;
+  yearStaleChip.textContent =
+    "The heliostat, optics or field changed since this run — its numbers describe the old setup. Re-run the estimate to measure the current one.";
+  yearPanel.appendChild(yearStaleChip);
+
+  const yearErr = document.createElement("div");
+  yearErr.className = "fielderr";
+  yearErr.hidden = true;
+  yearPanel.appendChild(yearErr);
+
+  const yearDniNote = document.createElement("div");
+  yearDniNote.className = "hint";
+  yearDniNote.textContent =
+    "Assumes clear-sky DNI (no clouds) — a cloud-free upper bound on annual collection, not a weather-corrected forecast.";
+  yearPanel.appendChild(yearDniNote);
+
+  const yearTotal = document.createElement("div");
+  yearTotal.className = "an-yeartotal";
+  yearTotal.hidden = true;
+  yearPanel.appendChild(yearTotal);
+
+  const yearFrame = document.createElement("div");
+  yearFrame.className = "frame";
+  const yearImg = document.createElement("img");
+  yearImg.alt = "Day energy across the year";
+  yearImg.hidden = true;
+  const yearPlaceholder = document.createElement("p");
+  yearPlaceholder.className = "placeholder";
+  yearPlaceholder.textContent = "Run a year estimate to see collection across the year.";
+  yearFrame.appendChild(yearImg);
+  yearFrame.appendChild(yearPlaceholder);
+  yearPanel.appendChild(yearFrame);
+
+  const yearReopenBanner = document.createElement("div");
+  yearReopenBanner.className = "an-reopenbanner";
+  yearReopenBanner.hidden = true;
+  yearPanel.appendChild(yearReopenBanner);
+
+  const yearRunRow = document.createElement("div");
+  yearRunRow.className = "an-runrow";
+  const yearRunSaveBtn = document.createElement("div");
+  yearRunSaveBtn.className = "btn small";
+  yearRunSaveBtn.textContent = "Save this run";
+  yearRunSaveBtn.hidden = true;
+  yearRunSaveBtn.addEventListener("click", () => saveYearRun());
+  const yearRunDiscardBtn = document.createElement("div");
+  yearRunDiscardBtn.className = "btn small";
+  yearRunDiscardBtn.textContent = "Discard this run";
+  yearRunDiscardBtn.hidden = true;
+  yearRunDiscardBtn.addEventListener("click", () => discardYearRun());
+  const yearRunStatus = document.createElement("span");
+  yearRunStatus.className = "an-runstatus";
+  yearRunRow.appendChild(yearRunSaveBtn);
+  yearRunRow.appendChild(yearRunDiscardBtn);
+  yearRunRow.appendChild(yearRunStatus);
+  yearPanel.appendChild(yearRunRow);
+  const yearRunErrEl = document.createElement("div");
+  yearRunErrEl.className = "fielderr";
+  yearRunErrEl.hidden = true;
+  yearPanel.appendChild(yearRunErrEl);
+
   left.appendChild(yearPanel);
 
   // -- timesteps table -----------------------------------------------------
@@ -708,8 +1412,35 @@ function build(container) {
   content.appendChild(left);
   content.appendChild(right);
 
+  // -- "Manage saved runs" overlay (docs/ui-spec.md 4) -----------------------
+  // Reuses app.css's .overlay/.overlay-panel/.overlay-close (the same
+  // flux-map lightbox the workspace run bar uses) rather than declaring a
+  // second modal chrome here.
+  const manageOverlay = document.createElement("div");
+  manageOverlay.className = "overlay";
+  manageOverlay.hidden = true;
+  manageOverlay.addEventListener("click", (e) => {
+    if (e.target === manageOverlay) closeManage();
+  });
+  const managePanelEl = document.createElement("div");
+  managePanelEl.className = "overlay-panel an-managepanel";
+  const manageClose = document.createElement("button");
+  manageClose.className = "overlay-close";
+  manageClose.textContent = "×";
+  manageClose.addEventListener("click", () => closeManage());
+  const manageH2 = document.createElement("h2");
+  manageH2.textContent = "Manage saved runs";
+  const manageBody = document.createElement("div");
+  manageBody.className = "an-managebody";
+  managePanelEl.appendChild(manageClose);
+  managePanelEl.appendChild(manageH2);
+  managePanelEl.appendChild(manageBody);
+  manageOverlay.appendChild(managePanelEl);
+
   container.appendChild(subject);
+  container.appendChild(savedRunsBar);
   container.appendChild(content);
+  container.appendChild(manageOverlay);
 
   els = {
     staleChip,
@@ -733,13 +1464,39 @@ function build(container) {
     energyPlaceholder,
     energyTotal,
     energyCsv,
-    yearBtn,
     tbody,
     tsEmpty,
     tsWrap,
     fluxImg,
     fluxPlaceholder,
     fluxCaption,
+    savedRunsLabel,
+    savedRunsList,
+    dayReopenBanner,
+    dayRunSaveBtn,
+    dayRunDiscardBtn,
+    dayRunStatus,
+    dayRunErrEl,
+    yearFastBtn,
+    yearAllBtn,
+    yearStartBtn,
+    yearCancelBtn,
+    yearProgressRow,
+    yearProgressFill,
+    yearProgressText,
+    yearStatusLine,
+    yearStaleChip,
+    yearErr,
+    yearTotal,
+    yearImg,
+    yearPlaceholder,
+    yearReopenBanner,
+    yearRunSaveBtn,
+    yearRunDiscardBtn,
+    yearRunStatus,
+    yearRunErrEl,
+    manageOverlay,
+    manageBody,
   };
   built = true;
 }
@@ -907,13 +1664,251 @@ function paintFluxPanel() {
   }
 }
 
+// -- saved runs (docs/ui-spec.md 4) -------------------------------------------
+
+function runRowLabel(entry) {
+  const kind = entry.kind === "year" ? "Year estimate" : "Day sweep";
+  const when = entry.saved_at ? entry.saved_at.slice(0, 16).replace("T", " ") : "";
+  return `${kind} · ${when}`;
+}
+
+function paintSavedRunsBar() {
+  const projectName = store.get("ui.projectName");
+  els.savedRunsList.innerHTML = "";
+
+  if (!projectName) {
+    els.savedRunsLabel.textContent = "Saved runs: save the project to keep runs with it.";
+    return;
+  }
+  if (projectRunsLoading) {
+    els.savedRunsLabel.textContent = "Saved runs: loading…";
+    return;
+  }
+  if (projectRunsError) {
+    els.savedRunsLabel.textContent = `Saved runs: ${projectRunsError}`;
+    return;
+  }
+  if (!projectRunEntries.length) {
+    els.savedRunsLabel.textContent = "Saved runs: none yet for this project.";
+    return;
+  }
+  els.savedRunsLabel.textContent = "Saved runs:";
+  for (const entry of projectRunEntries) {
+    const chip = document.createElement("a");
+    chip.href = "#";
+    chip.className = "an-runchip";
+    chip.textContent = runRowLabel(entry);
+    chip.addEventListener("click", (e) => {
+      e.preventDefault();
+      openSavedRun(entry);
+    });
+    els.savedRunsList.appendChild(chip);
+  }
+}
+
+function paintDayRunControls() {
+  const isReopened = !!(dayRunSavedName && !resultJobId);
+  els.dayReopenBanner.hidden = !isReopened;
+  if (isReopened) {
+    els.dayReopenBanner.textContent = `Reopened saved run "${dayRunSavedName}" — no re-trace needed.`;
+  }
+
+  const haveResult = !!(dayResult && dayResult.steps && dayResult.steps.length);
+  const busy = dayRunSaving;
+  // Saving needs a live job id to fetch flux maps from (saveDayRun's own
+  // guard) -- a discarded reopened run has none, so there is nothing left
+  // to save until the sweep runs again.
+  els.dayRunSaveBtn.hidden = !haveResult || !resultJobId || !!dayRunSavedName;
+  els.dayRunSaveBtn.classList.toggle("disabled-link", busy);
+  els.dayRunSaveBtn.textContent = busy && !dayRunSavedName ? "Saving…" : "Save this run";
+
+  els.dayRunDiscardBtn.hidden = !dayRunSavedName;
+  els.dayRunDiscardBtn.classList.toggle("disabled-link", busy);
+  els.dayRunDiscardBtn.textContent = busy && dayRunSavedName ? "Discarding…" : "Discard this run";
+
+  els.dayRunStatus.textContent = dayRunSavedName && !busy ? `Saved as "${dayRunSavedName}"` : "";
+  els.dayRunErrEl.hidden = !dayRunError;
+  if (dayRunError) els.dayRunErrEl.textContent = dayRunError;
+}
+
+// -- year estimate -------------------------------------------------------------
+
+function paintYearControls() {
+  els.yearFastBtn.classList.toggle("active", yearFastMode);
+  els.yearAllBtn.classList.toggle("active", !yearFastMode);
+
+  const running = yearJobSnapshot && yearJobSnapshot.state === "running";
+  const busy = yearStarting || running;
+  els.yearStartBtn.classList.toggle("disabled-link", busy);
+  els.yearStartBtn.textContent = yearStarting ? "Starting…" : running ? "Running…" : "Run year estimate";
+  els.yearCancelBtn.hidden = !running;
+  els.yearCancelBtn.classList.toggle("disabled-link", yearCancelling);
+  els.yearCancelBtn.textContent = yearCancelling ? "Cancelling…" : "Cancel";
+
+  els.yearProgressRow.hidden = !running;
+  if (running) {
+    const snap = yearJobSnapshot;
+    const pct = snap.total ? Math.min(100, (100 * snap.done) / snap.total) : 0;
+    els.yearProgressFill.style.width = pct.toFixed(1) + "%";
+    const eta = fmtDuration(snap.eta_s);
+    let text = `${snap.done} / ${snap.total} timesteps`;
+    if (snap.detail) text += ` — ${snap.detail}`;
+    text += ` — elapsed ${fmtDuration(snap.elapsed_s) || "0 s"}`;
+    if (eta) text += ` — about ${eta} left`;
+    if (yearCancelling) text += " — cancelling…";
+    els.yearProgressText.textContent = text;
+  }
+
+  if (!running && yearJobSnapshot) {
+    const elapsed = fmtDuration(yearJobSnapshot.elapsed_s) || `${yearJobSnapshot.elapsed_s} s`;
+    let text = null;
+    if (yearJobSnapshot.state === "done") {
+      text = `Finished in ${elapsed}.`;
+    } else if (yearJobSnapshot.state === "cancelled") {
+      text = `Cancelled after ${yearJobSnapshot.done} of ${yearJobSnapshot.total} timesteps (${elapsed}).`;
+    }
+    els.yearStatusLine.hidden = !text;
+    if (text) els.yearStatusLine.textContent = text;
+  } else {
+    els.yearStatusLine.hidden = true;
+  }
+
+  els.yearErr.hidden = !yearError;
+  if (yearError) els.yearErr.textContent = yearError;
+}
+
+function paintYearResult() {
+  const days = yearResult && yearResult.days;
+  const haveResult = !!(days && days.length);
+
+  if (yearResult && yearResult.plot_png) {
+    els.yearImg.src = "data:image/png;base64," + yearResult.plot_png;
+    els.yearImg.hidden = false;
+    els.yearPlaceholder.hidden = true;
+  } else {
+    els.yearImg.hidden = true;
+    els.yearPlaceholder.hidden = false;
+    els.yearPlaceholder.textContent =
+      yearJobSnapshot && yearJobSnapshot.state === "cancelled" && !haveResult
+        ? "Cancelled before any date finished — nothing to plot."
+        : "Run a year estimate to see collection across the year.";
+  }
+
+  if (haveResult) {
+    els.yearTotal.hidden = false;
+    const traced = yearResult.n_days_traced;
+    const modeLabel = yearResult.fast_mode ? `fast mode, ${traced} of ${days.length} days traced` : `all ${days.length} days traced`;
+    els.yearTotal.innerHTML = "";
+    const strong = document.createElement("strong");
+    strong.textContent = fmtMWh(yearResult.annual_energy_mwh);
+    els.yearTotal.appendChild(document.createTextNode("Annual collection: "));
+    els.yearTotal.appendChild(strong);
+    els.yearTotal.appendChild(
+      document.createTextNode(` per year (clear-sky upper bound) — ${modeLabel}, ${yearResult.n_heliostats} heliostat(s)`)
+    );
+  } else {
+    els.yearTotal.hidden = true;
+  }
+
+  const isReopened = !yearResultJobId && !!yearRunSavedName;
+  els.yearReopenBanner.hidden = !isReopened;
+  if (isReopened) els.yearReopenBanner.textContent = `Reopened saved run "${yearRunSavedName}" — no re-trace needed.`;
+
+  const busy = yearRunSaving;
+  els.yearRunSaveBtn.hidden = !haveResult || !!yearRunSavedName;
+  els.yearRunSaveBtn.classList.toggle("disabled-link", busy);
+  els.yearRunSaveBtn.textContent = busy && !yearRunSavedName ? "Saving…" : "Save this run";
+
+  els.yearRunDiscardBtn.hidden = !yearRunSavedName;
+  els.yearRunDiscardBtn.classList.toggle("disabled-link", busy);
+  els.yearRunDiscardBtn.textContent = busy && yearRunSavedName ? "Discarding…" : "Discard this run";
+
+  els.yearRunStatus.textContent = yearRunSavedName && !busy ? `Saved as "${yearRunSavedName}"` : "";
+  els.yearRunErrEl.hidden = !yearRunError;
+  if (yearRunError) els.yearRunErrEl.textContent = yearRunError;
+
+  els.yearStaleChip.hidden = !yearResultIsStale();
+}
+
+// -- "Manage saved runs" overlay -----------------------------------------------
+
+function manageRow(entry) {
+  const row = document.createElement("div");
+  row.className = "an-managerow";
+  const label = document.createElement("div");
+  label.className = "an-managerowlabel";
+  const kind = entry.kind === "year" ? "Year estimate" : entry.kind === "day" ? "Day sweep" : "Run";
+  const when = entry.saved_at ? entry.saved_at.slice(0, 16).replace("T", " ") : "";
+  label.textContent = `${kind} — ${entry.name}`;
+  const meta = document.createElement("div");
+  meta.className = "an-managerowmeta";
+  meta.textContent = `${entry.project_name ? entry.project_name : "no project"} · ${when} · ${fmtBytes(entry.size_bytes)}`;
+  const actions = document.createElement("div");
+  actions.className = "an-managerowactions";
+  const openBtn = document.createElement("div");
+  openBtn.className = "btn small";
+  openBtn.textContent = "Open";
+  openBtn.addEventListener("click", () => {
+    openSavedRun(entry);
+    closeManage();
+  });
+  const delBtn = document.createElement("div");
+  delBtn.className = "btn small";
+  delBtn.textContent = "Delete";
+  delBtn.addEventListener("click", () => deleteManageEntry(entry.name));
+  actions.appendChild(openBtn);
+  actions.appendChild(delBtn);
+  row.appendChild(label);
+  row.appendChild(meta);
+  row.appendChild(actions);
+  return row;
+}
+
+function paintManageOverlay() {
+  els.manageOverlay.hidden = !manageOpen;
+  if (!manageOpen) return;
+  els.manageBody.innerHTML = "";
+  if (manageLoading) {
+    const p = document.createElement("p");
+    p.className = "hint";
+    p.textContent = "Loading…";
+    els.manageBody.appendChild(p);
+    return;
+  }
+  if (manageError) {
+    const p = document.createElement("div");
+    p.className = "fielderr";
+    p.textContent = manageError;
+    els.manageBody.appendChild(p);
+  }
+  if (!manageEntries.length) {
+    const p = document.createElement("p");
+    p.className = "hint";
+    p.textContent = "No saved runs yet.";
+    els.manageBody.appendChild(p);
+    return;
+  }
+  const totalBytes = manageEntries.reduce((sum, e) => sum + (e.size_bytes || 0), 0);
+  const totalLine = document.createElement("p");
+  totalLine.className = "hint";
+  totalLine.textContent = `${manageEntries.length} saved run(s), ${fmtBytes(totalBytes)} total.`;
+  els.manageBody.appendChild(totalLine);
+  for (const entry of manageEntries) els.manageBody.appendChild(manageRow(entry));
+}
+
 function paint() {
   const doc = store.get("doc");
+  syncProjectRuns();
   paintSubject(doc, lastCtx);
+  paintSavedRunsBar();
   paintSweepControls();
+  paintDayRunControls();
   paintEnergyPanel();
   paintTimestepsTable();
   paintFluxPanel();
+  paintYearControls();
+  paintYearResult();
+  paintManageOverlay();
 
   // Stale results stay readable -- they are still the truth about the setup
   // they were measured on, and a single timestep's map is still worth

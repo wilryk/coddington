@@ -13,6 +13,8 @@ import {
   HELIOSTAT_SURFACE_OPTIONS,
   RECEIVER_FIELD_TABLE,
   OPTICS_LABELS,
+  RECEIVER_TYPE_OPTIONS,
+  receiverFieldVisible,
   SUN_FIELDS,
   apertureMissMessage,
   apertureSummaryText,
@@ -94,15 +96,37 @@ function build(container) {
   }
   opticsWrap.appendChild(opticsSeg);
 
+  // prime_focus only -- receiver_type is a string, so it gets its own
+  // segmented control rather than a RECEIVER_FIELD_TABLE/numberRow entry.
+  const receiverTypeSeg = document.createElement("div");
+  receiverTypeSeg.className = "seg";
+  const receiverTypeBtns = {};
+  for (const [key, label] of RECEIVER_TYPE_OPTIONS) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = label;
+    btn.addEventListener("click", () => store.set("doc.opticsParams.prime_focus.receiver_type", key));
+    receiverTypeSeg.appendChild(btn);
+    receiverTypeBtns[key] = btn;
+  }
+  opticsWrap.appendChild(receiverTypeSeg);
+
   const opticsFieldsByType = {};
   const opticsInputsByType = {};
+  // Row element per field key, keyed by optics -- lets prime_focus's
+  // cylinder/frustum-only rows (receiverFieldVisible) hide independently of
+  // the rest of their own optics block.
+  const opticsRowsByType = {};
   const opticsWarnByType = {};
   for (const [optics, fields] of Object.entries(RECEIVER_FIELD_TABLE)) {
     const wrap = document.createElement("div");
     const inputs = {};
+    const rows = {};
     let warnBox = null;
     for (const field of fields) {
-      inputs[field.key] = numberRow(wrap, field);
+      const input = numberRow(wrap, field);
+      inputs[field.key] = input;
+      rows[field.key] = input.parentElement;
       if (field.key === "aperture_radius_mm") {
         warnBox = document.createElement("div");
         warnBox.className = "fieldwarn";
@@ -113,6 +137,7 @@ function build(container) {
     opticsWrap.appendChild(wrap);
     opticsFieldsByType[optics] = wrap;
     opticsInputsByType[optics] = inputs;
+    opticsRowsByType[optics] = rows;
     opticsWarnByType[optics] = warnBox;
   }
 
@@ -144,8 +169,11 @@ function build(container) {
     surfaceBtns,
     opticsWrap,
     opticsBtns,
+    receiverTypeSeg,
+    receiverTypeBtns,
     opticsFieldsByType,
     opticsInputsByType,
+    opticsRowsByType,
     opticsWarnByType,
     opticsErrBox,
     sunWrap,
@@ -197,6 +225,18 @@ export function render(container, ctx) {
     }
 
     const params = doc.opticsParams[optics];
+
+    els.receiverTypeSeg.style.display = optics === "prime_focus" ? "" : "none";
+    if (optics === "prime_focus") {
+      const rType = params.receiver_type || "flat";
+      for (const [key, btn] of Object.entries(els.receiverTypeBtns)) {
+        btn.classList.toggle("active", key === rType);
+      }
+      for (const field of RECEIVER_FIELD_TABLE.prime_focus) {
+        els.opticsRowsByType.prime_focus[field.key].style.display = receiverFieldVisible(field, params) ? "" : "none";
+      }
+    }
+
     for (const [key, input] of Object.entries(els.opticsInputsByType[optics])) setVal(input, params[key]);
 
     const warnBox = els.opticsWarnByType[optics];

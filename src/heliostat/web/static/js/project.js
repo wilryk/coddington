@@ -43,7 +43,7 @@ function xyMatchesManuscriptField(xy) {
   return true;
 }
 
-// -- store -> ProjectDocument (app.ProjectDocument, schema_version 1) ------
+// -- store -> ProjectDocument (app.ProjectDocument, schema_version 2) ------
 
 export function serializeProject(doc, ui) {
   const design = currentDesignPayload(doc);
@@ -76,7 +76,15 @@ export function serializeProject(doc, ui) {
     mode: ui.fidelity,
     n_rays: ui.fidelity === "monte_carlo" ? ui.mcRays : null,
   };
-  return { schema_version: 1, design, receiver, field, sun, run };
+  // `ui.projectRuns` is the currently-loaded project's saved-run names
+  // (js/tabs/analysis.js keeps it in step with the `runs` library
+  // collection -- see that module's header comment). Reading it here rather
+  // than taking a parameter means every save path -- this tab's own resave
+  // after attaching a run, and the Library drawer's ordinary "Save
+  // project", which calls this function unchanged -- carries the same list
+  // forward without either one needing to know about the other.
+  const runs = Array.isArray(ui.projectRuns) ? ui.projectRuns.slice() : [];
+  return { schema_version: 2, design, receiver, field, sun, run, runs };
 }
 
 // -- ProjectDocument -> store -----------------------------------------------
@@ -185,6 +193,11 @@ export function applyProject(document) {
   const run = (document && document.run) || {};
   store.set("ui.fidelity", run.mode || "ultra_fast");
   store.set("ui.mcRays", run.n_rays != null ? run.n_rays : null);
+
+  // v1 documents have no `runs` field at all (they predate saved runs, not
+  // "have none yet") -- either way an absent field means the same as an
+  // empty one here.
+  store.set("ui.projectRuns", Array.isArray(document && document.runs) ? document.runs.slice() : []);
 
   return null;
 }

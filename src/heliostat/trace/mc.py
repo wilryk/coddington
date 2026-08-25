@@ -363,12 +363,16 @@ def trace_heliostat(
         mir = hit[:, on_sec][:, hit_mask][:, inside]
         con = pre[:, hit_mask][:, inside]  # == mir when there is no secondary
         rec_uv = uv[:, inside]
-        # World z of the receiver hit: exact for a flat window (the only
-        # shape every fixture and existing strategy uses), NaN for a
-        # receiver whose (u, v) does not embed a single z -- a curved
-        # receiver's path plot needs its own 3-D reconstruction, out of
-        # scope here.
+        # World xyz of the receiver hit: exact for a flat window (uv is
+        # world xy minus the window's own centre -- add it back), NaN for a
+        # receiver whose (u, v) does not embed a single world point -- a
+        # curved receiver's path plot needs its own 3-D reconstruction, out
+        # of scope here.
         rec_z = getattr(receiver, "z_mm", float("nan"))
-        rec = np.vstack([rec_uv[0], rec_uv[1], np.full(int(inside.sum()), rec_z)])
+        rec_cx = getattr(receiver, "center_x_mm", 0.0)
+        rec_cy = getattr(receiver, "center_y_mm", 0.0)
+        rec = np.vstack(
+            [rec_uv[0] + rec_cx, rec_uv[1] + rec_cy, np.full(int(inside.sum()), rec_z)]
+        )
         result["paths"] = np.stack([src, mir, con, rec])
     return result

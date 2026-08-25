@@ -80,6 +80,34 @@ stable; see the status note in the README.
   (`heliostat.lnk` / `Heliostat.command` / `heliostat.desktop`) pointing at
   the installed executable; `--path` relocates it, `--force` replaces one.
 
+**Workspace** (the app you get at `/`)
+
+- The 3-D scene is the workspace, not a results viewer: the tower, receiver
+  and field are drawn the moment the app opens, every edit redraws within a
+  third of a second, and a trace only ever adds physics on top. Geometry
+  lands first and the corner rays follow, so switching optics redraws
+  immediately instead of waiting on rays; rays can be switched off entirely.
+- Design stages down the left — heliostat, field, receiver and tower, sun —
+  each editing the same values the floating inspector edits, with plan and
+  elevation views that follow whichever stage is open.
+- **Heliostat Shape tab**: aperture and figure editing with a live server
+  render, a sag map that names the heliostat it was solved for and states
+  its contour interval, a sketchable custom outline, and optical errors
+  (slope, specularity, reflectance) that feed the trace.
+- Facet curvature and canting are independent: a flat heliostat can carry a
+  fixed long curvature while its canting still follows each heliostat's own
+  slant range.
+- **Analysis tab**: day sweeps as background jobs with progress and cancel,
+  the energy-through-the-day plot, a per-timestep table, CSV export, and
+  each timestep's irradiance map kept as the sweep traces it so opening one
+  is instant.
+- **Receiver as a real design**: flat window, cylinder or frustum, placed
+  anywhere above the heliostat plane, with an entrance aperture that can sit
+  a chosen distance in front of the absorbing surface.
+- Radially staggered fields generated from ring and band counts, alongside
+  the Fermat spiral.
+- Named library of heliostat designs, receiver configurations and projects.
+
 **Web app** (`pip install heliostat[web]`, then `heliostat`)
 
 - One-word launch: `heliostat` with no arguments starts the app, waits for

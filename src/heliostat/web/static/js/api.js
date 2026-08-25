@@ -161,6 +161,34 @@ export function buildDayRequest(doc, ui, opts) {
 }
 
 // ---------------------------------------------------------------------------
+// year estimate: the same background-job shape as a day sweep, one level up
+// (docs/ui-spec.md 4). `site` here carries no month/day -- a year estimate
+// samples dates across the whole year itself.
+
+export function postYearStart(body, signal) {
+  return postJSON("/year/start", body, signal);
+}
+
+export function getYearStatus(jobId) {
+  return getJSON(`/year/status/${encodeURIComponent(jobId)}`);
+}
+
+export function postYearCancel(jobId) {
+  return postJSON(`/year/cancel/${encodeURIComponent(jobId)}`, {});
+}
+
+export function getYearResult(jobId) {
+  return getJSON(`/year/result/${encodeURIComponent(jobId)}`);
+}
+
+export function buildYearRequest(doc, ui, opts) {
+  const body = buildTraceRequest(doc, ui);
+  body.site = opts.site;
+  body.fast_mode = opts.fastMode !== false;
+  return body;
+}
+
+// ---------------------------------------------------------------------------
 // the manuscript field: the paper's real 643-heliostat positions
 // (/api/field/manuscript), fetched once at startup (main.js) and cached here
 // module-level -- the same reason FIELD_MC_SEED-style caching lives on the
@@ -272,8 +300,13 @@ export function currentOpticsParams(doc) {
   const dropped = [];
   for (const [key, value] of Object.entries(params)) {
     if (legal.has(key)) out[key] = value;
+    // receiver_type is a string (a segmented control, not a numberRow), kept
+    // out of RECEIVER_FIELD_TABLE on purpose -- added back explicitly below
+    // instead of being treated as a foreign-key leak.
+    else if (optics === "prime_focus" && key === "receiver_type") continue;
     else dropped.push(key);
   }
+  if (optics === "prime_focus") out.receiver_type = params.receiver_type || "flat";
   if (dropped.length) {
     console.warn(
       `optics_params for '${optics}' carried foreign key(s) [${dropped.join(", ")}] -- ` +

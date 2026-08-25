@@ -201,6 +201,12 @@ export function createScene(container, callbacks) {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   }
   resize();
+  // The viewport can be hidden when this runs -- the app opens on whichever
+  // view the active stage wants -- and a renderer sized against a hidden
+  // container stays 1x1 until something resizes the window. A
+  // ResizeObserver fires again when the container gets a real box back.
+  const resizeObserver = new ResizeObserver(resize);
+  resizeObserver.observe(container);
   window.addEventListener("resize", resize);
 
   let rafId = null;
@@ -340,15 +346,50 @@ export function createScene(container, callbacks) {
     state.receiverEdgeLines = null;
     state.receiverEdgeMat = null;
     if (!receiver) return;
-    // FlatWindowReceiver: a horizontal window at z_mm, +-half_u_mm in x,
-    // +-half_v_mm in y (heliostat.geometry.receiver.FlatWindowReceiver --
-    // intersect() tests against p[2], uv_extent() returns the half-widths
-    // directly as x/y bounds). THREE.PlaneGeometry is already authored in
-    // the XY plane, so no rotation is needed in this Z-up scene.
-    const w = receiver.half_u_mm * 2 * MM;
-    const h = receiver.half_v_mm * 2 * MM;
-    if (!(w > 0) || !(h > 0)) return;
-    const geometry = new THREE.PlaneGeometry(w, h);
+
+    const kind = receiver.kind || "flat";
+    let geometry;
+    let posX = 0;
+    let posY = 0;
+    let posZ = 0;
+
+    if (kind === "cylinder") {
+      // CylinderReceiver: an open-ended body of revolution about its own
+      // vertical axis (heliostat.geometry.receiver.CylinderReceiver -- only
+      // the lateral surface absorbs, no top/bottom caps). THREE's cylinder
+      // is authored Y-up; rotateX(Math.PI/2) is the same Y-up -> Z-up trick
+      // the secondary's mast cylinder above uses.
+      if (!(receiver.radius_mm > 0) || !(receiver.height_mm > 0)) return;
+      geometry = new THREE.CylinderGeometry(receiver.radius_mm * MM, receiver.radius_mm * MM, receiver.height_mm * MM, 32, 1, true);
+      geometry.rotateX(Math.PI / 2);
+      posX = receiver.center_x_mm;
+      posY = receiver.center_y_mm;
+      posZ = receiver.center_z_mm;
+    } else if (kind === "frustum") {
+      // FrustumReceiver: same open-ended lateral-surface-only convention as
+      // the cylinder, top/bottom radii can differ.
+      const heightMm = receiver.z_top_mm - receiver.z_bot_mm;
+      if (!(receiver.r_top_mm > 0) || !(receiver.r_bot_mm > 0) || !(heightMm > 0)) return;
+      geometry = new THREE.CylinderGeometry(receiver.r_top_mm * MM, receiver.r_bot_mm * MM, heightMm * MM, 32, 1, true);
+      geometry.rotateX(Math.PI / 2);
+      posX = receiver.center_x_mm;
+      posY = receiver.center_y_mm;
+      posZ = 0.5 * (receiver.z_top_mm + receiver.z_bot_mm);
+    } else {
+      // FlatWindowReceiver: a horizontal window at z_mm, +-half_u_mm in x,
+      // +-half_v_mm in y (heliostat.geometry.receiver.FlatWindowReceiver --
+      // intersect() tests against p[2], uv_extent() returns the half-widths
+      // directly as x/y bounds). THREE.PlaneGeometry is already authored in
+      // the XY plane, so no rotation is needed in this Z-up scene.
+      const w = receiver.half_u_mm * 2 * MM;
+      const h = receiver.half_v_mm * 2 * MM;
+      if (!(w > 0) || !(h > 0)) return;
+      geometry = new THREE.PlaneGeometry(w, h);
+      posX = receiver.center_x_mm || 0;
+      posY = receiver.center_y_mm || 0;
+      posZ = receiver.z_mm;
+    }
+
     const material = new THREE.MeshBasicMaterial({
       color: RECEIVER_FILL,
       transparent: true,
@@ -357,7 +398,7 @@ export function createScene(container, callbacks) {
       depthWrite: false,
     });
     const mesh = new THREE.Mesh(geometry, material);
-    mesh.position.set(0, 0, receiver.z_mm * MM);
+    mesh.position.set(posX * MM, posY * MM, posZ * MM);
     mesh.userData.pickKind = "receiver";
     receiverGroup.add(mesh);
 
@@ -602,6 +643,7 @@ export function createScene(container, callbacks) {
 
     dispose() {
       cancelAnimationFrame(rafId);
+      resizeObserver.disconnect();
       window.removeEventListener("resize", resize);
       renderer.domElement.removeEventListener("pointerdown", handlePointerDown);
       renderer.domElement.removeEventListener("pointerup", handlePointerUp);

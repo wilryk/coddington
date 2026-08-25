@@ -34,7 +34,13 @@ from .design import (
     surface_from_dict,
 )
 from .heliostat import heliostat_orientation, heliostat_shape
-from .receiver import CylinderReceiver, FlatWindowReceiver, FrustumReceiver, Receiver
+from .receiver import (
+    ApertureClippedReceiver,
+    CylinderReceiver,
+    FlatWindowReceiver,
+    FrustumReceiver,
+    Receiver,
+)
 from .secondary import (
     AxiconSecondary,
     CassegrainSecondary,
@@ -93,6 +99,7 @@ __all__ = [
     "FlatWindowReceiver",
     "CylinderReceiver",
     "FrustumReceiver",
+    "ApertureClippedReceiver",
     # secondaries
     "Secondary",
     "NoSecondary",

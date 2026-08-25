@@ -15,11 +15,10 @@ import {
   FIELD_FERMAT_FIELDS,
   FIELD_RADIAL_STAGGER_FIELDS,
 } from "../fields.js";
-import { getManuscriptField, radialStaggerBands } from "../api.js";
+import { radialStaggerBands } from "../api.js";
 
 const MAX_GEOMETRY_HELIOSTATS = 10000;
 const MAX_TRACE_HELIOSTATS = 1000;
-const PAPER_N_HELIOSTATS = 643;
 
 let built = false;
 let els = {};
@@ -69,16 +68,8 @@ function build(container) {
     store.set("doc.field.layout", "radial_stagger")
   );
   const fermatBtn = segButton(layoutSeg, "Fermat spiral", false, () => store.set("doc.field.layout", "fermat"));
-  const manuscriptBtn = segButton(layoutSeg, "Manuscript 643", false, () =>
-    store.set("doc.field.layout", "manuscript")
-  );
   layoutRow.appendChild(layoutSeg);
   fieldFields.appendChild(layoutRow);
-
-  const manuscriptHint = document.createElement("div");
-  manuscriptHint.className = "hint";
-  manuscriptHint.textContent = "The paper's exact 643 heliostat positions (field_645.csv)";
-  fieldFields.appendChild(manuscriptHint);
 
   const fermatFields = document.createElement("div");
   const nInput = numberRow(fermatFields, FIELD_FERMAT_FIELDS[0]);
@@ -112,9 +103,7 @@ function build(container) {
     singleX,
     singleY,
     radialBtn,
-    manuscriptBtn,
     fermatBtn,
-    manuscriptHint,
     fermatFields,
     nInput,
     rMin,
@@ -149,11 +138,9 @@ export function render(container) {
   setVal(els.singleY, doc.field.single.y_mm);
 
   const layout =
-    doc.field.layout === "fermat" || doc.field.layout === "manuscript" ? doc.field.layout : "radial_stagger";
+    doc.field.layout === "fermat" ? "fermat" : "radial_stagger";
   els.radialBtn.classList.toggle("active", layout === "radial_stagger");
-  els.manuscriptBtn.classList.toggle("active", layout === "manuscript");
   els.fermatBtn.classList.toggle("active", layout === "fermat");
-  els.manuscriptHint.style.display = layout === "manuscript" ? "" : "none";
   els.fermatFields.style.display = layout === "fermat" ? "" : "none";
   els.radialFields.style.display = layout === "radial_stagger" ? "" : "none";
   els.radialHint.style.display = layout === "radial_stagger" ? "" : "none";
@@ -175,13 +162,7 @@ export function render(container) {
   els.radialInputs.forEach((input, i) => setVal(input, radialValues[i]));
   const radialN = bands.reduce((sum, b) => sum + b.rings * b.count, 0);
 
-  // The manuscript layout is always exactly 643 (the cached fetch's own
-  // length when it landed, else the paper's known count) and always within
-  // the trace cap, so its hint never carries the "geometry only" caveat.
-  const manuscriptXY = getManuscriptField();
-  let nHeliostats = f.n;
-  if (layout === "manuscript") nHeliostats = manuscriptXY ? manuscriptXY.length : PAPER_N_HELIOSTATS;
-  else if (layout === "radial_stagger") nHeliostats = radialN;
+  const nHeliostats = layout === "radial_stagger" ? radialN : f.n;
   els.hint.textContent =
     `Viewing up to ${MAX_GEOMETRY_HELIOSTATS.toLocaleString()} · tracing up to ${MAX_TRACE_HELIOSTATS.toLocaleString()}` +
     (nHeliostats > MAX_TRACE_HELIOSTATS ? " (this field is too large to trace -- geometry only)" : "");

@@ -41,6 +41,13 @@ class Receiver(ABC):
 
     kind: str = "abstract"
 
+    #: Whether the absorbing surface is a plane. The cone backend's
+    #: second-order deposit differentiates the ray-to-surface map twice and
+    #: assumes that map is well behaved; on a curved surface it can fold,
+    #: which sends the deposit's Jacobian through zero and the flux through
+    #: the roof. Curved receivers therefore take the first-order deposit.
+    is_planar: bool = True
+
     @abstractmethod
     def intersect(self, p: np.ndarray, d: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Intersect rays with the unclipped surface.
@@ -87,7 +94,7 @@ class Receiver(ABC):
         """
         (u0, u1), (v0, v1) = self.uv_extent()
         n_u, n_v = grid
-        cell = ((u1 - u0) / n_u) * ((v1 - v0) / n_v) / 1.0e6
+        cell = ((u1 - u0) / n_u / 1000.0) * ((v1 - v0) / n_v / 1000.0)
         return np.full((n_v, n_u), cell)
 
     def to_manifest(self) -> dict:
@@ -121,6 +128,11 @@ class FlatWindowReceiver(Receiver):
     half_u_mm: float
     half_v_mm: float
     facing: str = "up"
+    #: World (x, y) this window is centred on; ``uv`` is world position minus
+    #: this centre, so a receiver on-axis (the default) still reports raw
+    #: world coordinates exactly as before.
+    center_x_mm: float = 0.0
+    center_y_mm: float = 0.0
 
     kind = "flat"
 
@@ -135,6 +147,8 @@ class FlatWindowReceiver(Receiver):
             t = (self.z_mm - p[2]) / dz
         hit = approach & np.isfinite(t) & (t > 0)
         uv = p[:2, hit] + t[hit] * d[:2, hit]
+        uv[0] -= self.center_x_mm
+        uv[1] -= self.center_y_mm
         return hit, uv
 
     def uv_extent(self) -> tuple[tuple[float, float], tuple[float, float]]:
@@ -144,6 +158,8 @@ class FlatWindowReceiver(Receiver):
         xy = np.asarray(helio_xy_mm, dtype=float)
         shape = (3,) if xy.ndim == 1 else (3, xy.shape[1])
         aim = np.zeros(shape)
+        aim[0] = self.center_x_mm
+        aim[1] = self.center_y_mm
         aim[2] = self.z_mm
         return aim
 
@@ -154,6 +170,8 @@ class FlatWindowReceiver(Receiver):
             "half_u_mm": self.half_u_mm,
             "half_v_mm": self.half_v_mm,
             "facing": self.facing,
+            "center_x_mm": self.center_x_mm,
+            "center_y_mm": self.center_y_mm,
         }
 
 
@@ -171,11 +189,16 @@ class CylinderReceiver(Receiver):
     center_z_mm: float
     radius_mm: float
     height_mm: float
+    #: World (x, y) of the cylinder's axis; 0, 0 is the tower axis, the
+    #: only centre this shape ever used before it became positionable.
+    center_x_mm: float = 0.0
+    center_y_mm: float = 0.0
 
     kind = "cylinder"
+    is_planar = False
 
     def intersect(self, p: np.ndarray, d: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        px, py = p[0], p[1]
+        px, py = p[0] - self.center_x_mm, p[1] - self.center_y_mm
         dx, dy = d[0], d[1]
         a = dx * dx + dy * dy
         b = 2.0 * (px * dx + py * dy)
@@ -211,15 +234,20 @@ class CylinderReceiver(Receiver):
         """Aim at the surface generatrix facing the heliostat, mid-height.
 
         Aiming at the axis instead would land rays off-centre on the near
-        surface and systematically under-fill the panel width.
+        surface and systematically under-fill the panel width. "Facing" is
+        measured from this cylinder's own centre, not the field origin, so
+        an off-axis receiver (:attr:`center_x_mm`/:attr:`center_y_mm`) still
+        gets the correct per-heliostat surface point.
         """
         xy = np.asarray(helio_xy_mm, dtype=float)
-        norm = np.linalg.norm(xy, axis=0)
+        centre = np.array([self.center_x_mm, self.center_y_mm])
+        rel = xy - (centre if xy.ndim == 1 else centre[:, None])
+        norm = np.linalg.norm(rel, axis=0)
         norm = np.where(norm == 0, 1.0, norm)
-        toward = xy / norm
+        toward = rel / norm
         aim = np.empty((3,) if xy.ndim == 1 else (3, xy.shape[1]))
-        aim[0] = self.radius_mm * toward[0]
-        aim[1] = self.radius_mm * toward[1]
+        aim[0] = self.center_x_mm + self.radius_mm * toward[0]
+        aim[1] = self.center_y_mm + self.radius_mm * toward[1]
         aim[2] = self.center_z_mm
         return aim
 
@@ -241,8 +269,12 @@ class FrustumReceiver(Receiver):
     r_bot_mm: float
     z_top_mm: float
     r_top_mm: float
+    #: World (x, y) of the frustum's axis; 0, 0 is the tower axis.
+    center_x_mm: float = 0.0
+    center_y_mm: float = 0.0
 
     kind = "frustum"
+    is_planar = False
 
     def __post_init__(self) -> None:
         if self.z_top_mm <= self.z_bot_mm:
@@ -273,7 +305,7 @@ class FrustumReceiver(Receiver):
 
     def intersect(self, p: np.ndarray, d: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         z_apex, m = self._apex()
-        px, py, pz = p[0], p[1], p[2] - z_apex
+        px, py, pz = p[0] - self.center_x_mm, p[1] - self.center_y_mm, p[2] - z_apex
         dx, dy, dz = d[0], d[1], d[2]
         m2 = m * m
         a = dx * dx + dy * dy - m2 * dz * dz
@@ -326,16 +358,78 @@ class FrustumReceiver(Receiver):
         return np.repeat(row[:, None], n_u, axis=1)
 
     def aim_point_mm(self, helio_xy_mm: np.ndarray) -> np.ndarray:
-        """Aim at the facing generatrix at mid-slant."""
+        """Aim at the facing generatrix at mid-slant, relative to this
+        frustum's own centre (see :class:`CylinderReceiver`'s identical
+        note)."""
         xy = np.asarray(helio_xy_mm, dtype=float)
-        norm = np.linalg.norm(xy, axis=0)
+        centre = np.array([self.center_x_mm, self.center_y_mm])
+        rel = xy - (centre if xy.ndim == 1 else centre[:, None])
+        norm = np.linalg.norm(rel, axis=0)
         norm = np.where(norm == 0, 1.0, norm)
-        toward = xy / norm
+        toward = rel / norm
         aim = np.empty((3,) if xy.ndim == 1 else (3, xy.shape[1]))
-        aim[0] = self.r_mean_mm * toward[0]
-        aim[1] = self.r_mean_mm * toward[1]
+        aim[0] = self.center_x_mm + self.r_mean_mm * toward[0]
+        aim[1] = self.center_y_mm + self.r_mean_mm * toward[1]
         aim[2] = 0.5 * (self.z_bot_mm + self.z_top_mm)
         return aim
+
+
+@dataclass
+class ApertureClippedReceiver(Receiver):
+    """A flat entrance opening in front of the actual absorbing surface.
+
+    Models a cavity receiver: ``aperture`` is a small flat window a beam
+    must pass through before it can reach ``inner`` (any shape, including
+    another :class:`FlatWindowReceiver`), which sits behind it and does the
+    actual absorbing. A ray is only a hit if it clears the aperture's own
+    window *and* then meets ``inner`` -- ``uv``/:meth:`uv_extent` always
+    describe ``inner``, never the aperture, since that is what the flux map
+    is drawn against.
+
+    Not part of :meth:`Receiver.from_manifest`'s ``_REGISTRY`` -- nothing in
+    this codebase round-trips one through a run manifest today (the web app
+    rebuilds it fresh from ``optics_params`` on every request), so
+    :meth:`to_manifest` is for inspection only.
+    """
+
+    aperture: FlatWindowReceiver
+    inner: Receiver
+
+    kind = "aperture_clipped"
+
+    @property
+    def is_planar(self) -> bool:
+        """Whatever the surface behind the aperture is -- uv describes it."""
+        return self.inner.is_planar
+
+    def intersect(self, p: np.ndarray, d: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        ap_hit, ap_uv = self.aperture.intersect(p, d)
+        (au0, au1), (av0, av1) = self.aperture.uv_extent()
+        ap_inside = (ap_uv[0] >= au0) & (ap_uv[0] <= au1) & (ap_uv[1] >= av0) & (ap_uv[1] <= av1)
+        # ap_hit already indexes into the original N rays; ap_uv/ap_inside
+        # are already filtered to ap_hit's survivors (the same contract
+        # Receiver.intersect documents), so this recovers the original
+        # indices of the rays that cleared the aperture opening.
+        cleared = np.flatnonzero(ap_hit)[ap_inside]
+        in_hit, in_uv = self.inner.intersect(p[:, cleared], d[:, cleared])
+        hit = np.zeros(p.shape[1], dtype=bool)
+        hit[cleared[in_hit]] = True
+        return hit, in_uv
+
+    def uv_extent(self) -> tuple[tuple[float, float], tuple[float, float]]:
+        return self.inner.uv_extent()
+
+    def aim_point_mm(self, helio_xy_mm: np.ndarray) -> np.ndarray:
+        return self.inner.aim_point_mm(helio_xy_mm)
+
+    def bin_edges(self, grid: tuple[int, int]) -> tuple[np.ndarray, np.ndarray]:
+        return self.inner.bin_edges(grid)
+
+    def bin_areas_m2(self, grid: tuple[int, int]) -> np.ndarray:
+        return self.inner.bin_areas_m2(grid)
+
+    def to_manifest(self) -> dict:
+        return {"kind": self.kind, "aperture": self.aperture.to_manifest(), "inner": self.inner.to_manifest()}
 
 
 _REGISTRY: dict[str, type] = {

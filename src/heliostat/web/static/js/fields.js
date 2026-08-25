@@ -154,11 +154,59 @@ function opticsPath(key) {
   return (doc) => `doc.opticsParams.${doc.optics}.${key}`;
 }
 
+// Fields with a `group` show only while prime_focus's own receiver_type
+// (a string, kept out of this table -- see RECEIVER_TYPE_OPTIONS below)
+// equals that group; fields with no `group` are common to every receiver
+// type. window_half_u/v_mm has no group -- it now sizes the entrance
+// aperture (a flat rectangle) whichever receiver_type sits behind it.
 export const RECEIVER_FIELD_TABLE = {
   prime_focus: [
     { key: "focus_height_mm", label: "Focus height (mm)", path: opticsPath("focus_height_mm") },
     { key: "window_half_u_mm", label: "Window ½ w (mm)", path: opticsPath("window_half_u_mm") },
     { key: "window_half_v_mm", label: "Window ½ h (mm)", path: opticsPath("window_half_v_mm") },
+    { key: "receiver_center_x_mm", label: "Receiver centre X (mm)", path: opticsPath("receiver_center_x_mm") },
+    { key: "receiver_center_y_mm", label: "Receiver centre Y (mm)", path: opticsPath("receiver_center_y_mm") },
+    {
+      key: "aperture_to_receiver_mm",
+      label: "Aperture → receiver (mm)",
+      path: opticsPath("aperture_to_receiver_mm"),
+      min: 0,
+    },
+    {
+      key: "cylinder_radius_mm",
+      label: "Cylinder radius (mm)",
+      path: opticsPath("cylinder_radius_mm"),
+      min: 1,
+      group: "cylinder",
+    },
+    {
+      key: "cylinder_height_mm",
+      label: "Cylinder height (mm)",
+      path: opticsPath("cylinder_height_mm"),
+      min: 1,
+      group: "cylinder",
+    },
+    {
+      key: "frustum_top_radius_mm",
+      label: "Frustum top radius (mm)",
+      path: opticsPath("frustum_top_radius_mm"),
+      min: 1,
+      group: "frustum",
+    },
+    {
+      key: "frustum_bottom_radius_mm",
+      label: "Frustum bottom radius (mm)",
+      path: opticsPath("frustum_bottom_radius_mm"),
+      min: 1,
+      group: "frustum",
+    },
+    {
+      key: "frustum_height_mm",
+      label: "Frustum height (mm)",
+      path: opticsPath("frustum_height_mm"),
+      min: 1,
+      group: "frustum",
+    },
   ],
   axicon: [
     { key: "apex_height_mm", label: "Apex height (mm)", path: opticsPath("apex_height_mm") },
@@ -183,6 +231,21 @@ export const OPTICS_LABELS = [
   ["axicon", "Axicon"],
   ["cassegrain", "Cassegrain"],
 ];
+
+// receiver_type only exists for prime_focus -- axicon/cassegrain always
+// have a flat window and carry no such field.
+export const RECEIVER_TYPE_OPTIONS = [
+  ["flat", "Flat window"],
+  ["cylinder", "Cylindrical"],
+  ["frustum", "Frustum"],
+];
+
+// Shared by the sidebar's Receiver & Tower stage and the inspector so a
+// cylinder/frustum-only row (RECEIVER_FIELD_TABLE's `group`) shows in both
+// places exactly when the current receiver_type matches it.
+export function receiverFieldVisible(field, params) {
+  return !field.group || field.group === params.receiver_type;
+}
 
 // -- Sun stage ---------------------------------------------------------------
 

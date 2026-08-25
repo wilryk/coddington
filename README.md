@@ -10,14 +10,24 @@ command-line tool, and a Python library (installed and imported as
 
 ## Run it
 
-**No Python?** Download the build for your platform from
-[releases](https://github.com/wilryk/coddington/releases), unzip, and
-double-click **Coddington**. A console window opens, then your browser.
-Close the console to quit.
+**No Python? On Windows**, download `Coddington-Setup-<version>.exe` from
+[releases](https://github.com/wilryk/coddington/releases) and run it. It
+installs Coddington with a Start Menu shortcut, an optional desktop
+shortcut, and an uninstaller, then you launch it like any other app. A
+console window opens, then your browser — closing the console quits the
+app. Prefer not to install anything? The plain `.zip` build works the same
+way: unzip it and double-click `Coddington.exe` inside.
 
-The builds are unsigned, so Windows shows "Windows protected your PC"
-(*More info → Run anyway*) and macOS needs the app allowed through
-Gatekeeper on first launch.
+**On macOS or Linux**, download the build for your platform, unzip, and
+double-click (or run) `Coddington`.
+
+The build is unsigned, so the first launch shows a warning:
+
+- **Windows SmartScreen**: *"Windows protected your PC."* Click **More
+  info**, then **Run anyway**. This is normal for an app without a paid
+  code-signing certificate, not a sign of a problem with the download.
+- **macOS Gatekeeper**: right-click the app and choose **Open** the first
+  time, then confirm in the dialog that appears.
 
 **With Python:**
 

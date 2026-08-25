@@ -382,6 +382,82 @@ def _fraction_unoccluded(points, direction, occluders) -> float:
     return float(1.0 - _blocked_mask(points, direction, occluders).mean())
 
 
+def _bounding_radii(geometries: list[MirrorGeometry]) -> np.ndarray:
+    """Half the diagonal of each mirror's rectangular envelope, ``(N,)``.
+
+    A conservative bound around ``centre`` for both a plain rectangle and a
+    :meth:`MirrorGeometry.from_design` silhouette, whose envelope
+    ``half_width``/``half_height`` is sized so the region never reaches past
+    it (see :meth:`MirrorGeometry.from_design`).
+    """
+    return np.array([np.hypot(g.half_width, g.half_height) for g in geometries], dtype=float)
+
+
+def _project_onto_plane(direction: np.ndarray, points: np.ndarray) -> np.ndarray:
+    """Orthogonal projection of ``points`` ``(N, 3)`` onto the plane
+    perpendicular to ``direction``, as ``(N, 2)`` coordinates in an
+    arbitrary but fixed (and here, shared across all callers) basis."""
+    u, v = mirror_basis(direction)
+    return points @ np.column_stack([u, v])
+
+
+def _shading_candidates(
+    target_proj: np.ndarray,
+    target_radius: float,
+    cand_proj: np.ndarray,
+    cand_radii: np.ndarray,
+) -> np.ndarray:
+    """Which of ``cand_proj`` can possibly shade or be shaded by the target.
+
+    Sunlight is collimated, so every point of both mirrors casts along the
+    same ``to_sun`` direction: a ray through a point of one can only reach a
+    point of the other if their orthogonal projections onto the plane
+    perpendicular to ``to_sun`` coincide. Orthogonal projection never
+    increases distance, so bounding each mirror by a disc of radius equal to
+    its own half-diagonal and comparing projected-centre distance to the sum
+    of the two radii is a conservative (never over-pruning) necessary
+    condition for that: if the projected centres are farther apart than
+    ``target_radius + cand_radii``, no shared ray exists, full stop.
+    """
+    dist = np.linalg.norm(cand_proj - target_proj, axis=1)
+    return dist <= (target_radius + cand_radii)
+
+
+def _blocking_candidates(
+    apex: np.ndarray,
+    target_centre: np.ndarray,
+    target_radius: float,
+    cand_centres: np.ndarray,
+    cand_radii: np.ndarray,
+) -> np.ndarray:
+    """Which of ``cand_centres`` can possibly block or be blocked by the
+    target's beam toward ``apex`` (its aim point).
+
+    Unlike sunlight, the reflected beam is not collimated: it converges on
+    ``apex`` from a finite distance, so points across a several-metre mirror
+    head toward the aim along directions that differ by several degrees --
+    the flat-projection bound above is not conservative here (it would
+    prune pairs the true, fanned-out beam still reaches). The exact bound
+    for a point source is angular instead of linear: a sphere of radius
+    ``r`` centred at distance ``d`` from ``apex`` subtends precisely the
+    half-angle ``asin(r/d)`` as seen from ``apex`` (the tangent-cone
+    identity), so the directions from ``apex`` into the target's bounding
+    sphere and into a candidate's can only coincide -- the necessary
+    condition for a shared ray -- when the angle between the two sphere
+    centres, as seen from ``apex``, is at most the sum of their half-angles.
+    """
+    to_target = target_centre - apex
+    to_cand = cand_centres - apex
+    d_target = max(float(np.linalg.norm(to_target)), 1e-9)
+    d_cand = np.maximum(np.linalg.norm(to_cand, axis=1), 1e-9)
+
+    cos_angle = np.clip((to_cand @ to_target) / (d_cand * d_target), -1.0, 1.0)
+    angle = np.arccos(cos_angle)
+    half_target = np.arcsin(min(target_radius / d_target, 1.0))
+    half_cand = np.arcsin(np.clip(cand_radii / d_cand, 0.0, 1.0))
+    return angle <= half_target + half_cand
+
+
 def shading_blocking(
     geometries: list[MirrorGeometry],
     aim_points: np.ndarray,
@@ -466,10 +542,31 @@ def occlusion_efficiency(
     if solar_el_deg <= 0.0:
         return np.zeros(len(geometries))
 
+    # Same corridor pruning as polygon_occlusion (see _shading_candidates /
+    # _blocking_candidates): shared sun projection precomputed once, beam
+    # cones evaluated per heliostat against its own aim point.
+    all_centres = np.array([g.centre for g in geometries])
+    all_radii = _bounding_radii(geometries)
+    sun_proj = _project_onto_plane(to_sun, all_centres)
+
     for i, geom in enumerate(geometries):
-        nbrs = [geometries[j] for j in neighbours[i]]
+        idx = np.asarray(neighbours[i], dtype=int)
         pts = geom.sample_points(nu, nv)
-        lost = _blocked_mask(pts, to_sun, nbrs) | _blocked_mask(pts, aim_points[i] - pts, nbrs)
+        if idx.size:
+            shade_keep = _shading_candidates(
+                sun_proj[i], all_radii[i], sun_proj[idx], all_radii[idx]
+            )
+            block_keep = _blocking_candidates(
+                aim_points[i], geom.centre, all_radii[i], all_centres[idx], all_radii[idx]
+            )
+            shade_nbrs = [geometries[j] for j, keep in zip(idx, shade_keep) if keep]
+            block_nbrs = [geometries[j] for j, keep in zip(idx, block_keep) if keep]
+        else:
+            shade_nbrs = []
+            block_nbrs = []
+        lost = _blocked_mask(pts, to_sun, shade_nbrs) | _blocked_mask(
+            pts, aim_points[i] - pts, block_nbrs
+        )
         if secondary is not None:
             # Same union: a patch the secondary already shades cannot be
             # shaded by a neighbour as well, nor blocked on the way out.
@@ -770,8 +867,29 @@ def polygon_occlusion(
     eta_secondary = np.ones(n)
     eta_union = np.ones(n)
 
+    # Precomputed once per call (not per heliostat): the sun direction is
+    # shared by the whole field, so its projection plane and every
+    # geometry's projected centre only need computing once, and slicing
+    # that array by each heliostat's neighbour indices is what keeps the
+    # pruning below a vectorised lookup rather than a pairwise loop.
+    all_centres = np.array([g.centre for g in geometries])
+    all_radii = _bounding_radii(geometries)
+    sun_proj = _project_onto_plane(to_sun, all_centres)
+
     for i, mirror in enumerate(geometries):
-        nbrs = [geometries[j] for j in neighbours[i]]
+        idx = np.asarray(neighbours[i], dtype=int)
+        nbrs = [geometries[j] for j in idx]
+
+        if idx.size:
+            shade_keep = _shading_candidates(
+                sun_proj[i], all_radii[i], sun_proj[idx], all_radii[idx]
+            )
+            block_keep = _blocking_candidates(
+                aim_points_mm[i], mirror.centre, all_radii[i], all_centres[idx], all_radii[idx]
+            )
+        else:
+            shade_keep = np.zeros(0, dtype=bool)
+            block_keep = np.zeros(0, dtype=bool)
 
         a, b = np.meshgrid(su * mirror.half_width, sv * mirror.half_height, indexing="ij")
         local_u, local_v = a.ravel(), b.ravel()
@@ -792,22 +910,28 @@ def polygon_occlusion(
         shaded = np.zeros(local_u.size, dtype=bool)
         blocked = np.zeros(local_u.size, dtype=bool)
 
-        for occ in nbrs:
-            quad = shadow_quad_uv(occ, mirror, to_sun)
-            if quad is None:
-                shaded |= _blocked_mask(world_pts, to_sun, [occ])
-            else:
-                clipped = _sutherland_hodgman(quad, mirror.half_width, mirror.half_height)
-                if len(clipped) >= 3:
-                    shaded |= _points_in_polygon(local_u, local_v, clipped)
+        # Neighbours pruned out of shade_keep/block_keep cannot reach this
+        # mirror's silhouette at all (see _shading_candidates /
+        # _blocking_candidates), so skipping them here changes no result --
+        # only how many quad-projection/clip calls it takes to get there.
+        for k, occ in enumerate(nbrs):
+            if shade_keep[k]:
+                quad = shadow_quad_uv(occ, mirror, to_sun)
+                if quad is None:
+                    shaded |= _blocked_mask(world_pts, to_sun, [occ])
+                else:
+                    clipped = _sutherland_hodgman(quad, mirror.half_width, mirror.half_height)
+                    if len(clipped) >= 3:
+                        shaded |= _points_in_polygon(local_u, local_v, clipped)
 
-            bquad = block_quad_uv(occ, mirror, aim_points_mm[i])
-            if bquad is None:
-                blocked |= _blocked_mask(world_pts, aim_points_mm[i] - world_pts, [occ])
-            else:
-                clipped_b = _sutherland_hodgman(bquad, mirror.half_width, mirror.half_height)
-                if len(clipped_b) >= 3:
-                    blocked |= _points_in_polygon(local_u, local_v, clipped_b)
+            if block_keep[k]:
+                bquad = block_quad_uv(occ, mirror, aim_points_mm[i])
+                if bquad is None:
+                    blocked |= _blocked_mask(world_pts, aim_points_mm[i] - world_pts, [occ])
+                else:
+                    clipped_b = _sutherland_hodgman(bquad, mirror.half_width, mirror.half_height)
+                    if len(clipped_b) >= 3:
+                        blocked |= _points_in_polygon(local_u, local_v, clipped_b)
 
         sec_mask = np.zeros(local_u.size, dtype=bool)
         if secondary is not None:

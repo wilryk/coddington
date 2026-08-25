@@ -151,7 +151,10 @@ a:hover {
 }
 
 .sidebar {
-  flex: 0 0 300px;
+  /* Shrinkable below its natural width so a narrow window still leaves the
+     viewport something to draw in -- a fixed basis squeezes it to zero. */
+  flex: 0 1 300px;
+  min-width: 208px;
   background: var(--panel);
   border-right: 1px solid var(--border);
   overflow-y: auto;
@@ -321,6 +324,7 @@ input.val::-webkit-inner-spin-button {
 
 .viewport {
   flex: 1 1 auto;
+  min-width: 240px;
   position: relative;
   overflow: hidden;
   background: linear-gradient(180deg, #f4f7fb 0%, #dbe4ee 100%);
@@ -423,6 +427,14 @@ input.val::-webkit-inner-spin-button {
   color: var(--muted);
   pointer-events: none;
 }
+/* The bottom-left chip and the bottom-right orbit hint share one line and
+   collide once the viewport is narrow; the hint is the expendable one. */
+@media (max-width: 1000px) {
+  .viewhint {
+    display: none;
+  }
+}
+
 .banner {
   position: absolute;
   top: 14px;

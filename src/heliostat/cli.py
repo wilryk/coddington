@@ -222,8 +222,17 @@ def _open_browser_when_ready(
 
 
 def _console_safe(text: str) -> str:
-    """Downgrade the banner's dash if the attached console cannot encode it."""
-    encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+    """Downgrade the banner's dash unless the console clearly handles it.
+
+    Only a UTF-8 stream is trusted with the em dash. A legacy code page can
+    often *encode* it while whatever reads the output decodes the byte as
+    something else, and a redirected or frozen-app stream may report no
+    encoding at all -- both show up as a mojibake character in the one
+    message a user is guaranteed to read.
+    """
+    encoding = getattr(sys.stdout, "encoding", None) or ""
+    if encoding.lower().replace("-", "") not in {"utf8", "utf8sig"}:
+        return text.replace("—", "-")
     try:
         text.encode(encoding)
     except (UnicodeEncodeError, LookupError):

@@ -37,6 +37,12 @@ BUDGETS = {
     # freezes at sign-off rather than growing. Delete the entry when the
     # restructure ships and the spec's content moves into guide.md.
     "docs/ui-spec.md": 4000,
+    # Not user documentation: the plan for the stress harness -- what counts
+    # as a failure and what gets varied. Delete the entry once the harness
+    # exists and its own docstrings carry the detail.
+    "docs/stress-test-plan.md": 1100,
+    # User-facing notes for the published release.
+    "RELEASE_NOTES.md": 900,
     "examples/paper/README.md": 1600,
     "packaging/desktop/README.md": 400,
 }

@@ -125,7 +125,9 @@ function renderAllPanels() {
   fieldPanel.render(stageField);
   receiverPanel.render(stageReceiver);
   sunPanel.render(stageSun);
-  runPanel.render(runbar, runActions);
+  runPanel.render(runbar, runActions, {
+    heliostatCount: (lastGeometryResponse && lastGeometryResponse.heliostats && lastGeometryResponse.heliostats.length) || 0,
+  });
   // Needs the last geometry response (not store state) for a selected
   // heliostat's distance-from-axis readout -- see inspector.js's header comment.
   inspector.render(inspectorEl, { geometry: lastGeometryResponse });

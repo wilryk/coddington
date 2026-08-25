@@ -97,6 +97,15 @@ function build(container, actions) {
   });
   container.appendChild(runBtn);
 
+  // A field trace runs one heliostat at a time and cannot report progress
+  // yet, so the run bar says up front roughly how long a big field will sit
+  // there rather than leaving "Running..." to look like a hang.
+  const costHint = document.createElement("div");
+  costHint.className = "hint";
+  costHint.style.margin = "0 0 0 4px";
+  costHint.hidden = true;
+  container.appendChild(costHint);
+
   const staleChip = document.createElement("div");
   staleChip.className = "stalechip";
   staleChip.textContent = "Edited since last run — results below are stale";
@@ -139,6 +148,15 @@ function build(container, actions) {
   thumbWrap.appendChild(thumbImg);
   results.appendChild(thumbWrap);
 
+  // Flux-map axis convention: only shown for a curved receiver, where u/v
+  // aren't plain x/y (unrolled arc length + height/slant instead) -- see
+  // heliostat.web.scene's receiver dict, kind "cylinder"/"frustum".
+  const axisCaption = document.createElement("div");
+  axisCaption.className = "hint";
+  axisCaption.style.marginTop = "2px";
+  axisCaption.hidden = true;
+  results.appendChild(axisCaption);
+
   const stampWrap = document.createElement("div");
   const stamp = document.createElement("div");
   stamp.className = "stamp";
@@ -157,6 +175,7 @@ function build(container, actions) {
   container.appendChild(results);
 
   els = {
+    costHint,
     fidelityBtns,
     raysRow,
     raysInput,
@@ -169,13 +188,14 @@ function build(container, actions) {
     interceptNum,
     thumbWrap,
     thumbImg,
+    axisCaption,
     stamp,
     exportLink,
   };
   built = true;
 }
 
-export function render(container, actions) {
+export function render(container, actions, ctx) {
   if (!built) build(container, actions);
   const ui = store.get("ui");
 
@@ -189,6 +209,19 @@ export function render(container, actions) {
 
   els.runBtn.textContent = ui.traceBusy ? "Running…" : "Run trace";
   els.runBtn.classList.toggle("disabled-link", ui.traceBusy);
+
+  // Measured at roughly a third of a second per heliostat per fidelity step;
+  // only worth saying once a field is big enough for the wait to surprise.
+  const nHeliostats = (ctx && ctx.heliostatCount) || 0;
+  const slow = nHeliostats >= 150;
+  els.costHint.hidden = !slow;
+  if (slow) {
+    const seconds = Math.round((nHeliostats * (ui.fidelity === "ultra_fast" ? 0.33 : 0.40)) / 5) * 5;
+    const label = seconds >= 90 ? `about ${Math.round(seconds / 60)} min` : `about ${seconds} s`;
+    els.costHint.textContent = ui.traceBusy
+      ? `Tracing ${nHeliostats.toLocaleString()} heliostats — ${label}`
+      : `${nHeliostats.toLocaleString()} heliostats — expect ${label}`;
+  }
 
   els.traceErr.hidden = !ui.traceError;
   if (ui.traceError) els.traceErr.textContent = ui.traceError;
@@ -209,6 +242,16 @@ export function render(container, actions) {
     } else {
       els.thumbWrap.style.display = "none";
     }
+    const receiverKind = data.scene && data.scene.receiver && data.scene.receiver.kind;
+    if (receiverKind === "cylinder") {
+      els.axisCaption.textContent = "u = arc length around receiver (seam at north) · v = height above centre";
+      els.axisCaption.hidden = false;
+    } else if (receiverKind === "frustum") {
+      els.axisCaption.textContent = "u = arc length around receiver (seam at north) · v = slant distance from base";
+      els.axisCaption.hidden = false;
+    } else {
+      els.axisCaption.hidden = true;
+    }
     const when = ui.traceTimestamp ? new Date(ui.traceTimestamp).toLocaleTimeString() : "";
     els.stamp.textContent = when ? `traced ${when} · ${ui.fidelity}` : "";
   } else {
@@ -216,6 +259,7 @@ export function render(container, actions) {
     els.meanNum.textContent = "—";
     els.interceptNum.textContent = "—";
     els.thumbWrap.style.display = "none";
+    els.axisCaption.hidden = true;
     els.stamp.textContent = "";
   }
 }

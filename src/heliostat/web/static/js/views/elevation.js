@@ -15,7 +15,7 @@
 // vertical = z, both in metres (mm / 1000). x is dropped throughout (every
 // heliostat, ray and dimension is projected onto this one plane).
 import { store } from "../store.js";
-import { resolvePath, setVal, RECEIVER_FIELD_TABLE } from "../fields.js";
+import { resolvePath, setVal, RECEIVER_FIELD_TABLE, receiverFieldVisible } from "../fields.js";
 
 // The default heliostat-plane-above-ground offset (docs/ui-spec.md 2.2):
 // "a separate ground offset parameter ... default 2 500 mm". Editing it is
@@ -27,7 +27,15 @@ const GROUND_OFFSET_MM = 2500;
 // optics (docs/ui-spec.md 2.2's per-layout table, minus the window ½w/½h
 // fields -- those aren't dimensioned in the elevation, only in the sidebar).
 const CALLOUT_KEYS = {
-  prime_focus: ["focus_height_mm"],
+  prime_focus: [
+    "focus_height_mm",
+    "aperture_to_receiver_mm",
+    "cylinder_radius_mm",
+    "cylinder_height_mm",
+    "frustum_top_radius_mm",
+    "frustum_bottom_radius_mm",
+    "frustum_height_mm",
+  ],
   axicon: ["apex_height_mm", "receiver_z_mm", "aperture_radius_mm", "half_angle_deg"],
   cassegrain: ["vertex_z_mm", "focus_height_mm", "receiver_z_mm", "aperture_radius_mm"],
 };
@@ -39,6 +47,12 @@ const CALLOUT_LABELS = {
   receiver_z_mm: "receiver height",
   aperture_radius_mm: "aperture radius",
   half_angle_deg: "half angle",
+  aperture_to_receiver_mm: "aperture → receiver",
+  cylinder_radius_mm: "cylinder radius",
+  cylinder_height_mm: "cylinder height",
+  frustum_top_radius_mm: "frustum top radius",
+  frustum_bottom_radius_mm: "frustum bottom radius",
+  frustum_height_mm: "frustum height",
 };
 
 let built = false;
@@ -182,6 +196,17 @@ function tallestParamHeightM(params) {
   for (const k of ["apex_height_mm", "vertex_z_mm", "focus_height_mm", "receiver_z_mm"]) {
     if (params[k] != null) z = Math.max(z, params[k] / 1000);
   }
+  // prime_focus's own receiver can sit above focus_height_mm (the
+  // aperture_to_receiver_mm offset) and, for a cylinder/frustum, extend
+  // further still -- fold in its actual top so a tall or offset receiver
+  // isn't cropped by the height-driven frame.
+  if (params.receiver_type) {
+    const baseZ = (params.focus_height_mm || 0) + (params.aperture_to_receiver_mm || 0);
+    let halfHeight = 0;
+    if (params.receiver_type === "cylinder") halfHeight = (params.cylinder_height_mm || 0) / 2;
+    else if (params.receiver_type === "frustum") halfHeight = (params.frustum_height_mm || 0) / 2;
+    z = Math.max(z, (baseZ + halfHeight) / 1000);
+  }
   return z;
 }
 
@@ -245,20 +270,73 @@ function secondarySvg(geometry, proj, ui) {
   );
 }
 
+// This view drops x throughout (see the module comment), so a receiver's
+// horizontal extent (half_u_mm / radius_mm / r_top_mm / r_bot_mm -- all
+// really x-axis quantities on an axisymmetric or on-axis shape) is drawn
+// centered on its own center_y_mm, the same convention the pre-existing
+// flat window used with an implicit center of 0.
 function receiverSvg(geometry, proj, ui) {
   const receiver = geometry && geometry.receiver;
   if (!receiver) return "";
-  const halfM = receiver.half_u_mm / 1000;
-  const zm = receiver.z_mm / 1000;
-  const [x0, y0] = toScreen(proj, -halfM, zm);
-  const [x1] = toScreen(proj, halfM, zm);
-  const thickness = 10;
   const isSel = !!ui.selection && ui.selection.kind === "receiver";
-  return (
-    '<rect data-kind="receiver" x="' + Math.min(x0, x1).toFixed(1) + '" y="' + (y0 - thickness / 2).toFixed(1) +
-    '" width="' + Math.abs(x1 - x0).toFixed(1) + '" height="' + thickness + '" fill="rgba(217,123,41,0.7)" stroke="' +
-    (isSel ? "#0b5fd0" : "#a8551a") + '" stroke-width="' + (isSel ? 2.2 : 1.5) + '"></rect>'
-  );
+  const stroke = isSel ? "#0b5fd0" : "#a8551a";
+  const strokeWidth = isSel ? 2.2 : 1.5;
+  const kind = receiver.kind || "flat";
+  const yCenterM = (receiver.center_y_mm || 0) / 1000;
+
+  let s;
+  if (kind === "cylinder") {
+    const halfM = receiver.radius_mm / 1000;
+    const zTopM = (receiver.center_z_mm + receiver.height_mm / 2) / 1000;
+    const zBotM = (receiver.center_z_mm - receiver.height_mm / 2) / 1000;
+    const [x0, y0] = toScreen(proj, yCenterM - halfM, zTopM);
+    const [x1, y1] = toScreen(proj, yCenterM + halfM, zBotM);
+    s =
+      '<rect data-kind="receiver" x="' + Math.min(x0, x1).toFixed(1) + '" y="' + Math.min(y0, y1).toFixed(1) +
+      '" width="' + Math.abs(x1 - x0).toFixed(1) + '" height="' + Math.abs(y1 - y0).toFixed(1) +
+      '" fill="rgba(217,123,41,0.35)" stroke="' + stroke + '" stroke-width="' + strokeWidth + '"></rect>';
+  } else if (kind === "frustum") {
+    const rTopM = receiver.r_top_mm / 1000;
+    const rBotM = receiver.r_bot_mm / 1000;
+    const [xTL, yT] = toScreen(proj, yCenterM - rTopM, receiver.z_top_mm / 1000);
+    const [xTR] = toScreen(proj, yCenterM + rTopM, receiver.z_top_mm / 1000);
+    const [xBR, yB] = toScreen(proj, yCenterM + rBotM, receiver.z_bot_mm / 1000);
+    const [xBL] = toScreen(proj, yCenterM - rBotM, receiver.z_bot_mm / 1000);
+    const d =
+      "M" + xTL.toFixed(1) + " " + yT.toFixed(1) +
+      " L" + xTR.toFixed(1) + " " + yT.toFixed(1) +
+      " L" + xBR.toFixed(1) + " " + yB.toFixed(1) +
+      " L" + xBL.toFixed(1) + " " + yB.toFixed(1) + " Z";
+    s = '<path data-kind="receiver" d="' + d + '" fill="rgba(217,123,41,0.35)" stroke="' + stroke + '" stroke-width="' + strokeWidth + '"></path>';
+  } else {
+    const halfM = receiver.half_u_mm / 1000;
+    const zm = receiver.z_mm / 1000;
+    const [x0, y0] = toScreen(proj, yCenterM - halfM, zm);
+    const [x1] = toScreen(proj, yCenterM + halfM, zm);
+    const thickness = 10;
+    s =
+      '<rect data-kind="receiver" x="' + Math.min(x0, x1).toFixed(1) + '" y="' + (y0 - thickness / 2).toFixed(1) +
+      '" width="' + Math.abs(x1 - x0).toFixed(1) + '" height="' + thickness + '" fill="rgba(217,123,41,0.7)" stroke="' +
+      stroke + '" stroke-width="' + strokeWidth + '"></rect>';
+  }
+
+  // The entrance aperture (always flat, at focus_height_mm) only exists on
+  // the wire once aperture_to_receiver_mm > 0 -- draw it as a thin dashed
+  // line so the offset between it and the receiver above/below reads at a
+  // glance.
+  if (receiver.aperture) {
+    const ap = receiver.aperture;
+    const apHalfM = ap.half_u_mm / 1000;
+    const apYCenterM = (ap.center_y_mm || 0) / 1000;
+    const apZm = ap.z_mm / 1000;
+    const [ax0, ay0] = toScreen(proj, apYCenterM - apHalfM, apZm);
+    const [ax1] = toScreen(proj, apYCenterM + apHalfM, apZm);
+    s +=
+      '<line data-kind="receiver" x1="' + ax0.toFixed(1) + '" y1="' + ay0.toFixed(1) + '" x2="' + ax1.toFixed(1) +
+      '" y2="' + ay0.toFixed(1) + '" stroke="#a8551a" stroke-width="1.5" stroke-dasharray="5 3"></line>';
+  }
+
+  return s;
 }
 
 function raysSvg(geometry, ui, proj) {
@@ -358,6 +436,41 @@ function calloutAnchorAndBox(key, optics, doc, geometry, proj) {
     const apex = toScreen(proj, 0, apexZm);
     return { kind: "angle", anchor: apex, box: { x: apex[0] + 70, y: apex[1] + 22 } };
   }
+  if (key === "aperture_to_receiver_mm") {
+    // Vertical dimension from the aperture's own z (focus_height_mm) up to
+    // the receiver's resolved z -- the offset IS the receiver's height
+    // control (see heliostat.web.app's PrimeFocusOptics), there is no
+    // separate receiver-height field to dimension instead.
+    const apertureZm = (params.focus_height_mm || 0) / 1000;
+    const receiverZm = apertureZm + value / 1000;
+    const anchor = toScreen(proj, 0, receiverZm);
+    const datum = toScreen(proj, 0, apertureZm);
+    return { kind: "vertical", anchor, datum, box: { x: anchor[0] + 150, y: anchor[1] } };
+  }
+  if (key === "cylinder_height_mm" || key === "frustum_height_mm") {
+    const centerZm = ((params.focus_height_mm || 0) + (params.aperture_to_receiver_mm || 0)) / 1000;
+    const halfM = value / 2000;
+    const anchor = toScreen(proj, 0, centerZm + halfM);
+    const datum = toScreen(proj, 0, centerZm - halfM);
+    return { kind: "vertical", anchor, datum, box: { x: anchor[0] + 190, y: (anchor[1] + datum[1]) / 2 } };
+  }
+  if (key === "cylinder_radius_mm") {
+    const centerZm = ((params.focus_height_mm || 0) + (params.aperture_to_receiver_mm || 0)) / 1000;
+    const anchor = toScreen(proj, value / 1000, centerZm);
+    const axis = toScreen(proj, 0, centerZm);
+    return { kind: "horizontal", anchor, axis, box: { x: (axis[0] + anchor[0]) / 2, y: anchor[1] - 46 } };
+  }
+  if (key === "frustum_top_radius_mm" || key === "frustum_bottom_radius_mm") {
+    const centerZm = ((params.focus_height_mm || 0) + (params.aperture_to_receiver_mm || 0)) / 1000;
+    const halfHeightM = (params.frustum_height_mm || 0) / 2000;
+    const isTop = key === "frustum_top_radius_mm";
+    const zm = centerZm + (isTop ? halfHeightM : -halfHeightM);
+    const anchor = toScreen(proj, value / 1000, zm);
+    const axis = toScreen(proj, 0, zm);
+    const dy = isTop ? -46 : 46; // opposite sides so the two radii don't overlap
+    return { kind: "horizontal", anchor, axis, box: { x: (axis[0] + anchor[0]) / 2, y: anchor[1] + dy } };
+  }
+
   // apex_height_mm / vertex_z_mm / focus_height_mm / receiver_z_mm: a
   // vertical dimension from the heliostat-plane datum up to this height,
   // offset left (tower-side fields) or right (receiver) so callouts don't
@@ -405,19 +518,53 @@ function dimSvg(info) {
   );
 }
 
+// Callout boxes are anchored to the geometry they label, so several can want
+// the same spot -- most visibly the receiver's own dimensions once it has a
+// radius and a height as well as a position. Boxes are nudged down the screen
+// until they stop overlapping, in the order they were placed.
+const CALLOUT_BOX_H = 40;
+const CALLOUT_BOX_W = 120;
+
+function avoidOverlap(box, placed) {
+  let moved = true;
+  let guard = 0;
+  while (moved && guard < 20) {
+    moved = false;
+    guard += 1;
+    for (const other of placed) {
+      const dx = Math.abs(box.x - other.x);
+      const dy = Math.abs(box.y - other.y);
+      if (dx < CALLOUT_BOX_W && dy < CALLOUT_BOX_H) {
+        box.y = other.y + CALLOUT_BOX_H;
+        moved = true;
+      }
+    }
+  }
+  placed.push({ x: box.x, y: box.y });
+  return box;
+}
+
 function renderCallouts(doc, geometry, proj) {
   const optics = doc.optics;
   const params = doc.opticsParams[optics];
+  const placed = [];
   let dims = "";
   for (const [id, c] of Object.entries(els.callouts)) {
     const dot = id.indexOf(".");
     const cOptics = id.slice(0, dot);
     const key = id.slice(dot + 1);
-    const show = cOptics === optics;
+    let show = cOptics === optics;
+    // prime_focus's cylinder/frustum-only callouts (same `group` tag the
+    // sidebar/inspector rows use) only show while receiver_type matches.
+    if (show && cOptics === "prime_focus") {
+      const field = RECEIVER_FIELD_TABLE.prime_focus.find((f) => f.key === key);
+      show = !field || receiverFieldVisible(field, params);
+    }
     c.wrap.style.display = show ? "" : "none";
     if (!show) continue;
     const info = calloutAnchorAndBox(key, optics, doc, geometry, proj);
     if (!info) continue;
+    avoidOverlap(info.box, placed);
     c.wrap.style.left = info.box.x.toFixed(1) + "px";
     c.wrap.style.top = info.box.y.toFixed(1) + "px";
     setVal(c.input, params[key]); // isFocused guard: typing survives re-renders

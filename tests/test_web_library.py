@@ -277,10 +277,30 @@ def test_project_missing_schema_version_is_422(client, library_dir):
 
 
 def test_project_wrong_schema_version_is_422(client, library_dir):
-    doc = _project_document(schema_version=2)
+    doc = _project_document(schema_version=3)
     resp = client.post("/api/library/projects", json={"name": "p", "document": doc})
     assert resp.status_code == 422
     assert "schema_version" in resp.json()["detail"]
+
+
+def test_project_v1_document_still_loads(client, library_dir):
+    """A document saved before the ``runs`` field existed must still open --
+    schema_version 1 carries no ``runs`` key at all, not an empty one."""
+    doc = _project_document()
+    assert "runs" not in doc
+    saved = client.post("/api/library/projects", json={"name": "old", "document": doc})
+    assert saved.status_code == 200
+
+    loaded = client.get("/api/library/projects/old").json()
+    assert loaded["document"] == doc
+
+
+def test_project_v2_document_carries_its_saved_runs(client, library_dir):
+    doc = _project_document(schema_version=2, runs=["day-2026-03-21-1"])
+    saved = client.post("/api/library/projects", json={"name": "p2", "document": doc})
+    assert saved.status_code == 200
+    loaded = client.get("/api/library/projects/p2").json()
+    assert loaded["document"]["runs"] == ["day-2026-03-21-1"]
 
 
 def test_project_bad_receiver_params_is_422(client, library_dir):
@@ -319,4 +339,104 @@ def test_project_site_block_is_optional(client, library_dir):
         }
     )
     resp = client.post("/api/library/projects", json={"name": "p", "document": doc})
+    assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# saved runs (docs/ui-spec.md 4: "runs save with the project")
+
+
+def _run_document(**overrides):
+    doc = {
+        "kind": "day",
+        "project_name": None,
+        "request": {
+            "design": RECT_DOC,
+            "mode": "ultra_fast",
+            "optics": "prime_focus",
+            "solar_az_deg": 180.0,
+            "solar_el_deg": 45.0,
+        },
+        "result": {"date": "2026-03-21", "energy_kwh": 12.3, "steps": []},
+        "flux_pngs": {},
+    }
+    doc.update(overrides)
+    return doc
+
+
+def test_runs_have_no_builtins(client, library_dir):
+    assert client.get("/api/library/runs").json()["entries"] == []
+
+
+def test_run_round_trips(client, library_dir):
+    doc = _run_document()
+    saved = client.post("/api/library/runs", json={"name": "day-2026-03-21", "document": doc})
+    assert saved.status_code == 200
+
+    listed = client.get("/api/library/runs").json()["entries"]
+    assert [e["name"] for e in listed] == ["day-2026-03-21"]
+    assert listed[0]["builtin"] is False
+    assert listed[0]["size_bytes"] > 0
+
+    loaded = client.get("/api/library/runs/day-2026-03-21").json()
+    assert loaded["document"] == doc
+    assert loaded["builtin"] is False
+
+    assert client.delete("/api/library/runs/day-2026-03-21").status_code == 200
+    assert client.get("/api/library/runs").json()["entries"] == []
+
+
+def test_run_disk_footprint_is_the_real_file_size(client, library_dir):
+    """The Manage-saved-runs footprint must be the truth, not an estimate --
+    check it against the actual bytes on disk for that one entry."""
+    doc = _run_document(flux_pngs={"0": "not-really-a-png-but-takes-up-space" * 50})
+    client.post("/api/library/runs", json={"name": "heavy", "document": doc})
+
+    reported = client.get("/api/library/runs").json()["entries"][0]["size_bytes"]
+    on_disk = (library_dir / "runs" / "heavy.json").stat().st_size
+    assert reported == on_disk
+
+
+def test_run_kind_year_round_trips(client, library_dir):
+    doc = _run_document(
+        kind="year",
+        request={
+            "design": RECT_DOC,
+            "mode": "ultra_fast",
+            "optics": "prime_focus",
+            "solar_az_deg": 180.0,
+            "solar_el_deg": 45.0,
+            "fast_mode": True,
+        },
+        result={"annual_energy_mwh": 1.2, "days": []},
+    )
+    saved = client.post("/api/library/runs", json={"name": "year-2026", "document": doc})
+    assert saved.status_code == 200
+    loaded = client.get("/api/library/runs/year-2026").json()
+    assert loaded["document"]["kind"] == "year"
+
+
+def test_run_unknown_kind_is_422(client, library_dir):
+    doc = _run_document(kind="month")
+    resp = client.post("/api/library/runs", json={"name": "bad", "document": doc})
+    assert resp.status_code == 422
+
+
+def test_run_missing_request_is_422(client, library_dir):
+    doc = _run_document()
+    del doc["request"]
+    resp = client.post("/api/library/runs", json={"name": "bad", "document": doc})
+    assert resp.status_code == 422
+
+
+def test_run_can_be_tagged_with_a_project(client, library_dir):
+    doc = _run_document(project_name="p2")
+    client.post("/api/library/runs", json={"name": "tagged", "document": doc})
+    loaded = client.get("/api/library/runs/tagged").json()
+    assert loaded["document"]["project_name"] == "p2"
+
+
+def test_run_names_cannot_collide_with_a_builtin_since_there_are_none(client, library_dir):
+    # runs has no built-ins (unlike designs/receivers), so any safe name saves.
+    resp = client.post("/api/library/runs", json={"name": "anything", "document": _run_document()})
     assert resp.status_code == 200
