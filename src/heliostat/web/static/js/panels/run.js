@@ -97,30 +97,11 @@ function build(container, actions) {
   });
   container.appendChild(runBtn);
 
-  // Only a field trace runs as a cancellable job (main.js's runFieldTraceJob)
-  // -- a single-heliostat trace is one request/response with nothing to
-  // cancel, so this stays hidden for it (see render(), keyed on
-  // ui.traceProgress being non-null).
-  const cancelBtn = document.createElement("div");
-  cancelBtn.className = "btn";
-  cancelBtn.textContent = "Cancel";
-  cancelBtn.hidden = true;
-  cancelBtn.addEventListener("click", () => {
-    if (cancelBtn.classList.contains("disabled-link")) return;
-    cancelBtn.classList.add("disabled-link");
-    actions.onCancelTrace();
-  });
-  container.appendChild(cancelBtn);
-
-  // While a field trace's job is running this shows its live progress
-  // (done/total heliostats + ETA, from heliostat.web.jobs' Job.snapshot);
-  // otherwise hidden -- there is no honest pre-run estimate once the trace
-  // is parallel, since wall clock now depends on core count.
-  const costHint = document.createElement("div");
-  costHint.className = "hint";
-  costHint.style.margin = "0 0 0 4px";
-  costHint.hidden = true;
-  container.appendChild(costHint);
+  // The cancel control and live progress hint for a running field trace used
+  // to live here, but this bar only ever shows on the Workspace tab (see
+  // main.js's renderTabs) -- a field trace can run for minutes, so both
+  // moved to #tracebar (main.js's renderTraceBar), which stays visible from
+  // every tab. This bar keeps only the Run button's own "Running…" label.
 
   const staleChip = document.createElement("div");
   staleChip.className = "stalechip";
@@ -191,12 +172,10 @@ function build(container, actions) {
   container.appendChild(results);
 
   els = {
-    costHint,
     fidelityBtns,
     raysRow,
     raysInput,
     runBtn,
-    cancelBtn,
     staleChip,
     traceErr,
     results,
@@ -227,31 +206,9 @@ export function render(container, actions, ctx) {
   els.runBtn.textContent = ui.traceBusy ? "Running…" : "Run trace";
   els.runBtn.classList.toggle("disabled-link", ui.traceBusy);
 
-  // A field trace runs as a cancellable background job (main.js's
-  // runFieldTraceJob); a single-heliostat trace is one plain request with no
-  // job behind it to cancel. ui.traceProgress is only ever set for the
-  // former, so it doubles as "is this run cancellable".
-  const progress = ui.traceProgress;
-  const cancellable = ui.traceBusy && !!progress;
-  els.cancelBtn.hidden = !cancellable;
-  if (!cancellable) els.cancelBtn.classList.remove("disabled-link");
-
-  // Once the trace is parallel, wall clock depends on core count -- there is
-  // no honest pre-run estimate the way a fixed seconds-per-heliostat number
-  // was. So this now shows only the running job's own live progress
-  // (heliostat.web.jobs' Job.snapshot: done/total heliostats, detail, ETA),
-  // nothing before Run is pressed.
-  if (cancellable) {
-    let label = progress.detail || `${progress.done} / ${progress.total} heliostats`;
-    if (progress.eta_s != null) {
-      const etaS = Math.round(progress.eta_s);
-      label += etaS >= 90 ? `, about ${Math.round(etaS / 60)} min left` : `, about ${etaS}s left`;
-    }
-    els.costHint.textContent = label;
-    els.costHint.hidden = false;
-  } else {
-    els.costHint.hidden = true;
-  }
+  // The cancel control and live progress hint for a running field trace now
+  // live in #tracebar (main.js's renderTraceBar), visible from every tab --
+  // see the comment where they used to be built, above.
 
   els.traceErr.hidden = !ui.traceError;
   if (ui.traceError) els.traceErr.textContent = ui.traceError;

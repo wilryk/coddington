@@ -55,6 +55,7 @@ const FIDELITY = [
 
 const DEFAULT_DATE = "2026-03-21"; // the server's own DaySite default
 const DEFAULT_HOUR_STEP = 0.5;
+const DEFAULT_MIN_ELEVATION_DEG = 5.0; // the server's own DayTraceRequest/YearTraceRequest default
 
 let built = false;
 let els = {};
@@ -64,6 +65,10 @@ let lastContainer = null;
 // -- day-sweep run state (module-local -- see header) ----------------------
 let formDate = DEFAULT_DATE;
 let formHourStep = DEFAULT_HOUR_STEP;
+// Shared by the day sweep and the year estimate -- both skip timesteps below
+// this sun elevation (heliostat.solar.build_time_grid's min_elevation_deg),
+// so one control covers both rather than duplicating it per panel.
+let formMinElevationDeg = DEFAULT_MIN_ELEVATION_DEG;
 
 let jobId = null;
 let jobSnapshot = null; // last /api/day/status (or /start) response
@@ -191,6 +196,88 @@ function mFmt(mm) {
   return (Number.isInteger(m) ? String(m) : m.toFixed(1)) + " m";
 }
 
+// -- duration estimate: warn before a long run starts ------------------------
+// A year estimate on the full 643-heliostat default field is ~93 timesteps at
+// ~40s each -- about an hour -- started, until now, with no warning. This is
+// a ROUGH pre-start estimate only (never the live job's own progress/ETA,
+// which is exact): (heliostats * timesteps) scaled by a seconds-per-unit
+// cost. That cost comes from this browser's own last finished run of the
+// same fidelity mode (localStorage, survives a reload, not shared across
+// machines) when one exists; otherwise a rough built-in guess per mode.
+// Heliostat count and trace cost both depend on backend/ray count/mirror
+// facets in ways this file has no business modelling -- honesty about being
+// "rough" matters more than precision here.
+const ROUGH_TRACE_COST_S_PER_UNIT = {
+  ultra_fast: 0.015,
+  fast_accurate: 0.05,
+  monte_carlo: 0.2,
+};
+
+function traceCostStorageKey(mode) {
+  return `heliostat.traceCostSPerUnit.${mode}`;
+}
+
+function recordTraceCost(mode, elapsedS, nHeliostats, nTimesteps) {
+  const units = Math.max(1, nHeliostats || 1) * Math.max(1, nTimesteps || 0);
+  if (!Number.isFinite(elapsedS) || elapsedS <= 0 || !(units > 0)) return;
+  try {
+    localStorage.setItem(traceCostStorageKey(mode), String(elapsedS / units));
+  } catch (e) {
+    // localStorage can be unavailable (private browsing, disabled) -- the
+    // estimate just falls back to the rough built-in constant below.
+  }
+}
+
+function traceCostSPerUnit(mode) {
+  try {
+    const stored = parseFloat(localStorage.getItem(traceCostStorageKey(mode)));
+    if (Number.isFinite(stored) && stored > 0) return stored;
+  } catch (e) {
+    // see recordTraceCost
+  }
+  return ROUGH_TRACE_COST_S_PER_UNIT[mode] || ROUGH_TRACE_COST_S_PER_UNIT.ultra_fast;
+}
+
+// Rough timestep count for one day's sweep: daylight is roughly 10-12 h at
+// the manuscript's near-equatorial site, and the elevation floor trims a bit
+// more off each end -- not worth modelling exactly for a "rough estimate"
+// line, so this just assumes an 11 h window, shrunk a little further for a
+// stricter floor.
+function estimateDayTimesteps(hourStep, minElevationDeg) {
+  const daylightH = Math.max(1, 11 - (minElevationDeg || 0) * 0.15);
+  return Math.max(2, Math.ceil(daylightH / Math.max(0.05, hourStep)) + 1);
+}
+
+function estimateYearTimesteps(fastMode, minElevationDeg) {
+  const nDates = fastMode ? 7 : 12;
+  return nDates * estimateDayTimesteps(1.0, minElevationDeg);
+}
+
+function currentHeliostatCount(ctx) {
+  const doc = store.get("doc");
+  if (doc.field.mode !== "field") return 1;
+  const n = ctx && ctx.geometry && ctx.geometry.heliostats && ctx.geometry.heliostats.length;
+  return n || 1;
+}
+
+function estimateDurationS(mode, nHeliostats, nTimesteps) {
+  const units = Math.max(1, nHeliostats) * Math.max(1, nTimesteps);
+  return traceCostSPerUnit(mode) * units;
+}
+
+// Only worth a line once the rough estimate clears a couple of minutes --
+// anything shorter is not worth interrupting the flow to warn about.
+const DURATION_WARNING_THRESHOLD_S = 120;
+
+function durationWarningText(estimateS, nHeliostats, nTimesteps) {
+  if (!(estimateS > DURATION_WARNING_THRESHOLD_S)) return null;
+  const dur = fmtDuration(estimateS) || `${Math.round(estimateS)} s`;
+  return (
+    `Rough estimate: about ${dur} for ${nHeliostats} heliostat(s) x ${nTimesteps} timesteps. ` +
+    "This is a rough guess, not a promise -- actual time depends on hardware and settings."
+  );
+}
+
 // -- subject strip: what's being analyzed, read from doc + ctx.geometry -----
 
 function opticsSummary(doc) {
@@ -277,7 +364,11 @@ function startSweep() {
 
   const doc = store.get("doc");
   const ui = store.get("ui");
-  const body = buildDayRequest(doc, ui, { site, hour_step: formHourStep });
+  const body = buildDayRequest(doc, ui, {
+    site,
+    hour_step: formHourStep,
+    min_elevation_deg: formMinElevationDeg,
+  });
   sweepRequest = body;
   sweepPhysicsKey = physicsKey(body);
 
@@ -351,6 +442,12 @@ function fetchResult(forJob) {
       if (dayResult.steps && dayResult.steps.length) {
         selectedStepIndex = pickDefaultStepIndex(dayResult.steps);
         scheduleFluxFetch();
+      }
+      // Feeds the NEXT run's rough duration estimate -- see recordTraceCost.
+      // Uses done timesteps (not the requested total), so a cancelled run's
+      // real cost still teaches the estimate something rather than nothing.
+      if (jobSnapshot) {
+        recordTraceCost(sweepRequest && sweepRequest.mode, jobSnapshot.elapsed_s, dayResult.n_heliostats, jobSnapshot.done);
       }
       paintIfVisible();
     })
@@ -559,7 +656,11 @@ function startYear() {
   const ui = store.get("ui");
   // No site fields exposed here, same as the day sweep's own date-only form
   // -- the server's YearSite defaults (the manuscript's site) fill the rest.
-  const body = buildYearRequest(doc, ui, { site: {}, fastMode: yearFastMode });
+  const body = buildYearRequest(doc, ui, {
+    site: {},
+    fastMode: yearFastMode,
+    min_elevation_deg: formMinElevationDeg,
+  });
   yearSweepRequest = body;
   yearSweepPhysicsKey = physicsKey(body);
 
@@ -629,6 +730,16 @@ function fetchYearResult(forJob) {
       yearResult = data;
       yearResultJobId = forJob;
       yearError = null;
+      // See fetchResult's own call -- same rough-estimate bookkeeping, one
+      // step up (timesteps across every traced date, not one day).
+      if (yearJobSnapshot) {
+        recordTraceCost(
+          yearSweepRequest && yearSweepRequest.mode,
+          yearJobSnapshot.elapsed_s,
+          yearResult.n_heliostats,
+          yearJobSnapshot.done
+        );
+      }
       paintIfVisible();
     })
     .catch((err) => {
@@ -1099,6 +1210,25 @@ function build(container) {
   stepField.appendChild(stepLabel);
   stepField.appendChild(stepInput);
 
+  const elevField = document.createElement("div");
+  elevField.className = "an-field";
+  const elevLabel = document.createElement("label");
+  elevLabel.textContent = "Min elevation (°)";
+  const elevInput = document.createElement("input");
+  elevInput.type = "number";
+  elevInput.className = "val";
+  elevInput.min = "0";
+  elevInput.max = "45";
+  elevInput.step = "0.5";
+  elevInput.title =
+    "Skip timesteps below this sun elevation -- they cost the same trace time as a noon one but collect almost no power.";
+  elevInput.addEventListener("input", () => {
+    const v = parseFloat(elevInput.value);
+    if (Number.isFinite(v) && v >= 0) formMinElevationDeg = v;
+  });
+  elevField.appendChild(elevLabel);
+  elevField.appendChild(elevInput);
+
   const fidelitySeg = document.createElement("div");
   fidelitySeg.className = "seg";
   fidelitySeg.style.marginBottom = "0";
@@ -1126,10 +1256,19 @@ function build(container) {
 
   controlRow.appendChild(dateField);
   controlRow.appendChild(stepField);
+  controlRow.appendChild(elevField);
   controlRow.appendChild(fidelitySeg);
   controlRow.appendChild(startBtn);
   controlRow.appendChild(cancelBtn);
   sweepPanel.appendChild(controlRow);
+
+  // Pre-start rough duration estimate (docs/ui-spec.md 4) -- see
+  // durationWarningText. Sits right under the controls, above the progress
+  // bar, so it is the thing a user sees right before pressing Start.
+  const durationHint = document.createElement("div");
+  durationHint.className = "fieldwarn";
+  durationHint.hidden = true;
+  sweepPanel.appendChild(durationHint);
 
   const progressRow = document.createElement("div");
   progressRow.className = "an-progressrow";
@@ -1203,7 +1342,19 @@ function build(container) {
   energyPanel.style.flex = "1 1 auto";
   energyPanel.style.display = "flex";
   energyPanel.style.flexDirection = "column";
-  energyPanel.style.minHeight = "0";
+  // NOT min-height: 0. That override let this panel's own box be squeezed
+  // by its flex-column siblings (Day sweep above, Year estimate below)
+  // below its .frame child's fixed 260px min-height -- the frame doesn't
+  // shrink with it, so with overflow:visible (the default) it spilled out
+  // the bottom of this panel's box and over the Year estimate panel below,
+  // hiding its Run button before any sweep has run (nothing shrinks the
+  // panel below its content once yearFrame is showing a real plot, so the
+  // bug was only visible in the pre-trace state where the panels are short
+  // enough for space to actually run out). Leaving min-height at its
+  // flex default (auto = content minimum, since overflow is visible) means
+  // this panel can no longer be squashed smaller than its frame; .tabcontent's
+  // own overflow:auto scrolls instead, which is honest rather than silently
+  // hiding another panel.
   const energyH2 = document.createElement("h2");
   energyH2.textContent = "Energy through the day";
   energyPanel.appendChild(energyH2);
@@ -1276,6 +1427,13 @@ function build(container) {
   yearControlRow.appendChild(yearStartBtn);
   yearControlRow.appendChild(yearCancelBtn);
   yearPanel.appendChild(yearControlRow);
+
+  // See the day sweep's own durationHint -- a year estimate is the run this
+  // warning matters most for (the full default field is ~1 hour).
+  const yearDurationHint = document.createElement("div");
+  yearDurationHint.className = "fieldwarn";
+  yearDurationHint.hidden = true;
+  yearPanel.appendChild(yearDurationHint);
 
   const yearProgressRow = document.createElement("div");
   yearProgressRow.className = "an-progressrow";
@@ -1456,9 +1614,11 @@ function build(container) {
     subjDesign,
     dateInput,
     stepInput,
+    elevInput,
     fidelityBtns,
     startBtn,
     cancelBtn,
+    durationHint,
     progressRow,
     progressFill,
     progressText,
@@ -1485,6 +1645,7 @@ function build(container) {
     yearAllBtn,
     yearStartBtn,
     yearCancelBtn,
+    yearDurationHint,
     yearProgressRow,
     yearProgressFill,
     yearProgressText,
@@ -1518,6 +1679,7 @@ function paintSweepControls() {
   const running = jobSnapshot && jobSnapshot.state === "running";
   setVal(els.dateInput, formDate);
   setVal(els.stepInput, formHourStep);
+  setVal(els.elevInput, formMinElevationDeg);
   const fidelity = store.get("ui.fidelity");
   for (const [key, btn] of Object.entries(els.fidelityBtns)) btn.classList.toggle("active", key === fidelity);
 
@@ -1527,6 +1689,17 @@ function paintSweepControls() {
   els.cancelBtn.hidden = !running;
   els.cancelBtn.classList.toggle("disabled-link", cancelling);
   els.cancelBtn.textContent = cancelling ? "Cancelling…" : "Cancel";
+
+  if (!busy) {
+    const nHeliostats = currentHeliostatCount(lastCtx);
+    const nTimesteps = estimateDayTimesteps(formHourStep, formMinElevationDeg);
+    const estimateS = estimateDurationS(fidelity, nHeliostats, nTimesteps);
+    const text = durationWarningText(estimateS, nHeliostats, nTimesteps);
+    els.durationHint.hidden = !text;
+    if (text) els.durationHint.textContent = text;
+  } else {
+    els.durationHint.hidden = true;
+  }
 
   els.progressRow.hidden = !running;
   if (running) {
@@ -1749,6 +1922,18 @@ function paintYearControls() {
   els.yearCancelBtn.hidden = !running;
   els.yearCancelBtn.classList.toggle("disabled-link", yearCancelling);
   els.yearCancelBtn.textContent = yearCancelling ? "Cancelling…" : "Cancel";
+
+  if (!busy) {
+    const fidelity = store.get("ui.fidelity");
+    const nHeliostats = currentHeliostatCount(lastCtx);
+    const nTimesteps = estimateYearTimesteps(yearFastMode, formMinElevationDeg);
+    const estimateS = estimateDurationS(fidelity, nHeliostats, nTimesteps);
+    const text = durationWarningText(estimateS, nHeliostats, nTimesteps);
+    els.yearDurationHint.hidden = !text;
+    if (text) els.yearDurationHint.textContent = text;
+  } else {
+    els.yearDurationHint.hidden = true;
+  }
 
   els.yearProgressRow.hidden = !running;
   if (running) {

@@ -33,6 +33,22 @@
       </div>
     </div>
 
+    <!-- Field-trace status: a sibling of .topbar/.shell, not inside #runbar,
+         so it stays visible and cancellable no matter which app tab is
+         active -- unlike #runbar (Workspace tab only), a running field
+         trace can take minutes and the user may switch tabs while it runs.
+         In-flow (not position:fixed/absolute) so it displaces the shell
+         below it rather than covering the tab bar or any tab's content;
+         main.js's renderTraceBar owns everything inside and keeps it
+         hidden except while ui.traceBusy is set. -->
+    <div id="tracebar" class="tracebar" hidden>
+      <span class="tracebar-label" id="tracebar-label"></span>
+      <div class="tracebar-track" id="tracebar-track" hidden>
+        <div class="tracebar-fill" id="tracebar-fill"></div>
+      </div>
+      <div class="btn" id="tracebar-cancel" hidden>Cancel</div>
+    </div>
+
     <div class="shell">
       <aside class="sidebar">
         <div id="stage-heliostat"></div>

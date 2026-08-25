@@ -64,6 +64,20 @@ const stageReceiver = document.getElementById("stage-receiver");
 const stageSun = document.getElementById("stage-sun");
 const runbar = document.getElementById("runbar");
 
+// -- trace status bar: relocated out of #runbar (Workspace-tab-only, see
+// renderTabs) so a running field trace's progress and cancel control stay
+// visible and usable from every app tab -----------------------------------
+const tracebar = document.getElementById("tracebar");
+const tracebarLabel = document.getElementById("tracebar-label");
+const tracebarTrack = document.getElementById("tracebar-track");
+const tracebarFill = document.getElementById("tracebar-fill");
+const tracebarCancel = document.getElementById("tracebar-cancel");
+tracebarCancel.addEventListener("click", () => {
+  if (tracebarCancel.classList.contains("disabled-link")) return;
+  tracebarCancel.classList.add("disabled-link");
+  cancelTrace();
+});
+
 // -- top bar: Library button, save state, optics label (docs/ui-spec.md
 // 1 + 5, mockup M5) -------------------------------------------------------
 const libraryBtn = document.getElementById("library-btn");
@@ -133,6 +147,43 @@ const fluxOverlay = document.getElementById("flux-overlay");
 const fluxOverlayImg = document.getElementById("flux-overlay-img");
 const fluxOverlayClose = document.getElementById("flux-overlay-close");
 
+// Field-trace progress and its cancel control, deliberately NOT gated by
+// ui.tab (unlike #runbar's contents -- see renderTabs) -- a field trace is a
+// background job that can run for minutes, so it must stay visible and
+// cancellable no matter which tab the user switches to while it waits.
+function renderTraceBar() {
+  const ui = store.get("ui");
+  if (!ui.traceBusy) {
+    tracebar.hidden = true;
+    tracebarCancel.classList.remove("disabled-link");
+    return;
+  }
+  tracebar.hidden = false;
+  const progress = ui.traceProgress;
+  if (progress) {
+    let label = progress.detail || `${progress.done} / ${progress.total} heliostats`;
+    if (progress.eta_s != null) {
+      const etaS = Math.round(progress.eta_s);
+      label += etaS >= 90 ? `, about ${Math.round(etaS / 60)} min left` : `, about ${etaS}s left`;
+    }
+    tracebarLabel.textContent = "Tracing field — " + label;
+    const haveTotal = progress.total > 0;
+    tracebarTrack.hidden = !haveTotal;
+    if (haveTotal) {
+      const pct = Math.max(0, Math.min(100, (100 * progress.done) / progress.total));
+      tracebarFill.style.width = pct.toFixed(1) + "%";
+    }
+    tracebarCancel.hidden = false;
+  } else {
+    // A single-heliostat trace is one plain request with no job behind it
+    // to cancel or poll -- same "is this cancellable" test run.js's own
+    // cancel button used before this moved out of it.
+    tracebarLabel.textContent = "Tracing…";
+    tracebarTrack.hidden = true;
+    tracebarCancel.hidden = true;
+  }
+}
+
 function renderAllPanels() {
   heliostatPanel.render(stageHeliostat);
   fieldPanel.render(stageField);
@@ -149,6 +200,7 @@ function renderAllPanels() {
   // see library.js's header comment.
   library.render(libraryDrawer, libraryBackdrop);
   renderTopbar();
+  renderTraceBar();
   renderTabs();
   renderRefreshPill();
 
