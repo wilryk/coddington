@@ -170,7 +170,14 @@ function renderTraceBar() {
     const haveTotal = progress.total > 0;
     tracebarTrack.hidden = !haveTotal;
     if (haveTotal) {
-      const pct = Math.max(0, Math.min(100, (100 * progress.done) / progress.total));
+      // `frac` is cost-weighted (outer-ring heliostats trace slower than
+      // inner-ring ones -- see heliostat.web.jobs.Job.snapshot) so the bar
+      // tracks wall-time share instead of racing through cheap heliostats
+      // and stalling on expensive ones; the label text above still counts
+      // plain heliostats. Falls back to the plain count if a job never set
+      // a weighted total.
+      const frac = progress.frac != null ? progress.frac : progress.done / progress.total;
+      const pct = Math.max(0, Math.min(100, 100 * frac));
       tracebarFill.style.width = pct.toFixed(1) + "%";
     }
     tracebarCancel.hidden = false;

@@ -98,22 +98,35 @@ def _effective_support_rad(kernel: RadialKernel, tail_tol: float = SKIP_TAIL_MAS
     return float(theta[np.argmax(within_tol)])
 
 
-def _reach_mm(
-    jac_all: np.ndarray, hess_all: np.ndarray | None, full_stencil: np.ndarray, support_rad: float
-) -> np.ndarray:
-    """Vectorised form of :func:`~heliostat.trace.kernels.deposit`'s own
-    footprint-reach bound, one value per sample: the top singular value of
-    the local Jacobian times the kernel support radius, plus the order-2
-    Hessian correction where one was measured (see ``deposit`` for the
-    derivation of both terms). Samples without a Jacobian get a harmless
-    zero-filled reach; callers gate those out separately.
+def _jac_smax_mm(jac_all: np.ndarray) -> np.ndarray:
+    """Vectorised top singular value of each sample's local Jacobian.
+
+    Shared by the transmission-skip test's footprint-reach bound
+    (:func:`_reach_mm`) and :func:`~heliostat.trace.kernels.deposit`'s own
+    bounding-box sizing, which needs the identical per-sample value — this
+    computes it once for all ``m`` samples instead of once more per sample
+    inside ``deposit``'s Python loop. Samples without a Jacobian (NaN)
+    get a harmless zero-filled input and thus a zero smax; callers gate
+    those out separately.
     """
     jac_safe = np.where(np.isnan(jac_all), 0.0, jac_all)
     jjt = np.einsum("mij,mkj->mik", jac_safe, jac_safe)
-    smax = np.sqrt(np.clip(np.linalg.eigvalsh(jjt)[:, -1], 0.0, None))
+    return np.sqrt(np.clip(np.linalg.eigvalsh(jjt)[:, -1], 0.0, None))
+
+
+def _reach_mm(
+    smax: np.ndarray, hess_all: np.ndarray | None, full_stencil: np.ndarray, support_rad: float
+) -> np.ndarray:
+    """Footprint-reach bound, one value per sample: ``smax`` (the top
+    singular value of the local Jacobian, from :func:`_jac_smax_mm`) times
+    the kernel support radius, plus the order-2 Hessian correction where
+    one was measured (see :func:`~heliostat.trace.kernels.deposit` for the
+    derivation of both terms). Samples without a Jacobian carry a harmless
+    zero ``smax``; callers gate those out separately.
+    """
     reach = smax * support_rad
     if hess_all is not None:
-        hmax = np.zeros(jac_all.shape[0])
+        hmax = np.zeros(smax.shape[0])
         hmax[full_stencil] = np.abs(hess_all[full_stencil]).max(axis=(1, 2, 3))
         reach = reach + hmax * support_rad**2
     return reach
@@ -425,6 +438,11 @@ def trace_heliostat_cone(
         jac_all[:, :, axis] = col.T
         can_jac &= alive[leg_p] | alive[leg_m]
 
+    # Top singular value of each sample's Jacobian, computed once for every
+    # sample: shared below by the transmission-skip test's reach bound and
+    # by `deposit`'s own bounding-box sizing (see `_jac_smax_mm`).
+    smax_all = _jac_smax_mm(jac_all)
+
     hess_all = None
     if order == 2:
         # Second differences where the full stencil survived; a partial
@@ -469,7 +487,7 @@ def trace_heliostat_cone(
     if not occluders and shadow_body is None and not DISABLE_TRANSMISSION_SKIP:
         skip_support = _effective_support_rad(kernel)
         with np.errstate(invalid="ignore"):
-            reach = _reach_mm(jac_all, hess_all, full_stencil, skip_support)
+            reach = _reach_mm(smax_all, hess_all, full_stencil, skip_support)
             uv0 = uv[:, 0, :]
             margin = reach * WINDOW_SAFETY_FACTOR + WINDOW_MARGIN_FLOOR_MM
             v_clears = (uv0[1] - margin >= v0) & (uv0[1] + margin <= v1)
@@ -590,6 +608,7 @@ def trace_heliostat_cone(
                 hess=hess_i,
                 mask=None if full_pass else node_ok[idx].astype(float).reshape(k, k),
                 wrap_u=wrap_u,
+                jac_smax=float(smax_all[idx]),
             )
             if full_pass:
                 n_valid += 1

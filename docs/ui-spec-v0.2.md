@@ -28,6 +28,7 @@ The tooltip for each mode also states, honestly, what it trades away (Ultra fast
 - **Per-instant cost** in Ultra fast additionally drops by coarsening the occlusion mask resolution in that mode only (Fast accurate and Monte Carlo unchanged), bounded by the same error budget. **Caution from the 2026-08-25 validation:** the cone kernel's 16-node transmission raster already shows several-percent MC discrepancies in its (non-production) direct-occluder path once 12+ neighbouring penumbras overlap — so any coarsening must be re-validated against MC on dense inner-ring clusters specifically, not just the average heliostat.
 - The Analysis tab's sweep header notes when a run used estimated occlusion ("shadowing/blocking interpolated between N anchors"), so a published number is never silently approximate.
 - Fast accurate and Monte Carlo keep exact occlusion always — consistent with §A's promise.
+- **Rides along with this work** (agreed 2026-08-25): characterize the cone kernel's direct-occluder raster — discrepancy vs. mask_nodes (16→32→64) and neighbour count on the dense inner-ring clusters — using the same MC validation harness this section builds anyway; fix the raster or document its limit in cone.py before that path is ever exposed for per-heliostat detailed traces.
 
 ## B2. Coefficient-space flux accumulation (experimental prototype, approved 2026-08-25)
 

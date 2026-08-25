@@ -2010,6 +2010,27 @@ _field_pool_size = 0
 _field_pool_inflight = 0
 
 
+def _init_field_worker() -> None:
+    """Pin BLAS/OpenMP thread pools to 1, inside the worker process only.
+
+    Runs once per worker as the ``ProcessPoolExecutor`` initializer, before
+    that worker's first task -- never in the main server process, since
+    this function is passed as the pool's ``initializer`` rather than
+    called directly. Each worker traces one heliostat at a time, which
+    includes tiny 2x2 eigenproblems (``np.linalg.eigvalsh`` in the
+    Jacobian/reach path); left at their defaults, NumPy's OpenBLAS backend
+    spins up its own multi-threaded pool for each of those, and with
+    several worker *processes* already saturating the machine's cores that
+    oversubscribes them -- every worker fighting every other worker for
+    the same cores at the OS scheduler level. Setting these before any
+    BLAS call keeps each worker single-threaded for linear algebra, so the
+    process-level parallelism is the only parallelism in play.
+    """
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+
+
 def _acquire_field_pool(min_size: int) -> ProcessPoolExecutor:
     """The shared field-trace pool, sized to at least ``min_size`` workers.
 
@@ -2026,7 +2047,7 @@ def _acquire_field_pool(min_size: int) -> ProcessPoolExecutor:
         if _field_pool is None or (_field_pool_size < min_size and _field_pool_inflight == 0):
             if _field_pool is not None:
                 _field_pool.shutdown(wait=False)
-            _field_pool = ProcessPoolExecutor(max_workers=min_size)
+            _field_pool = ProcessPoolExecutor(max_workers=min_size, initializer=_init_field_worker)
             _field_pool_size = min_size
         _field_pool_inflight += 1
         return _field_pool
@@ -2080,6 +2101,25 @@ def _field_trace_task(task: tuple) -> tuple[int, dict]:
     return index, result
 
 
+def _heliostat_progress_weights(xy_mm: np.ndarray) -> np.ndarray:
+    """Expected relative trace cost per heliostat, for progress weighting only.
+
+    The cone tracer's per-heliostat cost grows with slant range: a sample's
+    footprint reach scales with the local Jacobian's top singular value
+    (see ``kernels.deposit``), which grows with distance from the receiver,
+    so a field's outer rings can cost several times what its inner rings
+    do. Plain "N of {total} heliostats" progress races through the cheap
+    inner rings and then stalls on the expensive outer ones. This weights
+    each heliostat by its planar radius squared (mm^2) from the field
+    origin -- a cheap, order-of-magnitude proxy for that cost, not a timing
+    model -- so a job's progress fraction and ETA can track wall-time share
+    instead of raw heliostat count. The ``+ 1.0`` floor keeps every weight
+    strictly positive (and the total nonzero even for one heliostat sitting
+    exactly at the origin).
+    """
+    return xy_mm[:, 0] ** 2 + xy_mm[:, 1] ** 2 + 1.0
+
+
 def _trace_field_heliostats(
     designs: list[HeliostatDesign | None],
     xy_mm: np.ndarray,
@@ -2102,7 +2142,7 @@ def _trace_field_heliostats(
     *,
     workers: int = 1,
     should_cancel: Callable[[], bool] | None = None,
-    on_progress: Callable[[int], None] | None = None,
+    on_progress: Callable[[int, float], None] | None = None,
 ) -> dict:
     """One trace per heliostat, summed onto the receiver grid -- the whole
     field endpoint's "phase 3", shared by the synchronous endpoint and the
@@ -2127,6 +2167,11 @@ def _trace_field_heliostats(
     timesteps are.
     """
     n = xy_mm.shape[0]
+    # Cost-weighted companion to the plain per-heliostat count, passed to
+    # ``on_progress`` alongside it so a caller's ETA/progress-bar fraction
+    # can track wall-time share instead of racing through cheap inner rings
+    # and stalling on expensive outer ones (see _heliostat_progress_weights).
+    progress_weight = _heliostat_progress_weights(xy_mm)
     flux = np.zeros((FLUX_GRID, FLUX_GRID))
     power_w = 0.0
     incident_power_w = 0.0 if mode.backend == "cone" else None
@@ -2215,7 +2260,7 @@ def _trace_field_heliostats(
             else:
                 consume(i, result)
             if on_progress is not None:
-                on_progress(i + 1)
+                on_progress(i + 1, float(progress_weight[: i + 1].sum()))
         return {
             "flux": flux,
             "power_w": power_w,
@@ -2260,6 +2305,7 @@ def _trace_field_heliostats(
             future_index[future] = i
             pending.add(future)
         completed = 0
+        weight_done = 0.0
         while pending:
             if should_cancel is not None and should_cancel():
                 raise _TraceCancelled
@@ -2270,15 +2316,23 @@ def _trace_field_heliostats(
             # field.
             finished, pending = wait(pending, timeout=0.25, return_when=FIRST_COMPLETED)
             for future in finished:
+                idx = future_index[future]
                 try:
                     i, result = future.result()
                 except Exception as exc:  # noqa: BLE001 - isolated per heliostat
-                    record_failure(future_index[future], exc)
+                    record_failure(idx, exc)
                 else:
                     raw_results[i] = result
                 completed += 1
+                # Workers finish in schedule order, not submission order, so
+                # this sums whichever heliostats actually landed so far --
+                # the same weights the serial branch above sums by index,
+                # just accumulated in a different order (floating-point sums
+                # are order-dependent, but this feeds only a progress
+                # estimate, never the trace result itself).
+                weight_done += progress_weight[idx]
                 if on_progress is not None:
-                    on_progress(completed)
+                    on_progress(completed, weight_done)
     finally:
         # The pool itself is shared (see _acquire_field_pool) and outlives
         # this call, so a cancel must not shut it down -- only give up on
@@ -4154,8 +4208,14 @@ def create_app():
             v_edges = np.linspace(v0, v1, FLUX_GRID + 1)
             bin_area_m2 = receiver.bin_areas_m2((FLUX_GRID, FLUX_GRID))
 
-            def on_progress(done: int) -> None:
+            # Cost-weighted total, set once up front so eta_s/snapshot's
+            # `frac` can weight progress from the very first callback (see
+            # _heliostat_progress_weights and Job.weight_done/weight_total).
+            job.weight_total = float(_heliostat_progress_weights(xy_mm).sum())
+
+            def on_progress(done: int, weight_done: float) -> None:
                 job.done = done
+                job.weight_done = weight_done
                 job.detail = f"{done} / {n} heliostats"
 
             job.detail = f"0 / {n} heliostats"

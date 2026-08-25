@@ -46,6 +46,17 @@ class Job:
     blobs: dict[str, bytes] = field(default_factory=dict)
     started_at: float = field(default_factory=time.monotonic)
     finished_at: float | None = None
+    #: Optional cost-weighted alternative to ``done``/``total`` steps, for a
+    #: job whose steps cost wildly different amounts of wall time (a field
+    #: trace's outer-ring heliostats can cost several times an inner-ring
+    #: one -- see ``heliostat.web.app._heliostat_progress_weights``). Left at
+    #: 0 (the default), ``eta_s`` and ``snapshot``'s ``frac`` fall back to
+    #: plain step counting, so a job that never sets these behaves exactly
+    #: as before. A caller that does track weighted progress still reports
+    #: ``done``/``total`` as the true step count -- only the fraction/ETA
+    #: derived from these gets cost-weighted.
+    weight_done: float = 0.0
+    weight_total: float = 0.0
     _cancel: threading.Event = field(default_factory=threading.Event)
 
     @property
@@ -54,17 +65,36 @@ class Job:
         return end - self.started_at
 
     @property
+    def _progress_frac(self) -> float | None:
+        """Fraction of work done, cost-weighted where a weight total was
+        supplied, else a plain step count -- shared by ``eta_s`` and
+        ``snapshot`` so the bar and the estimate never disagree."""
+        if self.total <= 0:
+            return None
+        if self.weight_total > 0:
+            return self.weight_done / self.weight_total
+        if self.done <= 0:
+            return None
+        return self.done / self.total
+
+    @property
     def eta_s(self) -> float | None:
-        """Seconds remaining, from the average step so far.
+        """Seconds remaining, extrapolated from the cost-weighted fraction
+        of work done so far when one is available, else from the plain
+        step count.
 
         ``None`` until a step has finished, because an estimate from zero
         samples is a guess dressed as information.
         """
         if self.state != "running" or self.done <= 0 or self.done >= self.total:
             return None
-        return (self.elapsed_s / self.done) * (self.total - self.done)
+        frac = self._progress_frac
+        if not frac:
+            return None
+        return (self.elapsed_s / frac) * (1.0 - frac)
 
     def snapshot(self) -> dict:
+        frac = self._progress_frac
         return {
             "job_id": self.id,
             "state": self.state,
@@ -72,6 +102,7 @@ class Job:
             "done": self.done,
             "total": self.total,
             "detail": self.detail,
+            "frac": None if frac is None else round(frac, 4),
             "elapsed_s": round(self.elapsed_s, 2),
             "eta_s": None if self.eta_s is None else round(self.eta_s, 1),
             "error": self.error,
