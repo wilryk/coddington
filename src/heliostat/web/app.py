@@ -1491,7 +1491,7 @@ def _resolved_cant_focal_mm(explicit: float | None, auto_focal_mm: float | None)
 def _faceted(
     params: GridParams | FlowerParams,
     surface: Surface | None,
-    cant_focal_mm: float | None,
+    cant_focal_mm: float | str | None,
 ) -> HeliostatDesign:
     """Call the grid or flower builder with one already-decided figure/cant pair."""
     if isinstance(params, GridParams):
@@ -1603,6 +1603,13 @@ def _build_trace_design(
         return custom_heliostat(vertices_mm=params.vertices_mm, surface=figure)
 
     cant = _resolved_cant_focal_mm(params.cant_focal_mm, slant_range_mm)
+    # A blank cant means "per heliostat", and for a faceted design cut from a
+    # solved surface that means following that surface's own local gradient
+    # at each facet -- "the full calculated shape, just with aperture
+    # cut-outs". An on-axis cant is rotationally symmetric and cannot
+    # reproduce an astigmatic figure's slope away from centre. An explicit
+    # focal (or an explicit 0) stays exactly what the caller asked for.
+    auto_cant = "auto" if params.cant_focal_mm is None else cant
 
     if params.facet_focal_mm is not None:
         curvature: Surface = (
@@ -1611,7 +1618,7 @@ def _build_trace_design(
         return _faceted(params, curvature, cant)
 
     if params.surface == "twisting":
-        return _faceted(params, ZernikeAstig(sol.c3, -sol.c4, -sol.c5), cant)
+        return _faceted(params, ZernikeAstig(sol.c3, -sol.c4, -sol.c5), auto_cant)
     if params.surface == "flat":
         return _faceted(params, Flat(), cant)
     if cant is None:
@@ -1627,6 +1634,10 @@ def _build_trace_design(
             "heliostat's slant range, give it a positive focal length, or set "
             "facet_focal_mm directly."
         )
+    # A sphere is rotationally symmetric, so the on-axis cant already IS its
+    # own local gradient -- only an astigmatic figure needs the surface to be
+    # followed, and asking Spherical("slant") to supply a gradient before a
+    # focal has resolved it is meaningless anyway.
     return _faceted(params, Spherical("slant"), cant)
 
 

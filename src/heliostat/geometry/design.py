@@ -24,7 +24,16 @@ Frames, spelled out because three of them are in play at once:
   :meth:`~heliostat.geometry.aperture.Region.rotated`);
 * **cant** is a purely 3-D, out-of-plane notion -- a unit surface normal in
   the *heliostat* frame that tilts a flat facet's reflection toward the
-  focal point without touching its 2-D footprint at all.
+  focal point without touching its 2-D footprint at all. Two constructions
+  give that normal, for different intents: :func:`cant_on_axis` aims every
+  facet at one shared on-axis point, correct when the figure riding on top
+  of the cant is itself rotationally symmetric (or when a fixed common
+  focal *is* the design, buildability over figure-matching);
+  :func:`cant_to_surface` instead aims each facet along its own offset's
+  local gradient of the continuous ``surface``, correct whenever the goal
+  is a faceted design that reconstructs that surface with steps at the
+  joins -- see :func:`cant_to_surface` for the astigmatic-figure case where
+  the two disagree.
 
 :func:`rect_heliostat` is the parity anchor: a single flat/unastigmatic
 rectangular facet reproducing today's one-mirror model exactly, so any
@@ -438,6 +447,73 @@ def cant_on_axis(facets: list[Facet], focal_mm: float) -> list[Facet]:
     return out
 
 
+def cant_to_surface(facets: list[Facet], surface: Surface) -> list[Facet]:
+    """New facets, each canted to ``surface``'s own local gradient at its offset.
+
+    The product framing this implements literally: a faceted design is "the
+    full calculated shape ... just with aperture cut-outs", so a facet's
+    tilt should come from the continuous surface it was cut from, not from
+    an independent on-axis focus. :func:`cant_on_axis` gives every facet the
+    *same* rotationally-symmetric aim regardless of what figure rides on top
+    of it; that is only correct when the figure itself is rotationally
+    symmetric (a sphere). An astigmatic figure such as :class:`ZernikeAstig`
+    has a local gradient at an offset facet that an on-axis spherical cant
+    does not reproduce -- confirmed numerically (an 8.6 mrad slope error at
+    a 2000, 1000 mm facet centre on a real solve), and this function is the
+    fix: it replaces the geometric on-axis construction with the surface's
+    own :meth:`Surface.sag_and_slopes`, evaluated once per facet at that
+    facet's ``offset_mm`` in the design's frame -- exactly the ``(u, v)``
+    point on the continuous surface that facet sits at.
+
+    Every figure this module ships (:class:`Spherical`'s paraxial cap,
+    :class:`ZernikeAstig`'s ANSI Z3/Z4/Z5 form) is a homogeneous quadratic
+    in its two local coordinates, so its gradient is linear: for such a
+    surface, ``Q(offset + local) == Q(offset) + gradQ(offset)*local +
+    Q(local)``, exactly, with no residual. That identity is why a facet's
+    own figure can stay exactly what :func:`grid_facets`/:func:`flower`
+    already give it (the same coefficients, evaluated from zero at the
+    facet's own centre in :func:`_resolve_focal`) -- ``Q(local)`` -- while
+    this function supplies the other, linear term, ``gradQ(offset)``, as
+    the cant, with neither double-counting nor omitting anything.
+
+    :class:`Spherical` is special-cased to call :func:`cant_on_axis` at the
+    sphere's own ``focal_mm`` rather than differentiating: a sphere is
+    rotationally symmetric, so on-axis canting *is* the correct local
+    gradient there, and :func:`cant_on_axis`'s exact reflection-law
+    construction is not numerically identical to a naive paraxial tangent-
+    plane normal at large offset angles (they agree only to leading order),
+    so reusing it directly is what keeps existing spherical designs
+    bit-for-bit unchanged rather than merely close. An unresolved
+    ``Spherical(focal_mm="slant")`` has no single focal length to cant
+    toward and raises via :func:`_resolve_focal`'s own check before this
+    function is reached (see :func:`grid_facets`).
+
+    For any other surface -- including :class:`Flat`, whose gradient is
+    zero everywhere, correctly giving every facet ``cant_normal = (0, 0,
+    1)``, i.e. no tilt at all -- the cant is the exact tangent-plane normal
+    to ``sag_and_slopes`` at the offset: ``normalize((-dsdu, -dsdv, 1))`` in
+    ``(u, v, n)`` components, the same construction
+    :mod:`heliostat.trace.mc`/:mod:`heliostat.trace.cone` already use to
+    turn a slope into a normal for the continuous (non-faceted) mirror.
+    """
+    if isinstance(surface, Spherical):
+        if isinstance(surface.focal_mm, str):
+            raise ValueError(
+                "cant_to_surface(surface=Spherical(focal_mm='slant')) has no single "
+                "focal length to cant toward -- pass a numeric focal_mm (e.g. this "
+                "heliostat's own slant range) instead of the 'slant' placeholder"
+            )
+        return cant_on_axis(facets, float(surface.focal_mm))
+    out = []
+    for f in facets:
+        ou, ov = f.offset_mm
+        _, dsdu, dsdv = surface.sag_and_slopes(ou, ov)
+        cant_normal = np.array([-float(dsdu), -float(dsdv), 1.0])
+        cant_normal /= np.linalg.norm(cant_normal)
+        out.append(replace(f, cant_normal=cant_normal))
+    return out
+
+
 def _resolve_focal(
     surface: Surface, offset_mm: tuple[float, float], cant_focal_mm: float | None
 ) -> Surface:
@@ -507,11 +583,31 @@ def grid_facets(
     facet_h_mm: float,
     gap_mm: float = 0.0,
     surface: Surface | None = None,
-    cant_focal_mm: float | None = None,
+    cant_focal_mm: float | str | None = None,
 ) -> HeliostatDesign:
-    """An ``n_u`` x ``n_v`` grid of rectangular facets, optionally canted on-axis."""
+    """An ``n_u`` x ``n_v`` grid of rectangular facets, optionally canted.
+
+    ``cant_focal_mm`` is three deliberately different things: ``None``
+    leaves every facet uncanted (parallel, ``cant_normal=None``) -- an
+    explicit user choice, unaffected by anything below. A number cants every
+    facet **on-axis** toward ``(0, 0, cant_focal_mm)`` via
+    :func:`cant_on_axis`, also an explicit user choice (one fixed focal for
+    the whole field, the buildable case) and also unaffected: it is exactly
+    today's construction, correct on its own terms whatever ``surface``
+    carries. The literal string ``"auto"`` instead cants each facet to
+    ``surface``'s own local gradient at that facet's offset, via
+    :func:`cant_to_surface` -- "reconstruct the continuous ``surface``, cut
+    into facets" rather than "aim every facet at one point regardless of
+    figure". This is what a blank/per-heliostat cant should mean whenever
+    ``surface`` is not rotationally symmetric (see :func:`cant_to_surface`
+    for why an on-axis cant silently mismatches such a figure); callers
+    that used to pass the heliostat's own slant range as ``cant_focal_mm``
+    to approximate that should pass ``"auto"`` instead.
+    """
     if surface is None:
         surface = ZernikeAstig(0.0, 0.0, 0.0)
+    auto_cant = cant_focal_mm == "auto"
+    resolve_against = None if auto_cant else cant_focal_mm
     pitch_u = facet_w_mm + gap_mm
     pitch_v = facet_h_mm + gap_mm
     total_w = n_u * facet_w_mm + (n_u - 1) * gap_mm
@@ -522,12 +618,14 @@ def grid_facets(
         for i in range(n_u):
             ou = -total_w / 2.0 + facet_w_mm / 2.0 + i * pitch_u
             ov = -total_h / 2.0 + facet_h_mm / 2.0 + j * pitch_v
-            fsurf = _resolve_focal(surface, (ou, ov), cant_focal_mm)
+            fsurf = _resolve_focal(surface, (ou, ov), resolve_against)
             facets.append(
                 Facet(region=Rect(facet_w_mm, facet_h_mm), surface=fsurf, offset_mm=(ou, ov))
             )
 
-    if cant_focal_mm is not None:
+    if auto_cant:
+        facets = cant_to_surface(facets, surface)
+    elif cant_focal_mm is not None:
         facets = cant_on_axis(facets, cant_focal_mm)
     return HeliostatDesign(facets)
 
@@ -576,7 +674,7 @@ def flower(
     petal_width_mm: float = 900.0,
     hub_radius_mm: float = 0.0,
     surface: Surface | None = None,
-    cant_focal_mm: float | None = None,
+    cant_focal_mm: float | str | None = None,
     petals_as_facets: bool = True,
 ) -> HeliostatDesign:
     """A ``n_petals``-petal flower mirror.
@@ -589,17 +687,31 @@ def flower(
     ``petals_as_facets=False`` gives a single facet whose region is the
     :func:`~heliostat.geometry.aperture.circular_array` sketch used by the
     fixture examples; the two must cover the same footprint (checked in the
-    test suite).
+    test suite). A single facet has only one offset (the origin) to cant
+    from, so ``cant_focal_mm="auto"`` is accepted here too but is a near
+    no-op: it cants toward ``surface``'s gradient at ``(0, 0)``, zero for
+    every figure this module ships (a homogeneous quadratic's gradient
+    vanishes at its own origin).
+
+    ``cant_focal_mm`` has the same three-way meaning as :func:`grid_facets`:
+    ``None`` uncanted, a number on-axis (:func:`cant_on_axis`, unchanged,
+    the explicit buildable case), ``"auto"`` surface-following
+    (:func:`cant_to_surface`) -- see that function's docstring for why an
+    on-axis cant mismatches a non-spherical ``surface`` at an offset petal.
     """
     if surface is None:
         surface = ZernikeAstig(0.0, 0.0, 0.0)
+    auto_cant = cant_focal_mm == "auto"
+    resolve_against = None if auto_cant else cant_focal_mm
 
     if not petals_as_facets:
         sketch = circular_array(
             petal(petal_length_mm, petal_width_mm).translated(0.0, hub_radius_mm), n_petals
         )
         facets = [Facet(region=sketch, surface=surface, offset_mm=(0.0, 0.0))]
-        if cant_focal_mm is not None:
+        if auto_cant:
+            facets = cant_to_surface(facets, surface)
+        elif cant_focal_mm is not None:
             facets = cant_on_axis(facets, cant_focal_mm)
         return HeliostatDesign(facets)
 
@@ -610,9 +722,11 @@ def flower(
         theta = np.deg2rad(theta_deg)
         offset = (-hub_radius_mm * np.sin(theta), hub_radius_mm * np.cos(theta))
         region = _petal_at_angle(petal_length_mm, petal_width_mm, theta_deg)
-        fsurf = _resolve_focal(surface, offset, cant_focal_mm)
+        fsurf = _resolve_focal(surface, offset, resolve_against)
         facets.append(Facet(region=region, surface=fsurf, offset_mm=offset))
 
-    if cant_focal_mm is not None:
+    if auto_cant:
+        facets = cant_to_surface(facets, surface)
+    elif cant_focal_mm is not None:
         facets = cant_on_axis(facets, cant_focal_mm)
     return HeliostatDesign(facets)
