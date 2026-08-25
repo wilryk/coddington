@@ -329,6 +329,7 @@ function siteFromForm() {
 // -- day-sweep lifecycle ------------------------------------------------------
 
 function resetRunState() {
+  if (jobId) publishAnalysisJob("day", null);
   jobId = null;
   jobSnapshot = null;
   dayResult = null;
@@ -345,6 +346,33 @@ function resetRunState() {
   dayRunSavedName = null;
   dayRunError = null;
   reopenedDayFluxPngs = null;
+}
+
+// -- top-of-screen trace bar -------------------------------------------------
+// The #tracebar in main.js shows any running trace on every tab. Field traces
+// publish through ui.traceBusy/ui.traceProgress; day sweeps and year estimates
+// publish here through ui.analysisJob, cleared the moment the job stops being
+// "running" (finished, failed, or cancelled -- the poll loop is the source of
+// truth, same as the in-tab controls).
+function publishAnalysisJob(kind, snap) {
+  if (!snap || snap.state !== "running") {
+    if (store.get("ui.analysisJob")) store.set("ui.analysisJob", null);
+    return;
+  }
+  store.set("ui.analysisJob", {
+    kind,
+    detail: snap.detail || null,
+    done: snap.done,
+    total: snap.total,
+    frac: snap.frac != null ? snap.frac : null,
+    eta_s: snap.eta_s != null ? snap.eta_s : null,
+  });
+}
+
+// Called by main.js's #tracebar Cancel when the running trace is one of ours.
+export function cancelActiveAnalysisJob() {
+  if (jobId && !cancelling) cancelSweep();
+  else if (yearJobId && !yearCancelling) cancelYear();
 }
 
 function startSweep() {
@@ -377,6 +405,7 @@ function startSweep() {
       starting = false;
       jobId = snap.job_id;
       jobSnapshot = snap;
+      publishAnalysisJob("day", snap);
       paintIfVisible();
       schedulePoll();
     })
@@ -411,6 +440,7 @@ function pollTick() {
     .then((snap) => {
       if (jobId !== thisJob) return; // superseded by a newer run
       jobSnapshot = snap;
+      publishAnalysisJob("day", snap);
       if (snap.state === "running") {
         paintIfVisible();
         schedulePoll();
@@ -428,6 +458,7 @@ function pollTick() {
       if (jobId !== thisJob) return;
       dayError = (err && err.message) || "Lost track of the run.";
       cancelling = false;
+      publishAnalysisJob("day", null);
       paintIfVisible();
     });
 }
@@ -631,6 +662,7 @@ function selectStep(i) {
 // (/api/year/* rather than /api/day/*), with no per-timestep flux map to fetch.
 
 function resetYearRunState() {
+  if (yearJobId) publishAnalysisJob("year", null);
   yearJobId = null;
   yearJobSnapshot = null;
   yearResult = null;
@@ -669,6 +701,7 @@ function startYear() {
       yearStarting = false;
       yearJobId = snap.job_id;
       yearJobSnapshot = snap;
+      publishAnalysisJob("year", snap);
       paintIfVisible();
       scheduleYearPoll();
     })
@@ -702,6 +735,7 @@ function yearPollTick() {
     .then((snap) => {
       if (yearJobId !== thisJob) return;
       yearJobSnapshot = snap;
+      publishAnalysisJob("year", snap);
       if (snap.state === "running") {
         paintIfVisible();
         scheduleYearPoll();
@@ -719,6 +753,7 @@ function yearPollTick() {
       if (yearJobId !== thisJob) return;
       yearError = (err && err.message) || "Lost track of the run.";
       yearCancelling = false;
+      publishAnalysisJob("year", null);
       paintIfVisible();
     });
 }

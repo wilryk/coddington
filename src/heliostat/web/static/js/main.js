@@ -75,7 +75,11 @@ const tracebarCancel = document.getElementById("tracebar-cancel");
 tracebarCancel.addEventListener("click", () => {
   if (tracebarCancel.classList.contains("disabled-link")) return;
   tracebarCancel.classList.add("disabled-link");
-  cancelTrace();
+  // The bar shows whichever trace is running: a workspace field trace, or an
+  // Analysis-tab day sweep / year estimate (ui.analysisJob). Cancel routes to
+  // the owner of the running job.
+  if (store.get("ui.traceBusy")) cancelTrace();
+  else analysisTab.cancelActiveAnalysisJob();
 });
 
 // -- top bar: Library button, save state, optics label (docs/ui-spec.md
@@ -154,6 +158,28 @@ const fluxOverlayClose = document.getElementById("flux-overlay-close");
 function renderTraceBar() {
   const ui = store.get("ui");
   if (!ui.traceBusy) {
+    // Day sweeps and year estimates (Analysis tab jobs) share the same bar,
+    // so a long-running sweep stays visible and cancellable from every tab
+    // -- same contract as the field trace above.
+    const aj = ui.analysisJob;
+    if (aj) {
+      tracebar.hidden = false;
+      const kindLabel = aj.kind === "year" ? "Year estimate" : "Day sweep";
+      let label = aj.detail || `${aj.done} / ${aj.total}`;
+      if (aj.eta_s != null) {
+        const etaS = Math.round(aj.eta_s);
+        label += etaS >= 90 ? `, about ${Math.round(etaS / 60)} min left` : `, about ${etaS}s left`;
+      }
+      tracebarLabel.textContent = kindLabel + " — " + label;
+      const haveTotal = aj.total > 0;
+      tracebarTrack.hidden = !haveTotal;
+      if (haveTotal) {
+        const frac = aj.frac != null ? aj.frac : aj.done / aj.total;
+        tracebarFill.style.width = Math.max(0, Math.min(100, 100 * frac)).toFixed(1) + "%";
+      }
+      tracebarCancel.hidden = false;
+      return;
+    }
     tracebar.hidden = true;
     tracebarCancel.classList.remove("disabled-link");
     return;
