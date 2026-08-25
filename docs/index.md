@@ -6,14 +6,19 @@ as `heliostat`.
 
 ## Install
 
+Download the Windows installer from
+[releases](https://github.com/wilryk/coddington/releases) — no Python
+needed.
+
+From a clone of the repository instead:
+
 ```
-pip install heliostat[web]     # library, CLI and the app
+pip install -e .[web]          # library, CLI and the app
 heliostat                      # starts the app
 ```
 
-Or download a build for your platform from
-[releases](https://github.com/wilryk/coddington/releases) — no Python
-needed. `heliostat shortcut` adds a Desktop launcher.
+There is no PyPI package yet. `heliostat shortcut` adds a Desktop
+launcher.
 
 ## CLI quickstart
 

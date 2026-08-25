@@ -18,8 +18,8 @@ console window opens, then your browser — closing the console quits the
 app. Prefer not to install anything? The plain `.zip` build works the same
 way: unzip it and double-click `Coddington.exe` inside.
 
-**On macOS or Linux**, there is no packaged build in this release — install
-from source with `pip install heliostat[web]` and run `heliostat`.
+**On macOS or Linux**, this release has no packaged build. Clone the
+repository and run it from source; there is no published package yet.
 
 The build is unsigned, so the first launch shows a warning:
 
@@ -29,15 +29,16 @@ The build is unsigned, so the first launch shows a warning:
 - **macOS Gatekeeper**: right-click the app and choose **Open** the first
   time, then confirm in the dialog that appears.
 
-**With Python:**
+**From source**, with the repository cloned:
 
 ```
-pip install heliostat[web]
+pip install -e .[web]
 heliostat
 ```
 
 `heliostat shortcut` puts a launcher on your Desktop. Without the `[web]`
-extra you get the library and the batch CLI, but not the app.
+extra you get the library and the batch CLI, but not the app. There is no
+package on PyPI yet, so `pip install heliostat` will not find this.
 
 ## The app
 
