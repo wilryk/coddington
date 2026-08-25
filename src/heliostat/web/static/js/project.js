@@ -65,13 +65,10 @@ export function serializeProject(doc, ui) {
           heliostat_x_mm: doc.field.single.x_mm,
           heliostat_y_mm: doc.field.single.y_mm,
         };
-  const sun = { azimuth_deg: doc.sun.az, elevation_deg: doc.sun.el };
-  // Note: `doc.sun` carries no `site` today -- the Sun stage is a plain
-  // az/el pair in this phase (docs/ui-spec.md 2.2, "site & time entry is a
-  // later phase") -- so re-saving a project that started life as an
-  // imported legacy setup silently drops whatever `site` that setup had.
-  // Acceptable for phase 3b per the build brief; a future Sun stage that
-  // keeps the site around would restore it here.
+  // The site rides along whether or not the sun is currently being solved
+  // from it, so reopening a project restores the place and moment its
+  // author was working in, not just the angles that came out.
+  const sun = { azimuth_deg: doc.sun.az, elevation_deg: doc.sun.el, site: doc.sun.site };
   const run = {
     mode: ui.fidelity,
     n_rays: ui.fidelity === "monte_carlo" ? ui.mcRays : null,
@@ -184,11 +181,13 @@ export function applyProject(document) {
 
   const sun = (document && document.sun) || {};
   store.set("doc.sun", {
+    // A document saved before the Sun stage grew a site simply has none,
+    // and falls back to the default place rather than failing to load.
+    mode: doc_sun_mode(sun),
     az: sun.azimuth_deg != null ? sun.azimuth_deg : DEFAULT_DOC.sun.az,
     el: sun.elevation_deg != null ? sun.elevation_deg : DEFAULT_DOC.sun.el,
+    site: Object.assign({}, DEFAULT_DOC.sun.site, sun.site || {}),
   });
-  // `sun.site`, if present, is intentionally not stored anywhere -- see
-  // serializeProject()'s comment on why a resave then drops it.
 
   const run = (document && document.run) || {};
   store.set("ui.fidelity", run.mode || "ultra_fast");

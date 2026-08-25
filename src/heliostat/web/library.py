@@ -15,9 +15,28 @@ free-form "save what's on screen" snapshots, honouring its own
 ``HELIOSTAT_SETUPS_DIR``) that this module does not replace or migrate --
 see docs/ui-spec.md 5, "Migration", for where that is headed. What *is*
 shared, by import rather than by copy, are the private name-safety rules
-(the character pattern, the Windows reserved-name list): the two stores
-must never disagree about what a safe filename looks like, and importing
-settles that automatically instead of trusting two copies to be kept equal.
+(the character pattern, the Windows reserved-name list, and the
+case/confusable-folding identity below): the two stores must never disagree
+on what a safe filename looks like or what makes two names "the same", and
+importing settles that automatically instead of trusting two copies to be
+kept equal.
+
+**Identity, same rule as setups.py:** two names that fold together (case,
+and cheaply-normalised Unicode confusables) are the same entry, because on
+the case-insensitive filesystem this ships on they would already be the
+same *file* -- a second save under such a name is refused as a conflict
+rather than silently destroying the first, in every collection, on every
+platform. Entries saved before this rule existed keep listing and loading
+under their existing name; only a new save that would collide is turned
+away.
+
+**Built-ins are unshadowable by the same identity rule, enforced here.**
+Saving or deleting a name that folds to a built-in's name -- whitespace,
+case, or a cheap Unicode confusable apart -- is refused by this module
+itself, not left to the endpoint's exact-string check: a store that only
+*sometimes* agrees with the endpoint about which names are protected is
+the bug this fixes, so the store now knows built-in names too and is the
+one place that can never be talked past.
 """
 
 from __future__ import annotations
@@ -28,13 +47,24 @@ import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .setups import _NAME_RE, _RESERVED
+from .builtin_library import BUILTIN_DESIGNS, BUILTIN_RECEIVERS
+from .setups import _NAME_RE, _RESERVED, _fold, _reject_case_collision
 
 #: The four collections a library entry can belong to. ``projects`` and
-#: ``runs`` have no built-ins (see ``app._BUILTIN_LIBRARY``) -- a project or
-#: a finished run is always something a user made, never a manuscript
-#: default.
+#: ``runs`` have no built-ins -- a project or a finished run is always
+#: something a user made, never a manuscript default.
 COLLECTIONS: tuple[str, ...] = ("designs", "receivers", "projects", "runs")
+
+#: Built-in names per collection, for :func:`_builtin_collision` -- the
+#: same designs/receivers constants :mod:`heliostat.web.app` serves built-in
+#: documents from (as ``_BUILTIN_LIBRARY`` there), kept here too so this
+#: module can protect them without trusting the endpoint to have done it.
+_BUILTIN_NAMES: dict[str, dict[str, dict]] = {
+    "designs": BUILTIN_DESIGNS,
+    "receivers": BUILTIN_RECEIVERS,
+    "projects": {},
+    "runs": {},
+}
 
 
 class LibraryError(ValueError):
@@ -96,14 +126,33 @@ def _path_for(collection: str, name: str) -> Path:
     return path
 
 
+def _builtin_collision(collection: str, validated_name: str) -> str | None:
+    """The built-in name ``validated_name`` folds to in ``collection``, or
+    ``None`` -- whitespace is already gone by the time a name is validated,
+    so this only has to fold case and cheap Unicode confusables to catch
+    what an exact string comparison would miss."""
+    key = _fold(validated_name)
+    for builtin_name in _BUILTIN_NAMES.get(collection, ()):
+        if _fold(builtin_name) == key:
+            return builtin_name
+    return None
+
+
 def save_entry(collection: str, name: str, document: dict) -> dict:
     """Write one entry, overwriting any entry of the same name in ``collection``.
 
-    Built-in-name collisions are the endpoint's business (a 409, not a
-    store-level error): this function does not know which names are
-    built-ins, only how to write a file safely.
+    Refuses a name that folds to a built-in's name, or that folds to a
+    *different* existing entry's name -- see the module docstring.
     """
     path = _path_for(collection, name)
+    builtin = _builtin_collision(collection, path.stem)
+    if builtin is not None:
+        raise LibraryError(
+            f"{path.stem!r} is a built-in {collection[:-1]} ({builtin!r}) and cannot be "
+            "saved over"
+        )
+    existing_stems = (p.stem for p in path.parent.glob("*.json")) if path.parent.is_dir() else ()
+    _reject_case_collision(existing_stems, path.stem, LibraryError, f"{collection[:-1]} entry")
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "name": _validate_name(name),
@@ -122,6 +171,9 @@ def load_entry(collection: str, name: str) -> dict:
     """Read one user-saved entry back. Built-ins are not stored here -- the
     endpoint serves those from :mod:`heliostat.web.builtin_library` directly."""
     path = _path_for(collection, name)
+    builtin = _builtin_collision(collection, path.stem)
+    if builtin is not None:
+        raise LibraryError(f"{path.stem!r} is a built-in {collection[:-1]} ({builtin!r})")
     if not path.is_file():
         raise LibraryError(f"no {collection} entry named {name!r}")
     try:
@@ -147,6 +199,11 @@ def list_entries(collection: str) -> list[dict]:
         return []
     entries = []
     for path in sorted(root.glob("*.json")):
+        if _builtin_collision(collection, path.stem) is not None:
+            # A stray file from before built-ins were protected here --
+            # never created by this version, but if one exists it must not
+            # be listed as if it were a real user entry.
+            continue
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
             entries.append(
@@ -166,6 +223,11 @@ def list_entries(collection: str) -> list[dict]:
 
 def delete_entry(collection: str, name: str) -> None:
     path = _path_for(collection, name)
+    builtin = _builtin_collision(collection, path.stem)
+    if builtin is not None:
+        raise LibraryError(
+            f"{path.stem!r} is a built-in {collection[:-1]} ({builtin!r}) and cannot be deleted"
+        )
     if not path.is_file():
         raise LibraryError(f"no {collection} entry named {name!r}")
     path.unlink()

@@ -40,7 +40,9 @@ import {
 const ERROR_FIELDS = [
   { key: "slope_error_mrad", label: "Slope error (mrad)", path: "doc.design.errors.slope_error_mrad", min: 0, step: 0.1 },
   { key: "specularity_mrad", label: "Specularity (mrad)", path: "doc.design.errors.specularity_mrad", min: 0, step: 0.1 },
-  { key: "reflectance_pct", label: "Reflectance (%)", path: "doc.design.errors.reflectance_pct", min: 0, max: 100, step: 0.5 },
+  // The server takes reflectance as a fraction greater than zero: a mirror
+  // that reflects nothing is not a mirror, and 0 % would 422 every trace.
+  { key: "reflectance_pct", label: "Reflectance (%)", path: "doc.design.errors.reflectance_pct", min: 0.1, max: 100, step: 0.5 },
 ];
 
 // cant_focal_mm is aim only: null = per-heliostat slant range, 0 =
@@ -725,7 +727,8 @@ function build(container) {
   const errorHint = document.createElement("div");
   errorHint.className = "hint";
   errorHint.style.marginLeft = "0";
-  errorHint.textContent = "Used by Monte Carlo traces and carried through SolTrace / SolarPILOT export.";
+  errorHint.textContent =
+    "Applied by every fidelity: slope and specularity broaden the spot, reflectance scales the power collected.";
   controls.appendChild(errorHint);
 
   // -- previews: aperture layout + sag map -----------------------------

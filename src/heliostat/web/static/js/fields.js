@@ -254,6 +254,14 @@ export const SUN_FIELDS = [
   { key: "el", label: "Elevation (°)", path: "doc.sun.el", min: -90, max: 90, step: 0.1 },
 ];
 
+// Where and when, which the server turns into an azimuth and an elevation.
+export const SUN_SITE_FIELDS = [
+  { key: "latitude_deg", label: "Latitude (°)", path: "doc.sun.site.latitude_deg", min: -90, max: 90, step: 0.0001 },
+  { key: "longitude_deg", label: "Longitude (°)", path: "doc.sun.site.longitude_deg", min: -180, max: 180, step: 0.0001 },
+  { key: "timezone_h", label: "UTC offset (h)", path: "doc.sun.site.timezone_h", min: -14, max: 14, step: 0.25 },
+  { key: "hour", label: "Local time (h)", path: "doc.sun.site.hour", min: 0, max: 23.99, step: 0.25 },
+];
+
 // -- Aperture-radius miss warning ------------------------------------------
 //
 // Shared by the Receiver & Tower panel and the inspector so the identical

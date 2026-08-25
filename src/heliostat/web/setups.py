@@ -16,6 +16,18 @@ validated against a strict pattern and the resolved path is checked to be
 inside the setups directory before anything is written or read. Both
 checks, not one: the pattern is the rule, and the containment check is what
 catches a mistake in the pattern.
+
+**Names are case-insensitively unique.** ``"My Tower"`` and ``"my tower"``
+are the same entry, not two -- on the case-insensitive filesystem this ships
+on they would already be the same *file*, so treating them as the same
+*name* everywhere (Windows or not) is what stops a second save from
+silently destroying the first instead of failing loudly. A save that would
+introduce a second name differing only by case (or by a cheaply-normalised
+Unicode confusable) from an existing one is refused as a conflict; saving
+the exact same name again is an ordinary overwrite. Entries already on disk
+before this rule existed are unaffected -- they keep listing and loading
+under whatever name they were given; only a new save that would collide is
+turned away.
 """
 
 from __future__ import annotations
@@ -85,9 +97,50 @@ def _path_for(name: str) -> Path:
     return path
 
 
+def _fold(name: str) -> str:
+    """The identity a name collides under, independent of the host
+    filesystem's own case-folding rules.
+
+    NFKC first, so cheap Unicode look-alikes (full-width letters, compat
+    ligatures) fold together the same way a real font would render them;
+    casefold second, for case. Deliberately *not* what ``_validate_name``
+    stores as the entry's name -- that keeps the user's own spelling; this
+    is only ever used to decide whether two spellings are "the same" name.
+    """
+    return unicodedata.normalize("NFKC", name).casefold()
+
+
+def _reject_case_collision(existing_stems, validated_name: str, error_cls, kind: str) -> None:
+    """Refuse ``validated_name`` if it collides, by :func:`_fold` identity,
+    with a *different* name already on disk -- resaving the identical name
+    is an ordinary overwrite and is not a collision.
+
+    Enforced here in Python, before any filesystem call, rather than left to
+    however the host happens to fold names: that is what makes the rule
+    behave the same on a case-preserving-insensitive filesystem (Windows,
+    default macOS) and a case-sensitive one (Linux) alike.
+    """
+    key = _fold(validated_name)
+    for stem in existing_stems:
+        if stem == validated_name:
+            continue
+        if _fold(stem) == key:
+            raise error_cls(
+                f"{validated_name!r} conflicts with the existing {kind} {stem!r} -- "
+                "names that differ only by case or accents are treated as the same entry"
+            )
+
+
 def save_setup(name: str, document: dict) -> dict:
-    """Write one setup, overwriting any setup of the same name."""
+    """Write one setup, overwriting any setup of the same name.
+
+    A different name that collides case-insensitively with an existing one
+    is refused rather than silently overwriting it -- see the module
+    docstring.
+    """
     path = _path_for(name)
+    existing_stems = (p.stem for p in path.parent.glob("*.json")) if path.parent.is_dir() else ()
+    _reject_case_collision(existing_stems, path.stem, SetupError, "setup")
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "name": _validate_name(name),

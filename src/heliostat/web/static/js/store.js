@@ -99,7 +99,27 @@ const DEFAULT_DOC = {
       band2Count: 71,
     },
   },
-  sun: { az: 165.2, el: 61.4 },
+  // `az`/`el` are what every trace request carries. `mode` picks how they
+  // are arrived at: "site" solves them from where and when, "direct" takes
+  // them as typed. `site` is kept either way, so switching back and forth
+  // does not lose the place you set.
+  sun: {
+    // "direct" on a fresh project so the shipped scene keeps the azimuth and
+    // elevation it was built around; switching to "site" solves them from
+    // where and when instead, and is the first control in the stage.
+    mode: "direct",
+    az: 165.2,
+    el: 61.4,
+    site: {
+      latitude_deg: -10.0,
+      longitude_deg: -52.0,
+      timezone_h: -3.0,
+      year: 2026,
+      month: 3,
+      day: 21,
+      hour: 12.0,
+    },
+  },
 };
 
 const DEFAULT_UI = {
