@@ -101,6 +101,14 @@ stable; see the status note in the README.
   the energy-through-the-day plot, a per-timestep table, CSV export, and
   each timestep's irradiance map kept as the sweep traces it so opening one
   is instant.
+- **Year estimate**: sample days spaced in solar declination, interpolated
+  DNI-weighted to an annual figure, with the per-day energies plotted so the
+  interpolation is visible. Declination is symmetric about the solstices, so
+  the default traces seven days and reconstructs five; a toggle traces all
+  twelve. Assumes clear-sky DNI and says so.
+- **Saved runs** keep with the project and reopen without re-running, day
+  runs carrying their own flux maps; a manage view lists what is stored,
+  with its disk footprint.
 - **Receiver as a real design**: flat window, cylinder or frustum, placed
   anywhere above the heliostat plane, with an entrance aperture that can sit
   a chosen distance in front of the absorbing surface.
