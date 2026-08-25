@@ -1967,68 +1967,94 @@ def _clean(x) -> float | None:
 # Threads do not help here: the cone and Monte Carlo backends are Python/
 # NumPy loops that hold the GIL for their whole run, so a thread pool
 # measured only ~1.7x on 8 cores (owner-measured). A process pool sidesteps
-# the GIL entirely, at the cost of pickling each heliostat's own inputs
-# across the process boundary -- everything a worker needs *per field*
-# (secondary, receiver, mode, sun angles, optical-error scalars) is instead
-# set once per worker via ``_init_field_worker``/``ProcessPoolExecutor``'s
-# own ``initargs``, exactly the pattern ``heliostat.sweep``'s own
-# ``_init_worker`` uses for a CLI sweep's ``multiprocessing.Pool``.
+# the GIL entirely, at the cost of pickling each task's own inputs across the
+# process boundary.
 #
-# Both module-level (not closures), so they pickle under every start
-# method -- including Windows' ``spawn``, which re-imports this module in
-# each worker rather than forking it.
+# The pool itself is a module-level singleton (see _acquire_field_pool):
+# starting one costs real wall-clock time (spawning worker processes), so a
+# field trace reuses the same pool across requests rather than paying that on
+# every Run click. That reuse is exactly why _field_trace_task takes every
+# input a trace needs as part of its own task tuple instead of relying on an
+# initializer to set shared state once per worker process -- an initializer
+# only runs at pool creation, so a worker holding onto stale state from a
+# previous, unrelated field would silently trace the wrong geometry for
+# every request after the first. Module-level (not a closure), so it pickles
+# under every start method -- including Windows' ``spawn``, which re-imports
+# this module in each worker rather than forking it.
 # ---------------------------------------------------------------------------
 
-_FIELD_WORKER_STATE: dict = {}
+_field_pool_lock = threading.Lock()
+_field_pool: ProcessPoolExecutor | None = None
+_field_pool_size = 0
+_field_pool_inflight = 0
 
 
-def _init_field_worker(
-    secondary,
-    receiver: Receiver,
-    mode: TraceMode,
-    solar_az_deg: float,
-    solar_el_deg: float,
-    slope_error_mrad: float,
-    specularity_mrad: float,
-    reflectance: float,
-) -> None:
-    _FIELD_WORKER_STATE.update(
-        secondary=secondary,
-        receiver=receiver,
-        mode=mode,
-        solar_az_deg=solar_az_deg,
-        solar_el_deg=solar_el_deg,
-        slope_error_mrad=slope_error_mrad,
-        specularity_mrad=specularity_mrad,
-        reflectance=reflectance,
-    )
+def _acquire_field_pool(min_size: int) -> ProcessPoolExecutor:
+    """The shared field-trace pool, sized to at least ``min_size`` workers.
+
+    Grows (by replacing the pool) the first time a caller asks for more
+    workers than it currently has; never shrinks, since idle worker
+    processes cost little and losing a pool sized for an earlier large
+    request would only force it to be rebuilt again later. Never replaced
+    while another call is using it (see ``_field_pool_inflight``) --
+    ``ProcessPoolExecutor.shutdown`` would cancel that call's own
+    not-yet-started futures too, since they queue on the same pool.
+    """
+    global _field_pool, _field_pool_size, _field_pool_inflight
+    with _field_pool_lock:
+        if _field_pool is None or (_field_pool_size < min_size and _field_pool_inflight == 0):
+            if _field_pool is not None:
+                _field_pool.shutdown(wait=False)
+            _field_pool = ProcessPoolExecutor(max_workers=min_size)
+            _field_pool_size = min_size
+        _field_pool_inflight += 1
+        return _field_pool
+
+
+def _release_field_pool() -> None:
+    global _field_pool_inflight
+    with _field_pool_lock:
+        _field_pool_inflight = max(0, _field_pool_inflight - 1)
 
 
 def _field_trace_task(task: tuple) -> tuple[int, dict]:
-    """One heliostat's trace, run in a worker process. ``task`` is
-    ``(index, heliostat_id, design, x_mm, y_mm, sol)`` -- the per-heliostat
-    inputs a call to :func:`_trace_core` needs beyond the shared state
-    ``_init_field_worker`` already set. Returns ``(index, result)`` so the
-    caller can place it back at its original position regardless of the
-    order workers finish in.
+    """One heliostat's trace, run in a worker process. ``task`` bundles
+    every input :func:`_trace_core` needs, not just the parts that vary per
+    heliostat: the pool is reused across requests (see
+    :func:`_acquire_field_pool`), so a worker cannot rely on state an
+    initializer set for a previous, possibly different, field.
     """
-    index, heliostat_id, design, x_mm, y_mm, sol = task
-    st = _FIELD_WORKER_STATE
+    (
+        index,
+        heliostat_id,
+        design,
+        x_mm,
+        y_mm,
+        sol,
+        secondary,
+        receiver,
+        mode,
+        solar_az_deg,
+        solar_el_deg,
+        slope_error_mrad,
+        specularity_mrad,
+        reflectance,
+    ) = task
     result = _trace_core(
         design,
         x_mm,
         y_mm,
         sol,
-        st["solar_az_deg"],
-        st["solar_el_deg"],
-        st["secondary"],
-        st["receiver"],
-        st["mode"],
+        solar_az_deg,
+        solar_el_deg,
+        secondary,
+        receiver,
+        mode,
         mc_seed=np.random.SeedSequence((FIELD_MC_SEED, int(heliostat_id))),
         mc_return_paths=False,
-        slope_error_mrad=st["slope_error_mrad"],
-        specularity_mrad=st["specularity_mrad"],
-        reflectance=st["reflectance"],
+        slope_error_mrad=slope_error_mrad,
+        specularity_mrad=specularity_mrad,
+        reflectance=reflectance,
     )
     return index, result
 
@@ -2085,10 +2111,40 @@ def _trace_field_heliostats(
     incident_power_w = 0.0 if mode.backend == "cone" else None
     counters: dict[str, float] = {}
     rows: list[dict | None] = [None] * n
+    #: One entry per heliostat whose own trace raised -- occlusion already
+    #: succeeded for it (that runs once, jointly, for the whole field before
+    #: this loop), so its eta numbers are real even though it contributed no
+    #: power. A single bad heliostat -- one numerically awkward geometry
+    #: among hundreds -- ends up here instead of aborting a run the other
+    #: 599 heliostats already finished.
+    failed: list[dict] = []
+
+    def record_failure(i: int, exc: BaseException) -> None:
+        failed.append({"index": i, "id": int(ids[i]), "error": f"{type(exc).__name__}: {exc}"})
+        rows[i] = {
+            "id": int(ids[i]),
+            "x_mm": float(xy_mm[i, 0]),
+            "y_mm": float(xy_mm[i, 1]),
+            "eta_shade": float(eta_shade[i]),
+            "eta_block": float(eta_block[i]),
+            "eta": float(eta_union[i]),
+            "power_w": 0.0,
+            "failed": True,
+            "error": failed[-1]["error"],
+        }
 
     def consume(i: int, result: dict) -> None:
         nonlocal power_w, incident_power_w, flux
         eta = float(eta_union[i])
+        # Incident power is measured before the bounce (see _trace_core's
+        # reflectance note), so it takes shading only: shading removes sun
+        # before it ever reaches the mirror, but blocking removes the
+        # REFLECTED ray on its way out, after the mirror already saw full
+        # power. Charging incident power for blocking too would flatter
+        # intercept efficiency (incident/collected) on a field with heavy
+        # blocking -- collected power falls while the number it is divided
+        # by falls right along with it.
+        eta_incident = float(eta_shade[i])
         if result["backend"] == "mc":
             counts, _, _ = np.histogram2d(
                 result["xy"][1], result["xy"][0], bins=[v_edges, u_edges]
@@ -2097,7 +2153,7 @@ def _trace_field_heliostats(
             flux += counts * result["watts_per_ray"] / bin_area_m2 * eta
         else:
             own_power = result["power_w"]
-            incident_power_w += result["incident_power_w"] * eta
+            incident_power_w += result["incident_power_w"] * eta_incident
             flux += result["flux"] * eta
         power_w += own_power * eta
         for k, v in result["counters"].items():
@@ -2116,23 +2172,27 @@ def _trace_field_heliostats(
         for i in range(n):
             if should_cancel is not None and should_cancel():
                 raise _TraceCancelled
-            result = _trace_core(
-                designs[i],
-                float(xy_mm[i, 0]),
-                float(xy_mm[i, 1]),
-                solutions[i],
-                solar_az_deg,
-                solar_el_deg,
-                secondary,
-                receiver,
-                mode,
-                mc_seed=np.random.SeedSequence((FIELD_MC_SEED, int(ids[i]))),
-                mc_return_paths=False,
-                slope_error_mrad=slope_error_mrad,
-                specularity_mrad=specularity_mrad,
-                reflectance=reflectance,
-            )
-            consume(i, result)
+            try:
+                result = _trace_core(
+                    designs[i],
+                    float(xy_mm[i, 0]),
+                    float(xy_mm[i, 1]),
+                    solutions[i],
+                    solar_az_deg,
+                    solar_el_deg,
+                    secondary,
+                    receiver,
+                    mode,
+                    mc_seed=np.random.SeedSequence((FIELD_MC_SEED, int(ids[i]))),
+                    mc_return_paths=False,
+                    slope_error_mrad=slope_error_mrad,
+                    specularity_mrad=specularity_mrad,
+                    reflectance=reflectance,
+                )
+            except Exception as exc:  # noqa: BLE001 - isolated per heliostat, see record_failure
+                record_failure(i, exc)
+            else:
+                consume(i, result)
             if on_progress is not None:
                 on_progress(i + 1)
         return {
@@ -2141,22 +2201,10 @@ def _trace_field_heliostats(
             "incident_power_w": incident_power_w,
             "counters": counters,
             "rows": rows,
+            "failed": failed,
         }
 
-    pool = ProcessPoolExecutor(
-        max_workers=min(workers, n),
-        initializer=_init_field_worker,
-        initargs=(
-            secondary,
-            receiver,
-            mode,
-            solar_az_deg,
-            solar_el_deg,
-            slope_error_mrad,
-            specularity_mrad,
-            reflectance,
-        ),
-    )
+    pool = _acquire_field_pool(min(workers, n))
     # Collected here, keyed by original index, but not summed until every
     # heliostat is in: workers finish in whatever order the OS schedules
     # them, and floating-point addition is not associative, so summing as
@@ -2166,13 +2214,30 @@ def _trace_field_heliostats(
     # branch above does, whatever `workers` is.
     raw_results: list[dict | None] = [None] * n
     try:
-        pending = {
-            pool.submit(
+        future_index: dict = {}
+        pending = set()
+        for i in range(n):
+            future = pool.submit(
                 _field_trace_task,
-                (i, int(ids[i]), designs[i], float(xy_mm[i, 0]), float(xy_mm[i, 1]), solutions[i]),
+                (
+                    i,
+                    int(ids[i]),
+                    designs[i],
+                    float(xy_mm[i, 0]),
+                    float(xy_mm[i, 1]),
+                    solutions[i],
+                    secondary,
+                    receiver,
+                    mode,
+                    solar_az_deg,
+                    solar_el_deg,
+                    slope_error_mrad,
+                    specularity_mrad,
+                    reflectance,
+                ),
             )
-            for i in range(n)
-        }
+            future_index[future] = i
+            pending.add(future)
         completed = 0
         while pending:
             if should_cancel is not None and should_cancel():
@@ -2184,19 +2249,28 @@ def _trace_field_heliostats(
             # field.
             finished, pending = wait(pending, timeout=0.25, return_when=FIRST_COMPLETED)
             for future in finished:
-                i, result = future.result()
-                raw_results[i] = result
+                try:
+                    i, result = future.result()
+                except Exception as exc:  # noqa: BLE001 - isolated per heliostat
+                    record_failure(future_index[future], exc)
+                else:
+                    raw_results[i] = result
                 completed += 1
                 if on_progress is not None:
                     on_progress(completed)
     finally:
-        # wait=False: a cancel must not sit blocked on heliostats already
-        # running in a worker -- those finish on their own and are simply
-        # never collected. cancel_futures drops everything still queued.
-        pool.shutdown(wait=False, cancel_futures=True)
+        # The pool itself is shared (see _acquire_field_pool) and outlives
+        # this call, so a cancel must not shut it down -- only give up on
+        # OUR OWN not-yet-started futures. Already-running ones finish on
+        # their own in the background and are simply never collected here,
+        # same as before; cancel() on those returns False and is a no-op.
+        for future in pending:
+            future.cancel()
+        _release_field_pool()
 
     for i in range(n):
-        consume(i, raw_results[i])
+        if raw_results[i] is not None:
+            consume(i, raw_results[i])
 
     return {
         "flux": flux,
@@ -2204,6 +2278,7 @@ def _trace_field_heliostats(
         "incident_power_w": incident_power_w,
         "counters": counters,
         "rows": rows,
+        "failed": failed,
     }
 
 
@@ -2676,6 +2751,94 @@ def _sag_contour_interval_mm(span_mm: float) -> float:
     return _SAG_CONTOUR_INTERVALS_MM[-1]
 
 
+# ---------------------------------------------------------------------------
+# matplotlib figure reuse for the sag map and aperture-preview PNGs.
+#
+# Profiling both endpoints found the physics (the sag field itself, the
+# facet membership test) essentially free next to matplotlib's own cost:
+# building a fresh Figure/Axes/colorbar and laying out their text is most of
+# a render, every render, because the previous code built all three from
+# scratch on every request. A Figure is not thread-safe to share -- two
+# requests drawing into the same one at once would interleave into a
+# garbled PNG -- so each stays thread-local: built once per worker thread,
+# then reused, cleared and redrawn, for every request that thread serves
+# afterwards. Each gets its own Agg canvas wired up directly
+# (``FigureCanvasAgg(fig)``) rather than going through ``matplotlib.use()``
+# and ``pyplot``, so it needs no process-wide backend state and is never
+# tracked by pyplot's global figure registry (nothing to ``plt.close()``).
+# ---------------------------------------------------------------------------
+
+_SAG_FIGURE_DPI = 100
+_PREVIEW_FIGURE_DPI = 100
+_render_tls = threading.local()
+
+
+def _new_agg_figure(figsize: tuple[float, float], dpi: int):
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    fig = Figure(figsize=figsize, dpi=dpi)
+    FigureCanvasAgg(fig)
+    return fig
+
+
+def _sag_figure():
+    """This thread's persistent ``(fig, ax)`` for :func:`_render_sag_png`."""
+    fig = getattr(_render_tls, "sag_fig", None)
+    if fig is None:
+        fig = _new_agg_figure((5.6, 4.6), _SAG_FIGURE_DPI)
+        _render_tls.sag_fig = fig
+        _render_tls.sag_ax = fig.add_subplot(111)
+        _render_tls.sag_cbar = None
+        # Which of the two axes shapes (colorbar present or not) tight_layout
+        # was last run for -- see the note in _render_sag_png.
+        _render_tls.sag_layout_for = None
+    return fig, _render_tls.sag_ax
+
+
+def _preview_figure():
+    """This thread's persistent ``(fig, ax)`` for the aperture preview."""
+    fig = getattr(_render_tls, "preview_fig", None)
+    if fig is None:
+        fig = _new_agg_figure((6.0, 6.0), _PREVIEW_FIGURE_DPI)
+        _render_tls.preview_fig = fig
+        _render_tls.preview_ax = fig.add_subplot(111)
+    return fig, _render_tls.preview_ax
+
+
+def _warm_matplotlib() -> None:
+    """Pay matplotlib's one-off font/text-layout warmup cost here, on a
+    background thread at startup, instead of on a visitor's first render.
+
+    Font discovery and Agg's glyph/layout caches are process-global --
+    built by whichever thread draws text first, and free to every thread
+    and every render after that. This draws a throwaway figure through the
+    same calls the real endpoints use (imshow, colorbar, contour, legend,
+    title/tick text, savefig) so that cost lands here, before anyone is
+    looking, rather than on the first real request.
+    """
+    try:
+        fig = _new_agg_figure((5.6, 4.6), _SAG_FIGURE_DPI)
+        ax = fig.add_subplot(111)
+        data = np.linspace(0.0, 1.0, 16).reshape(4, 4)
+        im = ax.imshow(data, cmap="jet")
+        cbar = fig.colorbar(im, ax=ax)
+        cbar.set_label("sag (mm)")
+        ax.contour(data, levels=[0.25, 0.5, 0.75], colors="white", linewidths=0.4)
+        ax.set_title("peak-to-valley 0.000 mm")
+        ax.set_xlabel("u (mm)")
+        ax.set_ylabel("v (mm)")
+        (line,) = ax.plot([0, 1], [0, 1], linestyle="--", label="warmup")
+        ax.legend(handles=[line], loc="best", fontsize=8, frameon=True)
+        fig.tight_layout()
+        fig.savefig(BytesIO(), format="png", dpi=_SAG_FIGURE_DPI)
+    except Exception:
+        # Best-effort only: a failed warmup costs the first real request its
+        # usual latency back, never correctness -- so nothing here should
+        # ever reach an unhandled-exception log on its own thread.
+        pass
+
+
 def _render_sag_png(
     design, sol, params, half_x_mm: float, half_y_mm: float
 ) -> tuple[bytes, float | None, float | None]:
@@ -2699,10 +2862,7 @@ def _render_sag_png(
         a flat mirror (span at or below float noise), which draws no
         contours at all -- there is nothing for a spacing to describe.
     """
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
+    from matplotlib.ticker import MaxNLocator
 
     n = 241
     xs = np.linspace(-half_x_mm, half_x_mm, n)
@@ -2727,12 +2887,18 @@ def _render_sag_png(
             values = facet.surface.sag_and_slopes(du.ravel(), dv.ravel())[0].reshape(gx.shape)
             sag = np.where(inside, values, sag)
 
-    fig, ax = plt.subplots(figsize=(5.6, 4.6))
+    fig, ax = _sag_figure()
+    ax.clear()
     finite = np.isfinite(sag)
     span: float | None = None
     interval: float | None = None
     if not finite.any():
         ax.text(0.5, 0.5, "no surface here", ha="center", va="center", transform=ax.transAxes)
+        # No image this render -- hide a colorbar left over from an earlier
+        # (different heliostat's) render on this thread rather than showing
+        # one with stale limits next to a blank axes.
+        if _render_tls.sag_cbar is not None:
+            _render_tls.sag_cbar.ax.set_visible(False)
     else:
         span = float(np.nanmax(sag) - np.nanmin(sag))
         im = ax.imshow(
@@ -2742,7 +2908,14 @@ def _render_sag_png(
             extent=(-half_x_mm, half_x_mm, -half_y_mm, half_y_mm),
             aspect="equal",
         )
-        cbar = fig.colorbar(im, ax=ax)
+        if _render_tls.sag_cbar is None:
+            cbar = fig.colorbar(im, ax=ax)
+            cbar.ax.yaxis.set_major_locator(MaxNLocator(4))
+            _render_tls.sag_cbar = cbar
+        else:
+            cbar = _render_tls.sag_cbar
+            cbar.ax.set_visible(True)
+            cbar.update_normal(im)
         cbar.set_label("sag (mm)")
         # Contours make a smooth figure legible; pointless on a flat mirror,
         # where the whole map is one value and matplotlib would warn.
@@ -2763,13 +2936,20 @@ def _render_sag_png(
             ax.set_title(f"peak-to-valley {span:.3f} mm")
     ax.set_xlabel("u (mm)")
     ax.set_ylabel("v (mm)")
-    fig.tight_layout()
+    ax.xaxis.set_major_locator(MaxNLocator(5))
+    ax.yaxis.set_major_locator(MaxNLocator(5))
+    # tight_layout()'s own text-bbox measurement is the single biggest cost
+    # in this render (it walks every tick label to size the margins) and it
+    # only needs to run again when the axes' own shape changes -- a
+    # colorbar present or not changes how much width the plot gets, but a
+    # new heliostat's numbers inside the same shape do not.
+    layout_for = "cbar" if finite.any() else "no_cbar"
+    if _render_tls.sag_layout_for != layout_for:
+        fig.tight_layout()
+        _render_tls.sag_layout_for = layout_for
 
     buf = BytesIO()
-    try:
-        fig.savefig(buf, format="png", dpi=110)
-    finally:
-        plt.close(fig)
+    fig.savefig(buf, format="png", dpi=_SAG_FIGURE_DPI)
     return buf.getvalue(), span, interval
 
 
@@ -3002,6 +3182,22 @@ def create_app():
     """Build the FastAPI app. Import-guarded: see the module docstring."""
     app = FastAPI(title="heliostat", version=__version__)
 
+    # Importing matplotlib itself is cheap; done here, synchronously, so
+    # every request-serving thread finds it already fully loaded and never
+    # races another thread's first import of it (that race is a real
+    # circular-import crash, not just a slow path). The expensive part --
+    # font discovery and first-text-layout caching -- runs on a background
+    # thread below (_warm_matplotlib) so it lands before a visitor's first
+    # Heliostat Shape view instead of during it.
+    import matplotlib
+
+    matplotlib.use("Agg")
+    from matplotlib.backends.backend_agg import FigureCanvasAgg  # noqa: F401
+    from matplotlib.figure import Figure  # noqa: F401
+    from matplotlib.ticker import MaxNLocator  # noqa: F401
+
+    threading.Thread(target=_warm_matplotlib, daemon=True, name="heliostat-mpl-warmup").start()
+
     @app.exception_handler(ValueError)
     def _value_error_is_422(request: Request, exc: ValueError) -> JSONResponse:
         # A safety net, not the primary path: most endpoints already catch
@@ -3130,6 +3326,11 @@ def create_app():
 
         def work(job):
             rows = []
+            #: Timesteps whose own trace raised -- kept out of `rows`
+            #: entirely (a fabricated zero-power sample would quietly bias
+            #: the day's energy integral) and reported here instead, so one
+            #: bad timestep costs the day that one point, not the run.
+            failed_steps: list[dict] = []
             for index, step in enumerate(steps):
                 if job.cancelled():
                     break
@@ -3146,6 +3347,16 @@ def create_app():
                     )
                 except _TraceCancelled:
                     break
+                except Exception as exc:  # noqa: BLE001 - isolated per timestep, see failed_steps
+                    failed_steps.append(
+                        {
+                            "key": step.key,
+                            "hour": round(float(step.hour), 4),
+                            "error": f"{type(exc).__name__}: {exc}",
+                        }
+                    )
+                    job.done = index + 1
+                    continue
                 elapsed_ms = (time.perf_counter() - t0) * 1000.0
                 if want_flux:
                     job.blobs[_day_flux_blob_key(index)] = _render_flux_png(
@@ -3169,6 +3380,7 @@ def create_app():
                 job.done = index + 1
             return {
                 "steps": rows,
+                "failed_steps": failed_steps,
                 "energy_kwh": round(_day_energy_kwh(rows), 3),
                 "date": f"{body.site.year:04d}-{body.site.month:02d}-{body.site.day:02d}",
                 "mode": body.mode,
@@ -3294,6 +3506,12 @@ def create_app():
         def work(job):
             rows: list[dict] = []
             rows_per_date: dict[_dt.date, int] = {}
+            #: Timesteps whose own trace raised. Left out of `rows`, exactly
+            #: like a cancelled tail -- rows_per_date[step.date] then falls
+            #: short of steps_per_date[step.date] below, so the "only
+            #: fully-traced dates count" filter already excludes that date
+            #: on its own; one bad timestep costs its date, not the year.
+            failed_steps: list[dict] = []
             n_heliostats = 1
             for index, step in enumerate(steps):
                 if job.cancelled():
@@ -3305,6 +3523,16 @@ def create_app():
                     )
                 except _TraceCancelled:
                     break
+                except Exception as exc:  # noqa: BLE001 - isolated per timestep, see failed_steps
+                    failed_steps.append(
+                        {
+                            "date": step.date.isoformat(),
+                            "hour": float(step.hour),
+                            "error": f"{type(exc).__name__}: {exc}",
+                        }
+                    )
+                    job.done = index + 1
+                    continue
                 n_heliostats = metrics["n_heliostats"]
                 rows.append(
                     {
@@ -3328,7 +3556,12 @@ def create_app():
                 if steps_per_date.get(d, 0) > 0 and rows_per_date.get(d, 0) == steps_per_date[d]
             )
             if len(complete) < 2:
-                return {"days": [], "n_days_traced": len(complete), "fast_mode": body.fast_mode}
+                return {
+                    "days": [],
+                    "n_days_traced": len(complete),
+                    "fast_mode": body.fast_mode,
+                    "failed_steps": failed_steps,
+                }
 
             summary = pd.DataFrame(rows)
             dni_provider = ClearSkyDNI(cfg.site)
@@ -3369,6 +3602,7 @@ def create_app():
                 "dni_provider": dni_provider.describe(),
                 "extrapolated_fraction": round(extrap, 4) if np.isfinite(extrap) else None,
                 "days": days_out,
+                "failed_steps": failed_steps,
             }
 
         job = JOBS.start(len(steps), work, label=f"year estimate, {len(trace_dates)} dates traced")
@@ -3461,25 +3695,19 @@ def create_app():
 
     @app.post("/api/design/preview")
     def design_preview(body: PreviewRequest) -> Response:
-        import matplotlib
-
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-
         try:
             design = _build_design(body.design)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-        fig, ax = plt.subplots(figsize=(6.0, 6.0))
+        fig, ax = _preview_figure()
+        ax.clear()
         try:
             design.preview(ax=ax)
             buf = BytesIO()
-            fig.savefig(buf, format="png", dpi=110)
+            fig.savefig(buf, format="png", dpi=_PREVIEW_FIGURE_DPI)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        finally:
-            plt.close(fig)
 
         return Response(content=buf.getvalue(), media_type="image/png")
 
@@ -3761,6 +3989,7 @@ def create_app():
         incident_power_w = traced["incident_power_w"]
         counters = traced["counters"]
         rows = traced["rows"]
+        failed = traced["failed"]
         t_trace = time.perf_counter()
 
         rms_mm, centroid = _cone_metrics(flux, u_edges, v_edges)
@@ -3815,6 +4044,7 @@ def create_app():
                 "eta_max": _clean(float(np.max(eta_union))),
                 "optics_resolved": optics_params.model_dump(),
                 "heliostats": rows,
+                "failed_heliostats": failed,
                 "scene": scene,
             }
         )
@@ -3915,6 +4145,7 @@ def create_app():
             incident_power_w = traced["incident_power_w"]
             counters = traced["counters"]
             rows = traced["rows"]
+            failed = traced["failed"]
 
             rms_mm, centroid = _cone_metrics(flux, u_edges, v_edges)
             elapsed_ms = (t_trace - t0) * 1000.0
@@ -3968,6 +4199,7 @@ def create_app():
                 "eta_max": _clean(float(np.max(eta_union))),
                 "optics_resolved": optics_params.model_dump(),
                 "heliostats": rows,
+                "failed_heliostats": failed,
                 "scene": scene,
                 "workers": workers,
             }

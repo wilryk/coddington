@@ -1196,6 +1196,71 @@ def test_dense_field_shades_itself(client):
     assert data["power_w"] == pytest.approx(sum(r["power_w"] for r in rows))
 
 
+# Seven heliostats reproducing the default manuscript field's own worst-blocked
+# heliostat (id 394 at az=180, el=20) and its actual occluders, at a fraction
+# of the cost of tracing all 643: heliostat 0 here gets exactly the same
+# eta_shade/eta_block the full field gives it, because these six neighbours
+# are everything within its search radius.
+BLOCKING_SCENE_XY_MM = [
+    [0.0, 72885.0],
+    [3000.3, 67762.6],
+    [-3000.3, 67762.6],
+    [3458.5, 78111.7],
+    [-3458.5, 78111.7],
+    [6441.6, 72599.8],
+    [-6441.6, 72599.8],
+]
+BLOCKING_SCENE_SUN_EL_DEG = 20.0
+
+
+def test_field_incident_power_charges_shading_only_not_blocking(client):
+    """Incident power is measured before the bounce (see _trace_core's
+    reflectance note): shading removes sunlight before it ever reaches a
+    mirror, so it belongs there, but blocking removes the REFLECTED ray on
+    its way to the receiver, after the mirror already saw full power, so it
+    does not. Folding eta_union (shading AND blocking) into incident power
+    makes intercept efficiency (collected/incident) read higher than the
+    field's real blocking loss -- on this scene, exactly 100%, hiding a
+    real ~19% blocking loss entirely.
+    """
+    payload = _field_payload(
+        layout={"type": "positions", "xy_mm": BLOCKING_SCENE_XY_MM},
+        solar_el_deg=BLOCKING_SCENE_SUN_EL_DEG,
+    )
+    data = client.post("/api/field/trace", json=payload).json()
+    rows = data["heliostats"]
+
+    # This scene must actually exercise blocking, distinct from shading, or
+    # the two etas would coincide and the test would prove nothing.
+    assert min(r["eta_block"] for r in rows) < 0.99
+    assert min(r["eta_shade"] for r in rows) < 0.99
+
+    # Each heliostat's own incident power, isolated from field occlusion
+    # entirely, from the single-heliostat endpoint the field path shares
+    # its physics with (_trace_core) -- scaled by shading alone is what the
+    # field total should match.
+    expected_incident_w = 0.0
+    for r in rows:
+        single = client.post(
+            "/api/trace",
+            json={
+                **_trace_payload(RECT_DESIGN, solar_el_deg=BLOCKING_SCENE_SUN_EL_DEG),
+                "heliostat_x_mm": r["x_mm"],
+                "heliostat_y_mm": r["y_mm"],
+            },
+        ).json()
+        expected_incident_w += single["incident_power_w"] * r["eta_shade"]
+
+    assert data["incident_power_w"] == pytest.approx(expected_incident_w, rel=1e-9)
+
+    # The bug this guards against: scaling incident power by eta_union
+    # (rather than eta_shade) collapses it onto collected power whenever
+    # blocking is present, since both would then carry the identical
+    # factor -- reporting 100% intercept efficiency on a field that is
+    # demonstrably losing power to blocking.
+    assert data["incident_power_w"] > data["power_w"]
+
+
 def test_field_trace_is_deterministic(client):
     """Two identical field requests agree ray for ray and watt for watt."""
     payload = _field_payload(FLOWER_DESIGN, layout={"type": "fermat", "n": 5}, optics="axicon")
@@ -1703,6 +1768,60 @@ def test_reversed_radius_bounds_are_rejected(client):
     assert "r_max_m" in json.dumps(resp.json())
 
 
+# -- non-finite input (Infinity/NaN) is rejected everywhere a float is
+# accepted --------------------------------------------------------------
+#
+# httpx's own JSON encoder refuses to serialize Infinity/NaN at all
+# (`json=` raises client-side before a request is even sent), so these post
+# raw bytes built with the stdlib json module, which -- like the JSON a real
+# browser's `JSON.stringify` on a bad number, or a hand-written client, can
+# produce -- happily emits the non-standard `Infinity`/`-Infinity`/`NaN`
+# tokens.
+
+
+def _post_raw_json(client, url, payload):
+    return client.post(url, content=json.dumps(payload), headers={"content-type": "application/json"})
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("-inf"), float("nan")])
+def test_infinite_top_level_float_is_rejected(client, bad):
+    """`gt`/`ge` alone do not catch this: inf compares fine against either,
+    so an ordinary Field(gt=0)/Field(ge=0) constraint waves it through."""
+    payload = _trace_payload(RECT_DESIGN)
+    payload["heliostat_x_mm"] = bad
+    resp = _post_raw_json(client, "/api/design/sag", payload)
+    assert resp.status_code == 422
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("-inf"), float("nan")])
+def test_infinite_optics_params_float_is_rejected(client, bad):
+    """receiver_center_x_mm/receiver_center_y_mm carry no gt/ge bound at
+    all -- the field this most needs to cover, since there is no partial
+    constraint to even accidentally catch some of it."""
+    payload = _trace_payload(RECT_DESIGN)
+    payload["optics_params"] = {"receiver_center_x_mm": bad}
+    resp = _post_raw_json(client, "/api/design/sag", payload)
+    assert resp.status_code == 422
+    assert "receiver_center_x_mm" in json.dumps(resp.json())
+
+
+def test_nan_solar_elevation_is_rejected_by_name(client):
+    """solar_el_deg carries no gt/ge of its own -- only a `> 90` check that
+    a bare NaN passes too (NaN comparisons are always false) -- so this is
+    the one field where, unfixed, NaN used to reach _solve_for's physics
+    and turn into a NaN flux map. Asserting on the message, not just the
+    status code: an unvalidated NaN elsewhere in the response can *also*
+    422 by accident, when Starlette's own JSONResponse (allow_nan=False)
+    fails to encode it back out -- that is a different failure with a
+    generic message, not this field being validated up front."""
+    payload = _field_payload(layout={"type": "fermat", "n": 4})
+    payload["solar_el_deg"] = float("nan")
+    resp = _post_raw_json(client, "/api/field/trace", payload)
+    assert resp.status_code == 422
+    assert "solar_el_deg" in json.dumps(resp.json())
+    assert "finite" in json.dumps(resp.json())
+
+
 # ---------------------------------------------------------------------------
 # field trace as a background job (/api/field/trace/start|status|cancel|
 # result) -- same job-registry shape as /api/day/*, and the same physics as
@@ -1752,6 +1871,39 @@ def test_field_trace_job_matches_the_synchronous_endpoint(client):
     assert _strip_volatile(result.json()) == _strip_volatile(sync.json())
 
 
+def test_field_trace_job_one_bad_heliostat_does_not_lose_the_run(client, monkeypatch):
+    """A field trace is hundreds of heliostats and can run for minutes; one
+    of them raising (a numerically awkward geometry, say) must cost that
+    one heliostat, not every heliostat already traced. Before the fix, any
+    exception out of a single heliostat's trace propagated past
+    _trace_field_heliostats entirely, into JobRegistry's generic handler,
+    landing the whole job on state="error" and discarding the rest."""
+    calls = {"n": 0}
+    original = app_module._trace_core
+
+    def flaky_trace_core(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 3:
+            raise RuntimeError("simulated solve blowup")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(app_module, "_trace_core", flaky_trace_core)
+
+    payload = _field_payload(layout={"type": "fermat", "n": 6}, workers=1)
+    job_id, status = _run_field_trace_job(client, payload)
+    assert status["state"] == "done", status
+
+    result = client.get(f"/api/field/trace/result/{job_id}").json()
+    assert len(result["failed_heliostats"]) == 1
+    assert "simulated solve blowup" in result["failed_heliostats"][0]["error"]
+    assert len(result["heliostats"]) == 6
+    failed_rows = [r for r in result["heliostats"] if r.get("failed")]
+    assert len(failed_rows) == 1
+    assert failed_rows[0]["power_w"] == 0.0
+    # The other five heliostats still traced and still contributed power.
+    assert result["power_w"] > 0.0
+
+
 def test_field_trace_job_progress_reports_done_out_of_total(client):
     payload = _field_payload(layout={"type": "fermat", "n": 12}, workers=1)
     started = client.post("/api/field/trace/start", json=payload)
@@ -1767,12 +1919,12 @@ def test_field_trace_result_409s_while_running_and_404s_when_unknown(client):
     assert client.get("/api/field/trace/result/nosuchjob").status_code == 404
     assert client.post("/api/field/trace/cancel/nosuchjob").status_code == 409
 
+    # A job that has already finished cannot be cancelled -- mirrors
+    # /api/day/cancel's own 409. Wait on THIS job rather than starting a
+    # second one and cancelling the first while it is still running.
     payload = _field_payload(layout={"type": "fermat", "n": 8}, workers=1)
-    started = client.post("/api/field/trace/start", json=payload)
-    job_id = started.json()["job_id"]
-    # A cancel already accepted (or a job already finished) cannot be
-    # cancelled again -- mirrors /api/day/cancel's own 409.
-    _run_field_trace_job(client, payload)
+    job_id, status = _run_field_trace_job(client, payload)
+    assert status["state"] == "done", status
     assert client.post(f"/api/field/trace/cancel/{job_id}").status_code == 409
 
 
@@ -1896,6 +2048,23 @@ def test_synchronous_field_trace_default_workers_is_serial(client):
     explicit_serial = client.post("/api/field/trace", json={**payload, "workers": 1})
     assert default.status_code == explicit_serial.status_code == 200
     assert _strip_volatile(default.json()) == _strip_volatile(explicit_serial.json())
+
+
+def test_field_trace_pool_is_reused_across_requests(client):
+    """Starting a process pool is real wall-clock time (spawning worker
+    processes), so a parallel field trace reuses one module-level pool
+    across requests -- see _acquire_field_pool -- instead of building and
+    tearing one down on every Run click. Before the fix,
+    _trace_field_heliostats built a fresh ProcessPoolExecutor as a local
+    variable every call; there was no module-level pool at all to find
+    identical across two requests."""
+    payload = _field_payload(layout={"type": "fermat", "n": 6}, workers=2)
+    assert client.post("/api/field/trace", json=payload).status_code == 200
+    pool_after_first = app_module._field_pool
+    assert pool_after_first is not None
+
+    assert client.post("/api/field/trace", json=payload).status_code == 200
+    assert app_module._field_pool is pool_after_first
 
 
 def test_default_trace_workers_env_override(monkeypatch):
@@ -2140,6 +2309,34 @@ def test_day_progress_is_reported_and_result_waits_for_it(client):
     assert status["done"] == status["total"]
 
 
+def test_day_one_bad_timestep_does_not_lose_the_whole_day(client, monkeypatch):
+    """A day sweep is minutes of work; one timestep's solve blowing up (a
+    numerically awkward sun angle, say) must cost that one point, not every
+    timestep already traced. Before the fix, any exception out of
+    _trace_instant_metrics propagated past day_start's own try/except
+    (which only caught cancellation) straight into JobRegistry's generic
+    handler, landing the whole job on state="error" with nothing to show
+    for the timesteps that had already succeeded."""
+    calls = {"n": 0}
+    original = app_module._trace_core
+
+    def flaky_trace_core(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 3:
+            raise RuntimeError("simulated solve blowup")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(app_module, "_trace_core", flaky_trace_core)
+
+    job_id, data = _run_day(client, hour_step=1.0)
+    assert len(data["failed_steps"]) == 1
+    assert "simulated solve blowup" in data["failed_steps"][0]["error"]
+    # The failed timestep is excluded from steps (not faked as zero power),
+    # so the day's own point count is short by exactly one.
+    assert calls["n"] > len(data["steps"])
+    assert data["energy_kwh"] > 0
+
+
 def test_day_trace_of_a_field_carries_the_occlusion(client):
     """A field shades itself at low sun and not at noon; a day sweep that did
     not show that would not be tracing the field it claims to."""
@@ -2368,6 +2565,36 @@ def test_year_slow_mode_traces_all_twelve(client):
     days = data["days"]
     assert len(days) == 12
     assert all(d["traced"] for d in days)
+
+
+def test_year_one_bad_timestep_costs_its_date_not_the_year(client, monkeypatch):
+    """Same failure mode as the day job (see
+    test_day_one_bad_timestep_does_not_lose_the_whole_day), a year estimate
+    away: one timestep's solve raising must not throw out every date
+    already traced. The existing "only fully-traced dates count" filter
+    (a date cut short by cancellation is not a real day) already excludes
+    whichever date the bad timestep falls on once that timestep is skipped
+    rather than counted -- the fix only has to stop the exception from
+    reaching JobRegistry's generic handler in the first place."""
+    calls = {"n": 0}
+    original = app_module._trace_instant_metrics
+
+    def flaky_metrics(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 5:
+            raise RuntimeError("simulated solve blowup")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(app_module, "_trace_instant_metrics", flaky_metrics)
+
+    _job_id, data = _run_year(client, fast_mode=False, hour_step=6.0)
+    assert len(data["failed_steps"]) == 1
+    assert "simulated solve blowup" in data["failed_steps"][0]["error"]
+    # Slow mode traces all 12 dates; exactly the one date the bad timestep
+    # landed on drops out, the rest still complete the year.
+    assert data["n_days_traced"] == 11
+    assert math.isfinite(data["annual_energy_mwh"])
+    assert data["annual_energy_mwh"] > 0.0
 
 
 def test_year_days_are_sorted_and_span_the_year(client):
