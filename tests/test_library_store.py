@@ -75,9 +75,12 @@ def test_padded_name_query_never_returns_a_stray_shadow_file(library_dir):
 
 
 def test_runs_and_projects_have_no_builtins_to_collide_with(library_dir):
-    # Neither collection has built-ins, so an ordinary name always saves.
-    save_entry("runs", _BUILTIN_NAME, {"kind": "day"})
-    save_entry("projects", _BUILTIN_NAME, {"a": 1})
+    # Neither collection has built-ins, so an ordinary name always saves --
+    # note this deliberately does not reuse _BUILTIN_NAME, since some
+    # built-in names (e.g. "Axicon 27 m / 20 deg / 14 m") use characters no
+    # store name is ever allowed to use.
+    save_entry("runs", "whatever i like", {"kind": "day"})
+    save_entry("projects", "whatever i like", {"a": 1})
 
 
 # ---------------------------------------------------------------------------

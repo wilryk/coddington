@@ -48,7 +48,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .builtin_library import BUILTIN_DESIGNS, BUILTIN_RECEIVERS
-from .setups import _NAME_RE, _RESERVED, _fold, _reject_case_collision
+from .setups import _NAME_RE, _RESERVED, _find_by_identity, _fold, _reject_case_collision
 
 #: The four collections a library entry can belong to. ``projects`` and
 #: ``runs`` have no built-ins -- a project or a finished run is always
@@ -145,14 +145,15 @@ def save_entry(collection: str, name: str, document: dict) -> dict:
     *different* existing entry's name -- see the module docstring.
     """
     path = _path_for(collection, name)
-    builtin = _builtin_collision(collection, path.stem)
+    validated_name = _validate_name(name)
+    builtin = _builtin_collision(collection, validated_name)
     if builtin is not None:
         raise LibraryError(
-            f"{path.stem!r} is a built-in {collection[:-1]} ({builtin!r}) and cannot be "
+            f"{validated_name!r} is a built-in {collection[:-1]} ({builtin!r}) and cannot be "
             "saved over"
         )
     existing_stems = (p.stem for p in path.parent.glob("*.json")) if path.parent.is_dir() else ()
-    _reject_case_collision(existing_stems, path.stem, LibraryError, f"{collection[:-1]} entry")
+    _reject_case_collision(existing_stems, validated_name, LibraryError, f"{collection[:-1]} entry")
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "name": _validate_name(name),
@@ -168,13 +169,16 @@ def save_entry(collection: str, name: str, document: dict) -> dict:
 
 
 def load_entry(collection: str, name: str) -> dict:
-    """Read one user-saved entry back. Built-ins are not stored here -- the
-    endpoint serves those from :mod:`heliostat.web.builtin_library` directly."""
-    path = _path_for(collection, name)
-    builtin = _builtin_collision(collection, path.stem)
+    """Read one user-saved entry back, by any spelling that shares its
+    saved name's case/confusable identity. Built-ins are not stored here --
+    the endpoint serves those from :mod:`heliostat.web.builtin_library`
+    directly."""
+    validated_name = _validate_name(name)
+    builtin = _builtin_collision(collection, validated_name)
     if builtin is not None:
-        raise LibraryError(f"{path.stem!r} is a built-in {collection[:-1]} ({builtin!r})")
-    if not path.is_file():
+        raise LibraryError(f"{validated_name!r} is a built-in {collection[:-1]} ({builtin!r})")
+    path = _find_by_identity(_collection_dir(collection), validated_name)
+    if path is None:
         raise LibraryError(f"no {collection} entry named {name!r}")
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -222,12 +226,13 @@ def list_entries(collection: str) -> list[dict]:
 
 
 def delete_entry(collection: str, name: str) -> None:
-    path = _path_for(collection, name)
-    builtin = _builtin_collision(collection, path.stem)
+    validated_name = _validate_name(name)
+    builtin = _builtin_collision(collection, validated_name)
     if builtin is not None:
         raise LibraryError(
-            f"{path.stem!r} is a built-in {collection[:-1]} ({builtin!r}) and cannot be deleted"
+            f"{validated_name!r} is a built-in {collection[:-1]} ({builtin!r}) and cannot be deleted"
         )
-    if not path.is_file():
+    path = _find_by_identity(_collection_dir(collection), validated_name)
+    if path is None:
         raise LibraryError(f"no {collection} entry named {name!r}")
     path.unlink()

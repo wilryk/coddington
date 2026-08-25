@@ -24,8 +24,10 @@ north, z up, millimetres).
 Curved surfaces are parameterized by *unrolled arc length*, not angle, so a
 ``(u, v)`` rectangle has true physical dimensions and a flux map of a
 cylinder reads like a developed drawing of its shell. The azimuthal seam is
-placed at the +y (north, tower-shadow) azimuth where flux is lowest, so
-real spots never straddle the wrap.
+placed at the +y (north, tower-shadow) azimuth. A heliostat can legitimately
+be aimed straight at that seam (radial aiming puts north-sector heliostats
+exactly there), so :func:`_continuous_azimuth` below is what keeps a bundle
+of rays cast from one point continuous across it -- see its docstring.
 """
 
 from __future__ import annotations
@@ -34,6 +36,61 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 import numpy as np
+
+
+def _continuous_azimuth(
+    x: np.ndarray, y: np.ndarray, ox: np.ndarray, oy: np.ndarray, oz: np.ndarray
+) -> np.ndarray:
+    """Azimuth of ``(x, y)`` from -y (south), continuous within each group
+    of rays cast from the same origin ``(ox, oy, oz)``.
+
+    Plain ``arctan2`` has a branch cut at +y (north): two rays landing on
+    either side of it get azimuths ~2*pi apart even though the physical
+    points are next to each other. That is invisible to a single ray, but
+    :mod:`heliostat.trace.cone` measures its Jacobian ``d(uv)/d(angle)`` by
+    finite-differencing this value between a handful of rays cast from one
+    mirror point at a tiny angular offset -- for a stencil whose true
+    azimuth sits near the seam, the spurious ~2*pi jump makes the measured
+    Jacobian (and the flux/power it deposits) come out ~10^5 too large.
+
+    Fix: unwrap each group of same-origin rays (a stencil's legs, a
+    transmission raster's node fan) relative to its own circular mean, so
+    members that genuinely straddle the seam still report mutually
+    continuous values -- exactly what a caller differencing them needs.
+    Rays with distinct origins (the common case: one physical ray each, as
+    every caller outside the cone backend's finite-difference stencils
+    sends) form singleton groups and get back exactly ``arctan2``'s own
+    value, unchanged. A group whose own angular spread reaches all the way
+    to the seam can still report a value just past the nominal +-pi*R
+    window by up to that spread -- the unavoidable residual of any single
+    branch cut on a closed surface, and bounded by one sample's own
+    footprint rather than a full circumference.
+    """
+    az = np.arctan2(x, -y)
+    n = az.size
+    if n == 0:
+        return az
+    # Group rays by exact-match origin (cheap and exact: same-origin rays
+    # reach here with bit-identical floats, since they are literally the
+    # same point repeated by the caller, offset by the same receiver-frame
+    # constants). Sort so identical rows become adjacent, then mark where a
+    # new row starts.
+    order = np.lexsort((oz, oy, ox))
+    sx, sy, sz = ox[order], oy[order], oz[order]
+    new_group = np.empty(n, dtype=bool)
+    new_group[0] = True
+    if n > 1:
+        new_group[1:] = (sx[1:] != sx[:-1]) | (sy[1:] != sy[:-1]) | (sz[1:] != sz[:-1])
+    group_of_sorted = np.cumsum(new_group) - 1
+    n_groups = int(group_of_sorted[-1]) + 1
+    if n_groups == n:
+        return az  # every ray its own group -- nothing to unwrap
+    group = np.empty(n, dtype=np.intp)
+    group[order] = group_of_sorted
+    sin_sum = np.bincount(group, weights=np.sin(az), minlength=n_groups)
+    cos_sum = np.bincount(group, weights=np.cos(az), minlength=n_groups)
+    ref = np.arctan2(sin_sum, cos_sum)[group]
+    return az - 2.0 * np.pi * np.round((az - ref) / (2.0 * np.pi))
 
 
 class Receiver(ABC):
@@ -45,7 +102,13 @@ class Receiver(ABC):
     #: second-order deposit differentiates the ray-to-surface map twice and
     #: assumes that map is well behaved; on a curved surface it can fold,
     #: which sends the deposit's Jacobian through zero and the flux through
-    #: the roof. Curved receivers therefore take the first-order deposit.
+    #: the roof. A conservation cap in ``trace/kernels.py`` keeps the
+    #: resulting TOTAL power correct, but peak flux at a fold is still
+    #: unbounded -- curved receivers should take the first-order deposit
+    #: instead. Nothing in this package currently reads this flag; the
+    #: guard that would (``order = 1`` when ``not receiver.is_planar``,
+    #: before the stencil is built) lives in ``trace/cone.py``, which this
+    #: module does not own.
     is_planar: bool = True
 
     @abstractmethod
@@ -220,8 +283,8 @@ class CylinderReceiver(Receiver):
         y = py[hit] + t_near[hit] * dy[hit]
         z = p[2, hit] + t_near[hit] * d[2, hit]
         # Azimuth measured from -y (south) so the wrap seam sits at +y
-        # (north), behind the tower where flux is lowest.
-        az = np.arctan2(x, -y)  # -pi..pi, 0 at south, seam at north
+        # (north); see _continuous_azimuth for why it isn't a plain arctan2.
+        az = _continuous_azimuth(x, y, p[0, hit], p[1, hit], p[2, hit])
         u = self.radius_mm * az
         v = z - self.center_z_mm
         return hit, np.vstack((u, v))
@@ -318,25 +381,47 @@ class FrustumReceiver(Receiver):
         with np.errstate(divide="ignore", invalid="ignore"):
             t1 = (-b - sq) / (2.0 * a)
             t2 = (-b + sq) / (2.0 * a)
-        # Exterior (outside, c > 0) rays: smallest positive root on the
-        # correct nappe and travelling inward.
-        t = np.where((t1 > 0) & ok, t1, np.where((t2 > 0) & ok, t2, np.nan))
-        hit = ok & np.isfinite(t) & (c > 0)
 
-        x = px[hit] + t[hit] * dx[hit]
-        y = py[hit] + t[hit] * dy[hit]
-        zc = pz[hit] + t[hit] * dz[hit]  # z above apex
-        # Reject the wrong nappe (below the apex the mirror cone opens the
-        # other way) — the physical wall satisfies sign(zc) == sign(m r).
-        nappe_ok = (zc * m) > 0
-        idx = np.flatnonzero(hit)
-        hit[idx[~nappe_ok]] = False
-        x, y, zc = x[nappe_ok], y[nappe_ok], zc[nappe_ok]
+        def _root(t: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+            """A root is the physical hit only if, AT THE INTERSECTION: it
+            is on the correct nappe (below the apex the mirror cone opens
+            the other way -- the physical wall satisfies
+            ``sign(zc) == sign(m * r)``) and the ray approaches the
+            absorbing exterior, ``d . n_outward < 0``, with the outward
+            normal at ``(x, y, z)`` proportional to ``(x, y, -m**2 * zc)``.
+
+            Both are evaluated at the intersection, not the ray's origin.
+            Testing the origin against the *infinite* double cone (the old
+            ``c > 0`` gate) silently rejected a heliostat that stands
+            inside the cone's envelope beyond the finite frustum band --
+            true of any near heliostat under a frustum that only flares
+            out well above the ground.
+            """
+            x = px + t * dx
+            y = py + t * dy
+            zc = pz + t * dz
+            nappe_ok = (zc * m) > 0
+            outward_ok = (dx * x + dy * y - m2 * dz * zc) < 0
+            valid = ok & np.isfinite(t) & (t > 0) & nappe_ok & outward_ok
+            return valid, x, y, zc
+
+        v1, x1, y1, zc1 = _root(t1)
+        v2, x2, y2, zc2 = _root(t2)
+        # The nearer of the two valid roots wins -- a ray can cross one
+        # finite nappe twice (grazing past the wide end); an invalid root
+        # never wins over a valid one regardless of its own t.
+        use1 = v1 & (~v2 | (t1 <= t2))
+        use2 = v2 & ~use1
+        hit = use1 | use2
+        x = np.where(use1, x1, x2)[hit]
+        y = np.where(use1, y1, y2)[hit]
+        zc = np.where(use1, zc1, zc2)[hit]
 
         z_field = zc + z_apex
-        # Slant coordinate from the bottom rim; azimuth arc at mean radius.
+        # Slant coordinate from the bottom rim; azimuth arc at mean radius,
+        # continuous across the +y seam (see _continuous_azimuth).
         v = (z_field - self.z_bot_mm) / (self.z_top_mm - self.z_bot_mm) * self.slant_length_mm
-        az = np.arctan2(x, -y)
+        az = _continuous_azimuth(x, y, p[0, hit], p[1, hit], p[2, hit])
         u = self.r_mean_mm * az
         return hit, np.vstack((u, v))
 

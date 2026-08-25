@@ -108,6 +108,60 @@ def test_builtins_cannot_be_deleted(client, library_dir, collection, name):
 
 
 # ---------------------------------------------------------------------------
+# built-ins: a padded or recased name cannot slip past the exact-match check
+# either -- the store itself (heliostat.web.library) refuses these too, so
+# the endpoint's own exact-string check is not the only thing standing
+# between a built-in and being shadowed or deleted.
+
+
+@pytest.mark.parametrize(
+    "collection,name",
+    [("designs", BUILTIN_DESIGN_NAMES[0]), ("receivers", BUILTIN_RECEIVER_NAMES[0])],
+)
+def test_trailing_space_cannot_shadow_a_builtin(client, library_dir, collection, name):
+    doc = RECT_DOC if collection == "designs" else {"optics": "prime_focus", "params": {}}
+    resp = client.post(f"/api/library/{collection}", json={"name": f"{name} ", "document": doc})
+    assert resp.status_code != 200
+    # No shadow entry appeared, and the real built-in is unaffected.
+    listed = client.get(f"/api/library/{collection}").json()["entries"]
+    assert [e["name"] for e in listed].count(name) == 1
+    original = client.get(f"/api/library/{collection}/{name}").json()
+    assert original["builtin"] is True
+
+
+@pytest.mark.parametrize(
+    "collection,name",
+    [("designs", BUILTIN_DESIGN_NAMES[0]), ("receivers", BUILTIN_RECEIVER_NAMES[0])],
+)
+def test_recased_name_cannot_delete_a_builtin(client, library_dir, collection, name):
+    resp = client.delete(f"/api/library/{collection}/{name.upper()}")
+    assert resp.status_code != 200
+    assert client.get(f"/api/library/{collection}/{name}").status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# case-insensitive uniqueness among user entries
+
+
+def test_name_differing_only_by_case_is_rejected(client, library_dir):
+    saved = client.post("/api/library/designs", json={"name": "My rect", "document": RECT_DOC})
+    assert saved.status_code == 200
+
+    clash = client.post(
+        "/api/library/designs",
+        json={"name": "my rect", "document": {**RECT_DOC, "width_mm": 4000.0}},
+    )
+    assert clash.status_code != 200
+
+    # The original entry survives with its content intact -- the bug is a
+    # silent overwrite, so this checks content, not just that a file exists.
+    loaded = client.get("/api/library/designs/My rect").json()
+    assert loaded["document"] == RECT_DOC
+    listed = [e for e in client.get("/api/library/designs").json()["entries"] if not e["builtin"]]
+    assert [e["name"] for e in listed] == ["My rect"]
+
+
+# ---------------------------------------------------------------------------
 # parity: the built-in numbers cannot silently drift from app.py's defaults
 
 

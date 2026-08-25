@@ -118,7 +118,14 @@ def _reject_case_collision(existing_stems, validated_name: str, error_cls, kind:
     Enforced here in Python, before any filesystem call, rather than left to
     however the host happens to fold names: that is what makes the rule
     behave the same on a case-preserving-insensitive filesystem (Windows,
-    default macOS) and a case-sensitive one (Linux) alike.
+    default macOS) and a case-sensitive one (Linux) alike. It is also the
+    reason ``validated_name`` must come straight from :func:`_validate_name`
+    and never from an already-resolved ``Path.stem``: on Windows,
+    ``Path.resolve()`` silently rewrites a path's casing to match an
+    existing directory entry, so a resolved path for ``"my tower"`` is
+    already ``"My Tower"`` the moment that file exists -- exactly the
+    collision this function exists to catch, self-erased before it could be
+    seen.
     """
     key = _fold(validated_name)
     for stem in existing_stems:
@@ -131,6 +138,37 @@ def _reject_case_collision(existing_stems, validated_name: str, error_cls, kind:
             )
 
 
+def _find_by_identity(root: Path, validated_name: str) -> Path | None:
+    """The on-disk ``*.json`` file for ``validated_name``.
+
+    An explicit directory scan, not ``Path.resolve()``'s own on-disk
+    case-correction (see :func:`_reject_case_collision`'s docstring for why
+    that would give a different answer on Windows than on Linux) -- so a
+    lookup finds the same entry, by any spelling that shares its identity,
+    on either platform.
+
+    Exact stem match first, so the common case (querying the name exactly
+    as saved) is deterministic; :func:`_fold` identity second, so a
+    differing-case spelling still finds the one entry that identity is
+    allowed to have. Two on-disk files that already collide by identity
+    (only possible from data that predates this rule, e.g. carried over
+    from a case-sensitive filesystem) are not something this can
+    disambiguate further -- both still exist and still list, but a fold-only
+    lookup between them returns whichever this scan reaches first.
+    """
+    if not root.is_dir():
+        return None
+    candidates = list(root.glob("*.json"))
+    for p in candidates:
+        if p.stem == validated_name:
+            return p
+    key = _fold(validated_name)
+    for p in candidates:
+        if _fold(p.stem) == key:
+            return p
+    return None
+
+
 def save_setup(name: str, document: dict) -> dict:
     """Write one setup, overwriting any setup of the same name.
 
@@ -139,8 +177,9 @@ def save_setup(name: str, document: dict) -> dict:
     docstring.
     """
     path = _path_for(name)
+    validated_name = _validate_name(name)
     existing_stems = (p.stem for p in path.parent.glob("*.json")) if path.parent.is_dir() else ()
-    _reject_case_collision(existing_stems, path.stem, SetupError, "setup")
+    _reject_case_collision(existing_stems, validated_name, SetupError, "setup")
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "name": _validate_name(name),
@@ -156,9 +195,10 @@ def save_setup(name: str, document: dict) -> dict:
 
 
 def load_setup(name: str) -> dict:
-    """Read one setup back."""
-    path = _path_for(name)
-    if not path.is_file():
+    """Read one setup back, by any spelling that shares its saved name's
+    case/confusable identity, not only the exact one it was saved under."""
+    path = _find_by_identity(setups_dir(), _validate_name(name))
+    if path is None:
         raise SetupError(f"no setup named {name!r}")
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -193,7 +233,7 @@ def list_setups() -> list[dict]:
 
 
 def delete_setup(name: str) -> None:
-    path = _path_for(name)
-    if not path.is_file():
+    path = _find_by_identity(setups_dir(), _validate_name(name))
+    if path is None:
         raise SetupError(f"no setup named {name!r}")
     path.unlink()

@@ -39,7 +39,7 @@ THREE.Object3D.DEFAULT_UP.set(0, 0, 1);
 
 const MM = 1 / 1000;
 
-const HELIOSTAT_COLOR = 0xc4daee;
+const HELIOSTAT_COLOR = 0x7ea3c8;
 const SECONDARY_FILL = 0x7e9ec4;
 const SECONDARY_EDGE = 0x345a80;
 const RECEIVER_FILL = 0xd97b29;
