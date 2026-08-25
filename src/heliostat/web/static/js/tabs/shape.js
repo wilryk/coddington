@@ -81,6 +81,9 @@ let lastSagResult = null; // {contourIntervalMm, peakToValleyMm, slantRangeM} of
 let popoverOpen = false;
 let showServerRenderForCustom = false;
 let saveOpen = false;
+// Draw the mirror as one shape with the facet gaps punched out, or measure
+// each facet from its own mounting plane -- what a fabricator wants.
+let sagShowCant = true;
 let saveError = null;
 let saveSaved = false;
 
@@ -828,6 +831,22 @@ function build(container) {
   sagPanel.appendChild(sagFrame);
   const sagCaption = document.createElement("div");
   sagCaption.className = "caption";
+  const cantToggleLabel = document.createElement("label");
+  cantToggleLabel.className = "caption";
+  cantToggleLabel.style.cursor = "pointer";
+  const cantToggle = document.createElement("input");
+  cantToggle.type = "checkbox";
+  cantToggle.checked = true;
+  cantToggle.style.verticalAlign = "-1px";
+  cantToggle.style.marginRight = "6px";
+  cantToggle.addEventListener("change", () => {
+    sagShowCant = cantToggle.checked;
+    rerender();
+  });
+  cantToggleLabel.appendChild(cantToggle);
+  cantToggleLabel.appendChild(document.createTextNode("Show facet tilt and position"));
+  sagPanel.appendChild(cantToggleLabel);
+
   const sagCaption2 = document.createElement("div");
   sagCaption2.className = "caption";
   sagPanel.appendChild(sagCaption);
@@ -915,6 +934,7 @@ function build(container) {
     sagPlaceholder,
     sagCaption,
     sagCaption2,
+    cantToggle,
     // vertex-table row bookkeeping (rebuilt only when the count changes --
     // see renderCustomVertexRows)
     customRowEls: [],
@@ -1182,11 +1202,11 @@ function renderSagPanel(doc, previewHeliostat) {
   }
 
   const body = buildSagRequest(doc, { x_mm: previewHeliostat.x_mm, y_mm: previewHeliostat.y_mm });
-  const key = JSON.stringify(body);
+  const key = JSON.stringify(body) + (sagShowCant ? "|whole" : "|perfacet");
   if (key !== lastSagKey) {
     lastSagKey = key;
     scheduleSag(
-      (signal) => postDesignSag(body, signal),
+      (signal) => postDesignSag(body, signal, sagShowCant),
       (result) => {
         setSagImageBlob(result);
         renderSagCaption(doc);
@@ -1205,15 +1225,16 @@ function renderSagPanel(doc, previewHeliostat) {
 function renderSagCaption(doc) {
   const contour = lastSagResult && lastSagResult.contourIntervalMm != null ? lastSagResult.contourIntervalMm.toFixed(1) : "—";
   // A faceted design's map is each facet's OWN figure, measured from its own
-  // mounting plane -- the canting tilt that aims the facets is a rigid
-  // rotation the trace applies separately, so it is not in these numbers.
-  const perFacet = doc.design.type === "grid" ? " · per facet, canting removed" : "";
+  const faceted = doc.design.type === "grid";
+  const perFacet = faceted ? (sagShowCant ? " · whole mirror" : " · per facet, tilt removed") : "";
   els.sagCaption.textContent =
     `surface sag (mm) · contours every ${contour} mm${perFacet} · ${doc.design.surface} figure at ` +
     `Az ${doc.sun.az.toFixed(1)}° El ${doc.sun.el.toFixed(1)}°`;
-  els.sagCaption2.textContent =
-    "Figure solved for the workspace's current sun and this heliostat's slant range. Pick another heliostat from the " +
-    "locator above, the ▾ selector, or by clicking one in the workspace and choosing “View shape”.";
+  els.cantToggle.parentElement.hidden = !faceted;
+  els.sagCaption2.textContent = faceted && !sagShowCant
+    ? "Each facet measured from its own mounting plane — what a facet fabricator works to. Tick the box to see the mirror as one shape."
+    : "Figure solved for the workspace's current sun and this heliostat's slant range. Pick another heliostat from the " +
+      "locator above, the ▾ selector, or by clicking one in the workspace and choosing “View shape”.";
 }
 
 function renderLocator(ui, geometry, previewHeliostat) {

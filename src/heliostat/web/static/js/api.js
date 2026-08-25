@@ -534,8 +534,9 @@ function floatHeader(resp, name) {
 // caption/warning need; a 422 (sun below horizon, unsolvable geometry)
 // throws exactly like postForBlob's other callers, `err.detail` carrying
 // the server's message verbatim.
-export async function postDesignSag(body, signal) {
-  const resp = await postForBlob("/design/sag", body, signal);
+export async function postDesignSag(body, signal, includeCant = true) {
+  const path = includeCant ? "/design/sag" : "/design/sag?cant=false";
+  const resp = await postForBlob(path, body, signal);
   const blob = await resp.blob();
   return {
     blob,

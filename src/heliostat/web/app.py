@@ -2851,7 +2851,7 @@ def _warm_matplotlib() -> None:
 
 
 def _render_sag_png(
-    design, sol, params, half_x_mm: float, half_y_mm: float
+    design, sol, params, half_x_mm: float, half_y_mm: float, include_cant: bool = True
 ) -> tuple[bytes, float | None, float | None]:
     """Sag map of the mirror a trace would use, in millimetres.
 
@@ -2866,6 +2866,13 @@ def _render_sag_png(
     evaluated in that facet's frame. Points outside every facet -- the gaps
     in a grid, the space between petals -- are left blank rather than
     filled with the value a facet would have had if it were there.
+
+    With ``include_cant`` (the default) each facet is drawn where its cant
+    actually puts it, so a faceted design reads as the one continuous shape
+    it was cut from, with the gaps punched out of it, and a canted flat
+    heliostat shows the tilt of every facet. Turn it off to measure each
+    facet from its own mounting plane instead -- what a facet fabricator
+    needs, and what makes a grid look like a repeating tile.
 
     :returns: ``(png_bytes, peak_to_valley_mm, contour_interval_mm)``. Both
         numbers are ``None`` when no facet covers any sampled point ("no
@@ -2896,6 +2903,21 @@ def _render_sag_png(
             if not inside.any():
                 continue
             values = facet.surface.sag_and_slopes(du.ravel(), dv.ravel())[0].reshape(gx.shape)
+            if include_cant:
+                # Put the facet back where the whole mirror holds it: at the
+                # surface's own height above its centre (the piston), tilted
+                # by its cant. With the facet's own figure on top, a design
+                # cut from one surface adds back up to that surface -- which
+                # is the point of drawing it this way.
+                ou, ov = facet.offset_mm
+                piston = float(
+                    np.asarray(facet.surface.sag_and_slopes(np.array([ou]), np.array([ov]))[0])[0]
+                )
+                values = values + piston
+                if facet.cant_normal is not None:
+                    nx, ny, nz = (float(v) for v in facet.cant_normal)
+                    if abs(nz) > 1e-12:
+                        values = values - (nx * du + ny * dv) / nz
             sag = np.where(inside, values, sag)
 
     fig, ax = _sag_figure()
@@ -3723,7 +3745,7 @@ def create_app():
         return Response(content=buf.getvalue(), media_type="image/png")
 
     @app.post("/api/design/sag")
-    def design_sag(body: TraceRequest) -> Response:
+    def design_sag(body: TraceRequest, cant: bool = True) -> Response:
         """Sag map of the mirror this exact request would trace.
 
         Takes a full trace request because the figure depends on the solve:
@@ -3757,7 +3779,9 @@ def create_app():
             u0, u1, v0, v1 = design.bbox
             half_x = max(abs(u0), abs(u1))
             half_y = max(abs(v0), abs(v1))
-        png, span_mm, interval_mm = _render_sag_png(design, sol, body.design, half_x, half_y)
+        png, span_mm, interval_mm = _render_sag_png(
+            design, sol, body.design, half_x, half_y, include_cant=cant
+        )
         headers = {"X-Slant-Range-M": f"{slant_range_mm / 1000.0:.3f}"}
         if span_mm is not None:
             headers["X-Peak-To-Valley-Mm"] = f"{span_mm:.6g}"
