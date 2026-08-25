@@ -269,6 +269,13 @@ def trace_heliostat_cone(
     """
     if order not in (1, 2):
         raise ValueError(f"order must be 1 or 2, got {order!r}")
+    # The order-2 deposit spreads each sample by a Hessian of the map from
+    # ray angle to surface position. That map folds on a curved receiver,
+    # and a fold drives the deposit's density factor through zero: the cap
+    # in kernels.py keeps total power honest there, but peak flux does not
+    # survive it. Curved surfaces take the linear deposit.
+    if not getattr(receiver, "is_planar", True):
+        order = 1
     # Same frame bookkeeping as the MC trace: the figure coefficients
     # arrive in a convention whose y/z flip negates c4 and c5 here.
     c4 = -c4
@@ -532,7 +539,12 @@ def trace_heliostat_cone(
         pass_out = np.zeros(mn * kk, dtype=bool)
         uv_nodes_n = np.full((2, mn * kk), np.nan)
         surv = np.flatnonzero(on_n)[hit_n]
-        in_ext = (uv_n[0] >= u0) & (uv_n[0] <= u1) & (uv_n[1] >= v0) & (uv_n[1] <= v1)
+        # `u` on a receiver that closes on itself is periodic, so a landing
+        # point just past the seam is inside the window, not outside it --
+        # wrap before comparing or a spot straddling the cut is thrown away.
+        u_period = getattr(receiver, "u_period_mm", None)
+        u_test = uv_n[0] if not u_period else u0 + np.mod(uv_n[0] - u0, u_period)
+        in_ext = (u_test >= u0) & (u_test <= u1) & (uv_n[1] >= v0) & (uv_n[1] <= v1)
         pass_out[surv[in_ext]] = True
         uv_nodes_n[:, surv] = uv_n
         node_ok_n &= pass_out.reshape(mn, kk)
@@ -545,6 +557,9 @@ def trace_heliostat_cone(
     # --- classify and deposit --------------------------------------------
     cos_aoi = np.abs(normal.T @ s)  # incoming is -s; |normal . s| is cos(aoi)
     weights = STANDARD_IRRADIANCE_W_MM2 * area_w * cos_aoi
+
+    # A receiver that closes on itself has no edge in u: the flux grid wraps.
+    wrap_u = bool(getattr(receiver, "u_period_mm", None))
 
     n_u, n_v = flux_grid
     u_edges = np.linspace(u0, u1, n_u + 1)
@@ -572,6 +587,7 @@ def trace_heliostat_cone(
                 kernel,
                 hess=hess_i,
                 mask=None if full_pass else node_ok[idx].astype(float).reshape(k, k),
+                wrap_u=wrap_u,
             )
             if full_pass:
                 n_valid += 1

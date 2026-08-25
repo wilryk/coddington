@@ -169,6 +169,7 @@ def deposit(
     kernel: RadialKernel,
     hess: np.ndarray | None = None,
     mask: np.ndarray | None = None,
+    wrap_u: bool = False,
 ) -> None:
     """Accumulate one sample point's mapped kernel into ``out`` in place.
 
@@ -223,7 +224,11 @@ def deposit(
     i1_raw = int(np.ceil((uv0[0] + reach - u_edges[0]) / du))
     j0_raw = int(np.floor((uv0[1] - reach - v_edges[0]) / dv))
     j1_raw = int(np.ceil((uv0[1] + reach - v_edges[0]) / dv))
-    i0, i1 = max(0, i0_raw), min(u_edges.size - 1, i1_raw)
+    # On a surface that closes on itself the u axis has no edge to fall off:
+    # a footprint running past the last column continues at the first, so it
+    # is never clipped in u and none of its power is spillage there.
+    n_u = u_edges.size - 1
+    i0, i1 = (i0_raw, i1_raw) if wrap_u else (max(0, i0_raw), min(n_u, i1_raw))
     j0, j1 = max(0, j0_raw), min(v_edges.size - 1, j1_raw)
     if i0 >= i1 or j0 >= j1:
         return  # footprint entirely off-grid: pure spillage
@@ -232,9 +237,13 @@ def deposit(
     # evaluation error and (at order 2) the approximate-inverse mass error.
     # Clipped footprints keep their raw deposit — the shortfall is genuine
     # spillage the caller measures by differencing totals.
-    unclipped = (i0_raw, i1_raw, j0_raw, j1_raw) == (i0, i1, j0, j1)
+    unclipped = (j0_raw, j1_raw) == (j0, j1) and (wrap_u or (i0_raw, i1_raw) == (i0, i1))
 
-    u_mid = 0.5 * (u_edges[i0 : i1 + 1][:-1] + u_edges[i0 : i1 + 1][1:])
+    u_mid = (
+        u_edges[0] + (np.arange(i0, i1) + 0.5) * du
+        if wrap_u
+        else 0.5 * (u_edges[i0 : i1 + 1][:-1] + u_edges[i0 : i1 + 1][1:])
+    )
     v_mid = 0.5 * (v_edges[j0 : j1 + 1][:-1] + v_edges[j0 : j1 + 1][1:])
     duv_u = u_mid[None, :] - uv0[0]
     duv_v = v_mid[:, None] - uv0[1]
@@ -289,4 +298,7 @@ def deposit(
         # 1e-12 |det|, so without this the density can be amplified without
         # bound and the trace reports more power collected than ever arrived.
         patch = patch * (target / total)
-    out[j0:j1, i0:i1] += patch
+    if wrap_u:
+        np.add.at(out, (slice(j0, j1), np.arange(i0, i1) % n_u), patch)
+    else:
+        out[j0:j1, i0:i1] += patch

@@ -98,6 +98,12 @@ class Receiver(ABC):
 
     kind: str = "abstract"
 
+    #: Width of one full turn of ``u``, mm, for a surface that closes on
+    #: itself; ``None`` for one that does not. A cylinder's ``u`` is arc
+    #: length around it, so a landing point at +pi and one at -pi are the
+    #: same place, and any test against the window has to say so.
+    u_period_mm: float | None = None
+
     #: Whether the absorbing surface is a plane. The cone backend's
     #: second-order deposit differentiates the ray-to-surface map twice and
     #: assumes that map is well behaved; on a curved surface it can fold,
@@ -260,6 +266,12 @@ class CylinderReceiver(Receiver):
     kind = "cylinder"
     is_planar = False
 
+
+    @property
+    def u_period_mm(self) -> float:
+        (u0, u1), _ = self.uv_extent()
+        return u1 - u0
+
     def intersect(self, p: np.ndarray, d: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         px, py = p[0] - self.center_x_mm, p[1] - self.center_y_mm
         dx, dy = d[0], d[1]
@@ -338,6 +350,12 @@ class FrustumReceiver(Receiver):
 
     kind = "frustum"
     is_planar = False
+
+
+    @property
+    def u_period_mm(self) -> float:
+        (u0, u1), _ = self.uv_extent()
+        return u1 - u0
 
     def __post_init__(self) -> None:
         if self.z_top_mm <= self.z_bot_mm:

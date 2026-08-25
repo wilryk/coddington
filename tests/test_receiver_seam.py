@@ -135,27 +135,19 @@ class TestAzimuthalRotationInvariance:
             )
 
 
-class TestSeamAdjacentResidual:
-    """A separate, honestly-scoped limitation the rotation-invariance test
-    above deliberately does not exercise: a heliostat whose reflected image
-    centres almost EXACTLY on the receiver's coordinate seam (bearing 0
-    here) sits on a genuine chart-boundary singularity -- roughly half of
-    that one heliostat's own sun-cone samples straddle the cut evenly, and
-    :mod:`heliostat.trace.cone`'s window-membership test (which this package
-    does not own and cannot edit) checks each against a plain, non-wrapping
-    range. That test correctly excludes whichever half a given sample's
-    local continuity fix placed just past the edge -- a real, bounded
-    under-count of THAT heliostat's own power, not a re-emergence of the
-    seam/Jacobian bug (finding 1), which was a ~10^5x blow-up across the
-    whole affected half of the field, not a bounded, single-heliostat, at
-    most ~2x effect confined to within a couple of degrees of the seam.
+class TestSeamIsInvisible:
+    """A receiver that closes on itself has no edge in ``u``, and a heliostat
+    whose image lands exactly on the coordinate seam must not be able to tell.
 
-    This class pins the shape of that residual -- narrow and self-limiting
-    -- so a regression that widens or deepens it gets caught, without
-    pretending it does not exist.
+    Two things had to hold for that: the intersection has to unwrap azimuth
+    continuously so a stencil never differences across the cut, and the flux
+    deposit has to wrap, so a footprint running past the last column
+    continues at the first instead of being written off as spillage. With
+    only the first, a heliostat sitting on the seam lost about half its own
+    power -- the shape this class used to pin.
     """
 
-    def test_deficit_right_at_the_seam_is_bounded_and_narrow(self):
+    def test_a_heliostat_on_the_seam_keeps_its_power(self):
         receiver = CylinderReceiver(center_z_mm=20000.0, radius_mm=3000.0, height_mm=6000.0)
         ratios = {}
         for bearing in (0.0, 1.0, 2.0, 5.0, 10.0):
@@ -163,17 +155,13 @@ class TestSeamAdjacentResidual:
             out = _trace(receiver, x, y, solar_az)
             ratios[bearing] = out["power_w"] / out["incident_power_w"]
 
-        # Bounded: even sitting exactly on the seam, at least a third of
-        # this heliostat's own incident power is still captured -- not the
-        # silent, unbounded loss the pre-fix Jacobian bug produced.
-        assert ratios[0.0] > 0.3
-        # Narrow: within 5-10 degrees of bearing, a 40 m-radius field has
-        # essentially fully cleared the affected zone.
-        assert ratios[5.0] > 0.95
-        assert ratios[10.0] > 0.95
-        # Recovering, not some other failure mode: comfortably better at 2
-        # degrees than sitting right on the seam.
-        assert ratios[2.0] > ratios[0.0] + 0.2
+        # Sitting exactly on the seam is worth the same as sitting anywhere
+        # else: no deficit at all, not merely a bounded one.
+        for bearing, ratio in ratios.items():
+            assert ratio > 0.95, f"bearing {bearing} lost power to the seam: {ratio:.3f}"
+        spread = max(ratios.values()) - min(ratios.values())
+        assert spread < 0.02, f"power depends on bearing near the seam: {ratios}"
+
 
 
 # ---------------------------------------------------------------------------
