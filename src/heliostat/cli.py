@@ -119,6 +119,7 @@ def _trace(args: argparse.Namespace) -> int:
         base_seed=args.base_seed,
         hour_step=args.hour_step,
         sunrise_margin_min=args.sunrise_margin_min,
+        min_elevation_deg=args.min_elevation_deg,
         progress=print,
     )
     elapsed = time.perf_counter() - t_start
@@ -648,6 +649,17 @@ def main(argv: list[str] | None = None) -> int:
         type=float,
         default=10.0,
         help="minutes trimmed off sunrise/sunset (default 10).",
+    )
+    trace_parser.add_argument(
+        "--min-elevation-deg",
+        type=float,
+        default=5.0,
+        help=(
+            "skip timesteps below this sun elevation, degrees (default 5.0); "
+            "the integration window is shrunk to the elevation crossing, not "
+            "just filtered, so the energy integral is not biased -- see "
+            "heliostat.solar.build_time_grid's docstring."
+        ),
     )
     trace_parser.add_argument(
         "--base-seed", type=int, default=20260811, help="Monte Carlo base seed (default 20260811)."

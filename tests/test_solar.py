@@ -11,6 +11,7 @@ still reproduce to 1e-9.
 from __future__ import annotations
 
 import datetime as dt
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -134,6 +135,107 @@ class TestSampleHours:
         assert hours[0] == pytest.approx(0.0)
         assert hours[-1] == pytest.approx(10.0)
         assert np.all(np.diff(hours) <= 3.0 + 1e-12)
+
+
+_MISSING = object()
+
+
+def _cfg(min_elevation_deg=_MISSING, hour_step=1.0, sunrise_margin_min=10.0, dates=()):
+    """Duck-typed cfg matching heliostat.sweep._build_cfg's shape, for
+    build_time_grid tests. ``min_elevation_deg=_MISSING`` (the default)
+    leaves the attribute off cfg.sweep entirely -- matching a cfg built
+    before the floor existed (e.g. the paper-reproduction example's own
+    paper_cfg) -- rather than setting it to some value."""
+    sweep_kwargs = dict(hour_step=hour_step, sunrise_margin_min=sunrise_margin_min, dates=tuple(dates))
+    if min_elevation_deg is not _MISSING:
+        sweep_kwargs["min_elevation_deg"] = min_elevation_deg
+    return SimpleNamespace(
+        site=SimpleNamespace(latitude=LAT, longitude=LON, timezone=TZ),
+        sweep=SimpleNamespace(**sweep_kwargs),
+    )
+
+
+class TestMinElevationFloor:
+    """heliostat.solar.build_time_grid's cfg.sweep.min_elevation_deg contract:
+    shrink the sampling window to the elevation crossing rather than filter
+    samples out of it (see that function's own docstring on why)."""
+
+    DATE = dt.date(2026, 3, 21)
+
+    def test_missing_attribute_matches_plain_sunrise_sunset(self):
+        """A cfg with no min_elevation_deg at all (any cfg built before this
+        floor existed) must reproduce the exact prior grid -- getattr's
+        default, not a dataclass field, is what makes this true."""
+        cfg_old = _cfg(dates=[self.DATE])
+        cfg_explicit_none = _cfg(min_elevation_deg=None, dates=[self.DATE])
+        steps_old = solar.build_time_grid(cfg_old, [self.DATE])
+        steps_none = solar.build_time_grid(cfg_explicit_none, [self.DATE])
+        assert [s.hour for s in steps_old] == [s.hour for s in steps_none]
+
+    def test_a_stricter_floor_never_widens_the_window(self):
+        # A fine hour_step so the window's own shrinkage always shows up as
+        # fewer points -- at a coarse step, ceil(span / step) can round to
+        # the same point count either side of a small span change even
+        # though the true window genuinely narrowed (see first_hour/
+        # last_hour below, which catch that narrowing directly regardless).
+        floors = [None, 0.0, 5.0, 20.0]
+        spans = []
+        counts = []
+        for f in floors:
+            cfg = _cfg(min_elevation_deg=f, hour_step=0.1, dates=[self.DATE])
+            steps = solar.build_time_grid(cfg, [self.DATE])
+            assert steps, f"floor {f} traced nothing"
+            counts.append(len(steps))
+            spans.append((steps[0].hour, steps[-1].hour))
+            for s in steps:
+                if f is not None:
+                    assert s.solar_el_deg >= f - 1e-6
+        # A stricter floor traces no more timesteps, and its window (first
+        # sample .. last sample) never sits outside a looser floor's own.
+        assert counts == sorted(counts, reverse=True)
+        (none_first, none_last) = spans[0]
+        for (first, last) in spans[1:]:
+            assert first >= none_first - 1e-9
+            assert last <= none_last + 1e-9
+        # 5 deg is meaningfully stricter than the site's own near-horizon
+        # margin at this date -- it must actually narrow the window.
+        assert spans[2][0] > spans[0][0]
+        assert spans[2][1] < spans[0][1]
+
+    def test_floor_below_the_horizon_is_non_binding(self):
+        """A floor at or below the ~-0.833 deg sunrise/sunset elevation must
+        change nothing -- the elevation crossing search should recognise
+        the threshold is already met at the horizon and return it
+        unchanged, not extrapolate past sunrise/sunset."""
+        cfg_default = _cfg(dates=[self.DATE])
+        cfg_low_floor = _cfg(min_elevation_deg=-10.0, dates=[self.DATE])
+        steps_default = solar.build_time_grid(cfg_default, [self.DATE])
+        steps_low_floor = solar.build_time_grid(cfg_low_floor, [self.DATE])
+        assert [s.hour for s in steps_default] == [s.hour for s in steps_low_floor]
+
+    def test_floor_above_the_days_peak_elevation_excludes_the_whole_day(self):
+        """If the sun never reaches the floor, that date contributes zero
+        timesteps rather than raising or returning a nonsensical window."""
+        cfg = _cfg(min_elevation_deg=89.9, dates=[self.DATE])
+        steps = solar.build_time_grid(cfg, [self.DATE])
+        assert steps == []
+
+    def test_elevation_floor_edges_matches_sunrise_sunset_with_no_floor(self):
+        cfg = _cfg(dates=[self.DATE])
+        rise, set_ = solar.elevation_floor_edges(cfg, self.DATE)
+        rise_true, set_true = solar.sunrise_sunset(LAT, LON, TZ, 2026, 3, 21)
+        assert rise == pytest.approx(rise_true)
+        assert set_ == pytest.approx(set_true)
+
+    def test_elevation_floor_edges_tolerates_a_cfg_with_no_sweep_at_all(self):
+        """heliostat.energy.traced_day_energy's own tests pass a cfg built
+        only for its ``site`` -- elevation_floor_edges must not require
+        cfg.sweep to exist at all, only to optionally carry the floor."""
+        cfg = SimpleNamespace(site=SimpleNamespace(latitude=LAT, longitude=LON, timezone=TZ))
+        rise, set_ = solar.elevation_floor_edges(cfg, self.DATE)
+        rise_true, set_true = solar.sunrise_sunset(LAT, LON, TZ, 2026, 3, 21)
+        assert rise == pytest.approx(rise_true)
+        assert set_ == pytest.approx(set_true)
 
 
 class TestHhmmAndTimeStep:

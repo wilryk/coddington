@@ -2292,6 +2292,31 @@ def test_day_energy_is_the_integral_of_its_own_power_curve(client):
     assert data["energy_kwh"] == pytest.approx(float(np.trapz(power_kw, hours)), rel=1e-4)
 
 
+def test_min_elevation_deg_excludes_low_sun_and_never_increases_day_energy(client):
+    """Pins heliostat.solar.build_time_grid's min_elevation_deg contract end
+    to end, through the real /api/day/start path.
+
+    Every surviving timestep must sit at or above the floor. And since the
+    day sweep's headline energy_kwh is a plain trapezoid over just the
+    surviving (non-negative-power) samples (heliostat.web.app
+    ._day_energy_kwh -- no zero-anchored wings, unlike
+    heliostat.energy.traced_day_energy), shrinking the sampled window can
+    only remove area from that integral, never add to it: a 5 deg floor
+    must score <= a 0 deg floor, and -- given the default site/date really
+    has traced power near the horizon -- strictly less, not just equal.
+    """
+    _job0, data0 = _run_day(client, hour_step=1.0, min_elevation_deg=0.0)
+    _job5, data5 = _run_day(client, hour_step=1.0, min_elevation_deg=5.0)
+
+    steps5 = data5["steps"]
+    assert steps5, "the floored sweep traced nothing"
+    assert all(s["solar_el_deg"] >= 5.0 - 1e-6 for s in steps5)
+    # The floor actually excluded some low-sun timesteps at this site/date.
+    assert len(steps5) < len(data0["steps"])
+
+    assert data5["energy_kwh"] < data0["energy_kwh"]
+
+
 def test_day_progress_is_reported_and_result_waits_for_it(client):
     payload = _trace_payload(RECT_DESIGN)
     payload["hour_step"] = 2.0

@@ -216,7 +216,17 @@ def _watts_per_ray(n: int) -> float:
 
 
 def _build_cfg(
-    opt, trace_mode, n_rays, mirror_w, mirror_h, *, site, hour_step, sunrise_margin_min, dates
+    opt,
+    trace_mode,
+    n_rays,
+    mirror_w,
+    mirror_h,
+    *,
+    site,
+    hour_step,
+    sunrise_margin_min,
+    dates,
+    min_elevation_deg=5.0,
 ):
     bin_size_mm = 2.0 * WINDOW_MM / GRID_SIZE
     receiver_ns = SimpleNamespace(
@@ -240,7 +250,10 @@ def _build_cfg(
         storage=SimpleNamespace(raw_rays="none"),
         site=SimpleNamespace(latitude=site[0], longitude=site[1], timezone=site[2]),
         sweep=SimpleNamespace(
-            hour_step=hour_step, sunrise_margin_min=sunrise_margin_min, dates=tuple(dates)
+            hour_step=hour_step,
+            sunrise_margin_min=sunrise_margin_min,
+            min_elevation_deg=min_elevation_deg,
+            dates=tuple(dates),
         ),
         field=SimpleNamespace(mirror_area_m2=(mirror_w / 1000.0) * (mirror_h / 1000.0)),
     )
@@ -600,9 +613,16 @@ def run_sweep(
     base_seed: int = 20260811,
     hour_step: float = 1.0,
     sunrise_margin_min: float = 10.0,
+    min_elevation_deg: float = 5.0,
     progress: Callable[[str], None] = print,
 ) -> RunStore:
     """Trace ``field`` across ``dates`` and write a stored run to ``out_dir``.
+
+    ``min_elevation_deg`` excludes timesteps below that sun elevation (see
+    ``solar.build_time_grid``'s docstring for how -- the window is shrunk to
+    the elevation crossing, not just filtered after the fact, so the
+    collected-power integral is not biased). Pass ``float("-inf")`` for the
+    pre-floor behaviour (every timestep from sunrise+margin to sunset-margin).
 
     See the module docstring for the standard-optics constants, the cfg
     duck-type built internally, and every judgment call made along the way.
@@ -642,11 +662,14 @@ def run_sweep(
         site=site,
         hour_step=hour_step,
         sunrise_margin_min=sunrise_margin_min,
+        min_elevation_deg=min_elevation_deg,
         dates=dates,
     )
     steps = build_time_grid(cfg, dates)
     if not steps:
-        raise ValueError("no daylight timesteps for the given dates/site/hour_step/margin")
+        raise ValueError(
+            "no daylight timesteps for the given dates/site/hour_step/margin/min_elevation_deg"
+        )
 
     out_dir = Path(out_dir)
     store = RunStore(out_dir, cfg=cfg, mode="w")

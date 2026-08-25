@@ -1223,6 +1223,12 @@ class DayTraceRequest(_TraceRequestBase):
     #: the daylight edges rather than being snapped inward.
     hour_step: float = Field(default=1.0, gt=0.05, le=6.0)
     sunrise_margin_min: float = Field(default=10.0, ge=0.0, le=120.0)
+    #: Skip timesteps below this sun elevation -- they cost the same trace
+    #: time as a noon one but collect almost no power. Shrinks the sampling
+    #: window to the elevation crossing rather than filtering samples after
+    #: the fact, so it does not bias the energy integral (see
+    #: heliostat.solar.build_time_grid's docstring).
+    min_elevation_deg: float = Field(default=5.0, ge=0.0, le=45.0)
     layout: FieldLayout | None = None
     exclude_ids: list[int] = Field(default_factory=list)
     heliostat_x_mm: float = 0.0
@@ -1266,6 +1272,10 @@ class YearTraceRequest(_TraceRequestBase):
     fast_mode: bool = True
     hour_step: float = Field(default=1.0, gt=0.05, le=6.0)
     sunrise_margin_min: float = Field(default=10.0, ge=0.0, le=120.0)
+    #: See DayTraceRequest.min_elevation_deg -- same floor, same reasoning;
+    #: on a year estimate this is the main lever on the ~93-timestep,
+    #: ~1-hour full-field runtime (docs/ui-spec.md 4).
+    min_elevation_deg: float = Field(default=5.0, ge=0.0, le=45.0)
     layout: FieldLayout | None = None
     exclude_ids: list[int] = Field(default_factory=list)
     heliostat_x_mm: float = 0.0
@@ -2381,6 +2391,7 @@ def _day_timesteps(req: "DayTraceRequest") -> list:
         sweep=SimpleNamespace(
             hour_step=req.hour_step,
             sunrise_margin_min=req.sunrise_margin_min,
+            min_elevation_deg=req.min_elevation_deg,
             dates=[_dt.date(site.year, site.month, site.day)],
         ),
     )
@@ -2623,6 +2634,7 @@ def _year_energy_cfg(req: "YearTraceRequest") -> SimpleNamespace:
         sweep=SimpleNamespace(
             hour_step=req.hour_step,
             sunrise_margin_min=req.sunrise_margin_min,
+            min_elevation_deg=req.min_elevation_deg,
             dates=[],
         ),
         field=SimpleNamespace(mirror_area_m2=1.0),

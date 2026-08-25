@@ -179,6 +179,7 @@ export function buildDayRequest(doc, ui, opts) {
   const body = buildTraceRequest(doc, ui);
   body.site = opts.site;
   body.hour_step = opts.hour_step;
+  if (opts.min_elevation_deg != null) body.min_elevation_deg = opts.min_elevation_deg;
   return body;
 }
 
@@ -207,6 +208,7 @@ export function buildYearRequest(doc, ui, opts) {
   const body = buildTraceRequest(doc, ui);
   body.site = opts.site;
   body.fast_mode = opts.fastMode !== false;
+  if (opts.min_elevation_deg != null) body.min_elevation_deg = opts.min_elevation_deg;
   return body;
 }
 

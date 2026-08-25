@@ -245,6 +245,109 @@ class TimeStep:
         return f"{self.label} (az {self.solar_az_deg:.1f}, el {self.solar_el_deg:.1f})"
 
 
+def _solar_noon_hours(lat, lon, tz, year, month, day) -> float:
+    """Local clock hour of true solar noon (hour angle = 0).
+
+    Shares :func:`sunrise_sunset`'s own approximation: the equation of time
+    is evaluated at clock hour 12 rather than at the actual noon instant,
+    which it barely moves within a day.
+    """
+    _, _, eot = _solar_core(lat, lon, tz, year, month, day, 12.0)
+    solar_noon = (720.0 - 4.0 * lon - eot + tz * 60.0) / 1440.0
+    return float(solar_noon) * 24.0
+
+
+def _elevation_edge_hour(
+    lat, lon, tz, year, month, day, threshold_deg: float, horizon_hour: float, noon_hour: float
+) -> float:
+    """Local hour between ``horizon_hour`` (sunrise or sunset) and
+    ``noon_hour`` (true solar noon) where elevation crosses ``threshold_deg``.
+
+    Elevation is a strictly decreasing function of |hour angle|, and hour
+    angle increases monotonically with clock time, so elevation is monotonic
+    across the whole of either branch -- this bisects that branch, and
+    ``horizon_hour``/``noon_hour`` can come in either clock order (the
+    sunset branch runs noon -> set, a *decreasing* elevation as hour
+    increases; the sunrise branch runs rise -> noon, increasing).
+
+    Two degenerate cases return an edge unchanged rather than searching:
+
+    * the sun never reaches ``threshold_deg`` this day (elevation at noon is
+      still below it) -- returns ``noon_hour``, which collapses the caller's
+      window to zero width (no timestep on this date can meet the floor);
+    * the threshold is already met at ``horizon_hour`` (a threshold at or
+      below the ~-0.833 deg sunrise/sunset elevation) -- returns
+      ``horizon_hour`` unchanged, i.e. non-binding, so a ``min_elevation_deg``
+      that is not actually stricter than the horizon has no effect.
+    """
+    _, noon_el = sun_position(lat, lon, tz, year, month, day, noon_hour)
+    if noon_el < threshold_deg:
+        return noon_hour
+    _, horizon_el = sun_position(lat, lon, tz, year, month, day, horizon_hour)
+    if horizon_el >= threshold_deg:
+        return horizon_hour
+
+    below, above = horizon_hour, noon_hour
+    for _ in range(40):
+        mid = 0.5 * (below + above)
+        _, el_mid = sun_position(lat, lon, tz, year, month, day, mid)
+        if el_mid < threshold_deg:
+            below = mid
+        else:
+            above = mid
+    return 0.5 * (below + above)
+
+
+def elevation_floor_edges(cfg, date: _dt.date) -> tuple[float, float]:
+    """The day's sunrise/sunset hours, narrowed by ``cfg.sweep.min_elevation_deg``.
+
+    Deliberately separate from :func:`build_time_grid`'s own window (which
+    also subtracts ``sunrise_margin_min`` on top of this): this is "where
+    the elevation floor's own definition of negligible power actually
+    starts holding", not the sampling window itself, and both
+    :func:`build_time_grid` and :func:`heliostat.energy.traced_day_energy`
+    call it so they agree on that point. ``traced_day_energy`` anchors its
+    integral to zero power at whatever ``rise``/``set_`` this returns: if it
+    anchored at the true horizon instead (:func:`sunrise_sunset`) while the
+    floor has trimmed the actual samples back much further, the straight
+    line from true-zero to the first surviving (already-well-above-floor)
+    sample would cut across a real, non-linear power ramp and can OVERSTATE
+    the day's energy -- this was measured to happen (a 5 deg floor scoring
+    a higher ``traced_day_energy`` total than a 0 deg one on a real trace),
+    exactly the "biases the integral" failure mode this module's docstrings
+    warn about elsewhere. Anchoring at the elevation-floor edge instead
+    makes that anchor point coincide with (up to the small
+    ``sunrise_margin_min`` sliver) the first/last real sample, so there is
+    no untraced gap left to mis-shape -- the excluded band is simply
+    dropped, which only ever *removes* energy, never adds it.
+
+    No ``min_elevation_deg`` on ``cfg.sweep`` -- or no ``cfg.sweep`` at all,
+    e.g. a cfg built only for its ``site`` (see
+    ``heliostat.energy.traced_day_energy``'s callers that pass one) --
+    returns the plain :func:`sunrise_sunset` unchanged.
+    """
+    site = cfg.site
+    rise, set_ = sunrise_sunset(
+        site.latitude, site.longitude, site.timezone, date.year, date.month, date.day
+    )
+    sweep = getattr(cfg, "sweep", None)
+    min_elevation_deg = getattr(sweep, "min_elevation_deg", None)
+    if min_elevation_deg is None:
+        return rise, set_
+    noon = _solar_noon_hours(
+        site.latitude, site.longitude, site.timezone, date.year, date.month, date.day
+    )
+    rise_edge = _elevation_edge_hour(
+        site.latitude, site.longitude, site.timezone, date.year, date.month, date.day,
+        min_elevation_deg, rise, noon,
+    )
+    set_edge = _elevation_edge_hour(
+        site.latitude, site.longitude, site.timezone, date.year, date.month, date.day,
+        min_elevation_deg, set_, noon,
+    )
+    return rise_edge, set_edge
+
+
 def _sample_hours(rise: float, set_: float, margin: float, step: float) -> np.ndarray:
     """Uniform samples across ``[rise + margin, set_ - margin]``.
 
@@ -280,6 +383,37 @@ def build_time_grid(cfg, dates: Iterable[_dt.date] | None = None) -> list[TimeSt
     the day matters more than clock alignment across dates. Do not restore
     the snapping without first fixing the integral to correct for the
     resulting sample-weight distortion.
+
+    ``cfg.sweep.min_elevation_deg`` -- an optional elevation floor
+    -----------------------------------------------------------------------
+    Low-sun timesteps (a few degrees above the horizon) cost the same trace
+    time as a noon one but collect almost no power, both because DNI itself
+    falls off at high air mass and because cosine incidence collapses as the
+    sun approaches the mirror plane. ``cfg.sweep.min_elevation_deg``, if the
+    ``sweep`` namespace carries it, excludes them -- but it does NOT simply
+    drop samples out of the margin-trimmed window above and leave the
+    remaining ones' spacing/weight alone, which would silently redistribute
+    the excluded steps' (small but nonzero) share of the integral onto their
+    neighbours and bias the MW-hr total high. Instead :func:`elevation_floor_edges`
+    shrinks the window itself for each date -- the clock hour where
+    elevation crosses ``min_elevation_deg`` on the morning and evening
+    branches replaces ``rise``/``set_`` as the bounds fed to
+    ``_sample_hours`` -- i.e. exactly the same "shrink the integration
+    window, keep the equal-interval grid logic" move ``sunrise_margin_min``
+    already makes, just anchored to an elevation crossing instead of a fixed
+    number of minutes. A trapezoid integrator over just the surviving
+    samples (e.g. ``heliostat.web.app._day_energy_kwh``) then simply
+    integrates a narrower, still-equal-interval domain -- since collected
+    power is never negative, that can only remove energy, never add it.
+    :func:`heliostat.energy.traced_day_energy` anchors its own trapezoid to
+    zero power at :func:`elevation_floor_edges`' bounds rather than the true
+    horizon for the same reason -- see that function's docstring.
+
+    Missing the attribute entirely (any ``cfg`` built before this floor
+    existed, e.g. the paper-reproduction example's ``paper_cfg``) is treated
+    as "no floor" and reproduces prior behaviour exactly -- this is a
+    default via ``getattr``, not a dataclass field, precisely so old cfg
+    objects need no changes.
     """
     site = cfg.site
     step = cfg.sweep.hour_step
@@ -288,10 +422,8 @@ def build_time_grid(cfg, dates: Iterable[_dt.date] | None = None) -> list[TimeSt
 
     steps: list[TimeStep] = []
     for date in dates:
-        rise, set_ = sunrise_sunset(
-            site.latitude, site.longitude, site.timezone, date.year, date.month, date.day
-        )
-        for hour in _sample_hours(rise, set_, margin, step):
+        rise_edge, set_edge = elevation_floor_edges(cfg, date)
+        for hour in _sample_hours(rise_edge, set_edge, margin, step):
             hour = float(hour)
             az, el = sun_position(
                 site.latitude,
