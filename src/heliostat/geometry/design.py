@@ -482,6 +482,24 @@ def rect_heliostat(
     return HeliostatDesign([facet])
 
 
+def custom_heliostat(vertices_mm, surface: Surface | None = None) -> HeliostatDesign:
+    """A single hand-drawn polygon facet -- the sketch-tool analogue of
+    :func:`rect_heliostat`.
+
+    ``vertices_mm`` is an ``(N>=3, 2)`` array-like of ``(u, v)`` corners in
+    the heliostat's own plane, in order around the perimeter (either
+    winding -- :class:`~heliostat.geometry.aperture.Polygon`'s crossing-
+    number membership test does not care). No cant: like a rectangle, a
+    single facet has no other facet to aim relative to.
+    """
+    if surface is None:
+        surface = ZernikeAstig(0.0, 0.0, 0.0)
+    facet = Facet(
+        region=Polygon(vertices_mm), surface=surface, offset_mm=(0.0, 0.0), cant_normal=None
+    )
+    return HeliostatDesign([facet])
+
+
 def grid_facets(
     n_u: int,
     n_v: int,

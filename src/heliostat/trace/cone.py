@@ -56,12 +56,16 @@ def sunshape_kernel(
     source_model: str = "super_gauss",
     slope_error_mrad: float = 0.0,
     tracking_error_mrad: float = 0.0,
+    specularity_mrad: float = 0.0,
 ) -> RadialKernel:
     """The angular kernel for a named sunshape, optionally error-broadened.
 
     Profiles are the same pinned forms the Monte Carlo samplers draw from.
     Mirror slope error deflects a reflected ray by twice the surface tilt,
-    hence the factor 2 on ``slope_error_mrad``.
+    hence the factor 2 on ``slope_error_mrad``; ``specularity_mrad`` is a
+    coating scatter of the reflected ray itself, so it carries no such
+    doubling -- the same distinction (and the same two error sources) the
+    Monte Carlo backend's ``trace_heliostat`` applies per-ray.
     """
     if source_model == "super_gauss":
         sig = SUPER_GAUSS_SIGMA_RAD
@@ -85,7 +89,9 @@ def sunshape_kernel(
     else:
         raise ValueError(f"unknown source_model {source_model!r}")
 
-    broadening = np.hypot(2.0 * slope_error_mrad, tracking_error_mrad) * 1e-3
+    broadening = (
+        np.hypot(np.hypot(2.0 * slope_error_mrad, specularity_mrad), tracking_error_mrad) * 1e-3
+    )
     return kernel.convolve_gaussian(broadening) if broadening > 0 else kernel
 
 

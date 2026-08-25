@@ -170,6 +170,26 @@ def test_sun_below_horizon_is_not_an_error(client):
         assert h["rot_el_deg"] is None
         # Positions are still reported -- only the orientation is unknown.
         assert h["x_mm"] is not None and h["y_mm"] is not None
+        # No solve, no slant range either -- see _field_geometry's docstring
+        # for why the legacy rectangle stands in for the outline but not for
+        # a real (solve-dependent) number like this one.
+        assert h["slant_range_m"] is None
+
+
+def test_slant_range_is_present_and_matches_the_trace_endpoint(client):
+    """The 3-D view's inspector reads slant range off the geometry response
+    (no trace needed); it must agree with what /api/trace itself reports for
+    the identical heliostat, since both come from the same _solve_field."""
+    geom = client.post("/api/scene/geometry", json=_payload()).json()
+    row = geom["heliostats"][0]
+    assert row["slant_range_m"] is not None
+    assert row["slant_range_m"] > 0
+
+    trace = client.post(
+        "/api/trace",
+        json={"design": RECT_DESIGN, "mode": "ultra_fast", **_payload()},
+    ).json()
+    assert row["slant_range_m"] == pytest.approx(trace["slant_range_m"], rel=1e-3)
 
 
 def test_negative_elevation_is_also_not_an_error(client):
@@ -250,6 +270,30 @@ def test_default_design_is_the_legacy_rectangle(client):
 def test_bad_design_type_is_422(client):
     resp = client.post("/api/scene/geometry", json=_payload(design={"type": "hexagon"}))
     assert resp.status_code == 422
+
+
+def test_custom_design_outline_matches_its_own_vertices(client):
+    """A custom design's single facet already IS its own outline -- the
+    geometry endpoint must hand back exactly what was drawn, not a
+    radial-silhouette resample of it (see _field_geometry)."""
+    vertices = [
+        [2500.0, 0.0],
+        [1250.0, 2165.06],
+        [-1250.0, 2165.06],
+        [-2500.0, 0.0],
+        [-1250.0, -2165.06],
+        [1250.0, -2165.06],
+    ]
+    resp = client.post(
+        "/api/scene/geometry",
+        json=_payload(design={"type": "custom", "vertices_mm": vertices}),
+    )
+    assert resp.status_code == 200
+    outline = resp.json()["outline_local"]
+    assert len(outline) == len(vertices)
+    for (ou, ov), (vu, vv) in zip(outline, vertices):
+        assert ou == pytest.approx(vu, abs=0.1)
+        assert ov == pytest.approx(vv, abs=0.1)
 
 
 # ---------------------------------------------------------------------------

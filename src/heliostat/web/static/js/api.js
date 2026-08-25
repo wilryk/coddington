@@ -145,10 +145,72 @@ export function fetchManuscriptField() {
 // trace, `ui.fidelity`/`ui.mcRays`) and nothing else, so the same doc always
 // produces the same request.
 
+// Phase 3c wave 1 (docs/ui-spec.md 3): "the sketch is the right half,
+// mirrored to close" -- `vertices` is what the Custom sketch canvas edits
+// (js/tabs/shape.js), always the u>=0 half. When `mirror` is false the
+// sketch already IS the whole closed outline (an ordinary polygon) and goes
+// out verbatim. When `mirror` is true, the wire polygon continues past the
+// sketch's last point with the same points reflected across u=0 and walked
+// back in REVERSE order -- that's what keeps the result a simple polygon
+// (out along the sketch, back along its mirror) instead of a self-crossing
+// one. A point already sitting on the axis (u === 0, e.g. a vertex the user
+// deliberately pinned to the centerline) is skipped in the mirrored half:
+// its own reflection is itself, so repeating it would double a vertex.
+export function expandCustomVertices(vertices, mirror) {
+  const sketch = (vertices || []).map((p) => [p[0], p[1]]);
+  if (!mirror) return sketch;
+  const mirrored = [];
+  for (let i = sketch.length - 1; i >= 0; i--) {
+    const [u, v] = sketch[i];
+    if (u === 0) continue;
+    mirrored.push([-u, v]);
+  }
+  return sketch.concat(mirrored);
+}
+
+// The three optical-error fields ride flat inside a design document/payload
+// (wire units: reflectance as a 0-1 fraction) while the store keeps them
+// under doc.design.errors with reflectance as a percent. These two exports
+// are the only place that mapping lives -- currentDesignPayload writes it
+// outbound, and library.js/project.js use them to route the fields back
+// into doc.design.errors when loading, instead of letting them land as
+// stray keys in doc.designParams.
+export const DESIGN_ERROR_KEYS = ["slope_error_mrad", "specularity_mrad", "reflectance"];
+
+export function errorsFromDesignDocument(d) {
+  return {
+    slope_error_mrad: d && d.slope_error_mrad != null ? d.slope_error_mrad : 0,
+    specularity_mrad: d && d.specularity_mrad != null ? d.specularity_mrad : 0,
+    // Absent means the document predates the field, which the server treats
+    // as a perfect mirror -- loading it must reproduce that (100%), not the
+    // fresh-document 90% default, or an old project would trace 10% dimmer
+    // than it used to.
+    reflectance_pct: (d && d.reflectance != null ? d.reflectance : 1.0) * 100,
+  };
+}
+
 export function currentDesignPayload(doc) {
   const type = doc.design.type;
+  const errors = doc.design.errors || {};
+  // docs/ui-spec.md 3: optical errors are part of the design, on every
+  // type, wire default reflectance = 1.0 -- but this client's fresh
+  // DEFAULT_DOC always carries the manuscript's 90%, so `?? 90` here is
+  // only a defensive fallback for a hand-built `doc` missing the field.
+  const errorFields = {
+    slope_error_mrad: errors.slope_error_mrad || 0,
+    specularity_mrad: errors.specularity_mrad || 0,
+    reflectance: (errors.reflectance_pct != null ? errors.reflectance_pct : 90) / 100,
+  };
+  if (type === "custom") {
+    const custom = doc.designParams.custom || {};
+    return Object.assign(
+      { type: "custom", vertices_mm: expandCustomVertices(custom.vertices_mm, !!custom.mirror) },
+      errorFields,
+      { surface: doc.design.surface }
+    );
+  }
   const params = doc.designParams[type] || {};
-  return Object.assign({ type }, params, { surface: doc.design.surface });
+  return Object.assign({ type }, params, errorFields, { surface: doc.design.surface });
 }
 
 // The selected layout's optics params, filtered to that layout's own legal
@@ -259,6 +321,88 @@ export function buildFluxCsvRequest(doc, ui) {
   };
   if (ui.fidelity === "monte_carlo" && ui.mcRays) body.n_rays = ui.mcRays;
   return body;
+}
+
+// ---------------------------------------------------------------------------
+// Heliostat Shape tab (docs/ui-spec.md 3, mockup M6): server-rendered
+// aperture-layout preview and sag map. Both are PNGs, not JSON, so they get
+// their own small blob-fetch helper rather than going through
+// postJSON/handleResponse -- same non-2xx -> Error(message, {status,
+// detail}) convention as handleResponse, just returning a Response instead
+// of parsed JSON so callers can also read headers off it.
+
+async function postForBlob(path, body, signal) {
+  const resp = await fetch(API_BASE + path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!resp.ok) {
+    let detail = resp.statusText;
+    try {
+      const data = await resp.json();
+      if (data && data.detail !== undefined) detail = data.detail;
+    } catch (_err) {
+      // body wasn't JSON -- keep statusText
+    }
+    const message = typeof detail === "string" ? detail : JSON.stringify(detail);
+    const err = new Error(message);
+    err.status = resp.status;
+    err.detail = detail;
+    throw err;
+  }
+  return resp;
+}
+
+// /api/design/preview takes just {design} -- no trace context, so no figure
+// (the aperture layout is the same silhouette whatever the sun is doing).
+export async function postDesignPreview(design, signal) {
+  const resp = await postForBlob("/design/preview", { design }, signal);
+  return resp.blob();
+}
+
+function floatHeader(resp, name) {
+  const raw = resp.headers.get(name);
+  if (raw == null || raw === "") return null;
+  const v = parseFloat(raw);
+  return Number.isFinite(v) ? v : null;
+}
+
+// /api/design/sag takes a full TraceRequest-shaped body (design + mode +
+// optics + optics_params + sun + heliostat position) -- unlike the preview,
+// the sag depends on the solve (which heliostat, where the sun is), see
+// buildSagRequest below. Ships back the PNG plus the three headers the
+// caption/warning need; a 422 (sun below horizon, unsolvable geometry)
+// throws exactly like postForBlob's other callers, `err.detail` carrying
+// the server's message verbatim.
+export async function postDesignSag(body, signal) {
+  const resp = await postForBlob("/design/sag", body, signal);
+  const blob = await resp.blob();
+  return {
+    blob,
+    contourIntervalMm: floatHeader(resp, "X-Contour-Interval-Mm"),
+    peakToValleyMm: floatHeader(resp, "X-Peak-To-Valley-Mm"),
+    slantRangeM: floatHeader(resp, "X-Slant-Range-M"),
+  };
+}
+
+// The sag map is always for ONE named heliostat (docs/ui-spec.md 3), never
+// a field -- `heliostat` is {x_mm, y_mm} for whichever one
+// js/tabs/shape.js is currently previewing. mode is pinned to "ultra_fast":
+// the sag map cares about the figure the solve produces, not ray-traced
+// flux, so there is no reason to pay for a slower fidelity here.
+export function buildSagRequest(doc, heliostat) {
+  return {
+    design: currentDesignPayload(doc),
+    mode: "ultra_fast",
+    optics: doc.optics,
+    optics_params: currentOpticsParams(doc),
+    solar_az_deg: doc.sun.az,
+    solar_el_deg: doc.sun.el,
+    heliostat_x_mm: heliostat.x_mm,
+    heliostat_y_mm: heliostat.y_mm,
+  };
 }
 
 // ---------------------------------------------------------------------------

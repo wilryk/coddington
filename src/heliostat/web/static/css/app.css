@@ -228,6 +228,19 @@ a:hover {
   border-color: var(--accent-dark);
   color: #fff;
 }
+/* docs/ui-spec.md 3: "the seg gets the .disabled treatment" -- the
+   Heliostat Shape tab's Canting seg under Twisting/non-grid designs
+   (js/tabs/shape.js). Buttons stay individually `disabled` too; this is
+   just the visual half. */
+.seg.disabled button {
+  opacity: 0.5;
+  cursor: default;
+}
+.seg.disabled button.active {
+  background: #eef1f4;
+  border-color: var(--border);
+  color: var(--muted);
+}
 
 .frow {
   display: flex;
@@ -761,4 +774,193 @@ input.val::-webkit-inner-spin-button {
 .importreport .fielderr,
 .importreport .fieldwarn {
   margin-bottom: 6px;
+}
+
+/* -- Heliostat Shape tab (docs/ui-spec.md 3, mockup M6) -------------------
+   Full-screen: a sibling of .shell shown instead of it (js/main.js's
+   renderTabs()) so the 3D scene keeps running, just covered. Panel/seg/frow
+   look lifted from the same tokens the sidebar and mockup already share. */
+
+.tabpage {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.editbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 20px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.editbar .name {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.editbar .from {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.previewchip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+  margin-left: 10px;
+  position: relative;
+  cursor: pointer;
+  background: var(--panel);
+}
+.previewchip strong {
+  margin: 0 2px;
+}
+.previewchip .caret {
+  color: var(--muted);
+}
+.previewpopover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(31, 41, 51, 0.18);
+  padding: 12px;
+  width: 240px;
+  z-index: 20;
+  cursor: default;
+}
+.previewpopover .frow {
+  margin-bottom: 8px;
+}
+
+.tabcontent {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  gap: 18px;
+  padding: 18px 20px;
+  overflow: auto;
+}
+.tabcontent .panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px 18px;
+}
+.tabcontent .panel h2 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin: 0 0 12px 0;
+  font-weight: 600;
+}
+.tabcontent .controls {
+  flex: 0 0 330px;
+  overflow-y: auto;
+}
+.tabcontent .subhead {
+  color: var(--muted);
+  font-size: 12.5px;
+  margin: 16px 0 6px 0;
+  font-weight: 600;
+}
+.tabcontent .previews {
+  flex: 1 1 auto;
+  display: flex;
+  gap: 18px;
+  min-width: 0;
+}
+.tabcontent .previewpanel {
+  flex: 1 1 50%;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.tabcontent .frame {
+  flex: 1 1 auto;
+  min-height: 260px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+}
+.tabcontent .frame img {
+  max-width: 100%;
+  max-height: 100%;
+  display: block;
+}
+.tabcontent .frame svg.sketch {
+  width: 100%;
+  height: 100%;
+}
+.tabcontent .frame p.placeholder {
+  color: var(--muted);
+  font-size: 12.5px;
+  padding: 16px;
+  text-align: center;
+}
+.tabcontent .caption {
+  color: var(--muted);
+  font-size: 11.5px;
+  margin-top: 8px;
+}
+
+/* Custom-outline sketch canvas: draggable vertex handles, ghost mirror
+   half, segment length labels -- js/tabs/shape.js. */
+.sketch-vertex {
+  fill: #ffffff;
+  stroke: var(--select);
+  stroke-width: 1.6;
+  cursor: grab;
+}
+.sketch-vertex:active {
+  cursor: grabbing;
+}
+.sketch-outline {
+  fill: rgba(196, 218, 238, 0.55);
+  stroke: #33455c;
+  stroke-width: 1.5;
+}
+.sketch-ghost {
+  fill: rgba(196, 218, 238, 0.22);
+  stroke: rgba(51, 69, 92, 0.4);
+  stroke-width: 1.2;
+  stroke-dasharray: 4 4;
+}
+.sketch-length {
+  font-size: 10px;
+  fill: var(--muted);
+  cursor: pointer;
+}
+/* The mirror axis, dash-dot like a drawing's centerline. */
+.sketch-axis {
+  stroke: var(--accent);
+  stroke-width: 1;
+  stroke-dasharray: 9 3 2 3;
+  opacity: 0.7;
+}
+.sketch-length:hover {
+  fill: var(--select);
+}
+
+.locator {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
 }

@@ -25,10 +25,14 @@ function build(container) {
   editLink.href = "#";
   editLink.textContent = "Edit shape…";
   editLink.style.fontSize = "11.5px";
-  editLink.title = "Heliostat Shape editor -- coming in a later phase";
-  editLink.setAttribute("aria-disabled", "true");
-  editLink.classList.add("disabled-link");
-  editLink.addEventListener("click", (e) => e.preventDefault());
+  // Phase 3c wave 1: opens the full-screen Heliostat Shape tab
+  // (docs/ui-spec.md 2.2, 3) on the current design -- no id to lock the
+  // preview to, so js/tabs/shape.js falls back to its own median-heliostat
+  // default.
+  editLink.addEventListener("click", (e) => {
+    e.preventDefault();
+    store.set("ui.tab", "shape");
+  });
   head.appendChild(chev);
   head.appendChild(h2);
   head.appendChild(editLink);
@@ -48,6 +52,7 @@ function build(container) {
   typeSeg.className = "seg";
   const rectBtn = segButton(typeSeg, "Rectangle", true, () => store.set("doc.design.type", "rect"));
   const gridBtn = segButton(typeSeg, "Facet grid", false, () => store.set("doc.design.type", "grid"));
+  const customBtn = segButton(typeSeg, "Custom", false, () => store.set("doc.design.type", "custom"));
   body.appendChild(typeSeg);
 
   const rectFields = document.createElement("div");
@@ -63,9 +68,18 @@ function build(container) {
   const gridGap = numberRow(gridFields, HELIOSTAT_GRID_FIELDS[4]);
   const cantHint = document.createElement("div");
   cantHint.className = "hint";
-  cantHint.textContent = "Canting: Auto (slant range) -- editable in a later phase.";
+  cantHint.textContent = "Facet focal and canting are set in the Heliostat Shape tab.";
   gridFields.appendChild(cantHint);
   body.appendChild(gridFields);
+
+  // Custom outline sketching (docs/ui-spec.md 3) needs a canvas -- lives in
+  // the Heliostat Shape tab, not this narrow sidebar stage.
+  const customFields = document.createElement("div");
+  const customHint = document.createElement("div");
+  customHint.className = "hint";
+  customHint.textContent = "Custom outlines are sketched in the Heliostat Shape tab.";
+  customFields.appendChild(customHint);
+  body.appendChild(customFields);
 
   const surfaceSeg = document.createElement("div");
   surfaceSeg.className = "seg";
@@ -85,8 +99,10 @@ function build(container) {
     body,
     rectBtn,
     gridBtn,
+    customBtn,
     rectFields,
     gridFields,
+    customFields,
     rectWidth,
     rectHeight,
     gridNu,
@@ -110,8 +126,10 @@ export function render(container) {
 
   els.rectBtn.classList.toggle("active", type === "rect");
   els.gridBtn.classList.toggle("active", type === "grid");
+  els.customBtn.classList.toggle("active", type === "custom");
   els.rectFields.style.display = type === "rect" ? "" : "none";
   els.gridFields.style.display = type === "grid" ? "" : "none";
+  els.customFields.style.display = type === "custom" ? "" : "none";
 
   const surface = doc.design.surface;
   for (const [key, btn] of Object.entries(els.surfaceBtns)) {
@@ -125,7 +143,7 @@ export function render(container) {
     const wM = (p.width_mm / 1000).toFixed(1);
     const hM = (p.height_mm / 1000).toFixed(1);
     els.summary.innerHTML = `<strong>${wM} × ${hM} m</strong> — rectangle, ${surface} figure`;
-  } else {
+  } else if (type === "grid") {
     const p = doc.designParams.grid;
     setVal(els.gridNu, p.n_u);
     setVal(els.gridNv, p.n_v);
@@ -133,5 +151,9 @@ export function render(container) {
     setVal(els.gridFh, p.facet_h_mm);
     setVal(els.gridGap, p.gap_mm);
     els.summary.innerHTML = `<strong>${p.n_u}×${p.n_v} facet grid</strong> — ${surface} figure`;
+  } else {
+    const p = doc.designParams.custom;
+    const n = (p && p.vertices_mm && p.vertices_mm.length) || 0;
+    els.summary.innerHTML = `<strong>custom outline, ${n} vertices</strong> — ${surface} figure`;
   }
 }

@@ -80,6 +80,34 @@ def _mirror_frame(rot_az_deg: float, rot_el_deg: float):
     return n, u, v
 
 
+def _perturb_unit(
+    vec: np.ndarray,
+    axis1: np.ndarray,
+    axis2: np.ndarray,
+    sigma_rad: float,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Independent per-ray Gaussian tilt of a ``(3, M)`` unit-vector bundle
+    within the ``(axis1, axis2)`` tangent plane, renormalised.
+
+    Shared by the slope-error perturbation of a surface normal (before
+    reflection) and the specularity perturbation of a ray direction (after
+    it) -- same small-angle construction, different vector and different
+    tangent axes (the heliostat's own ``(u, v)`` for the legacy rectangle, a
+    facet's own ``(fu, fv)`` for a design). ``sigma_rad`` is already the
+    per-axis standard deviation in radians; any factor-of-two convention is
+    the caller's business, not this helper's.
+    """
+    m = vec.shape[1]
+    out = (
+        vec
+        + axis1[:, None] * rng.normal(0.0, sigma_rad, m)
+        + axis2[:, None] * rng.normal(0.0, sigma_rad, m)
+    )
+    out /= np.linalg.norm(out, axis=0)
+    return out
+
+
 def design_facet_frames(design, helio: np.ndarray, n: np.ndarray, u: np.ndarray, v: np.ndarray):
     """World-frame geometry per facet: ``(facet, normal, fu, fv, centre)``.
 
@@ -125,6 +153,8 @@ def trace_heliostat(
     return_paths: bool = False,
     return_secondary_hits: bool = False,
     design: "HeliostatDesign | None" = None,
+    slope_error_mrad: float = 0.0,
+    specularity_mrad: float = 0.0,
 ) -> dict:
     """Trace one heliostat at one instant; return receiver hits and loss counts.
 
@@ -160,6 +190,17 @@ def trace_heliostat(
     hidden sign flips (the legacy path negates c4/c5 internally for its
     inherited frame; a design equivalent to legacy ``(c3, c4, c5)``
     therefore carries ``ZernikeAstig(c3, -c4, -c5)``).
+
+    ``slope_error_mrad``/``specularity_mrad`` add per-ray optical error on
+    top of whichever figure ran, both zero by default (no perturbation, no
+    extra cost, bit-identical to before either existed). ``slope_error_mrad``
+    perturbs the mirror's local surface NORMAL, independently per tangent
+    axis, before reflection -- a manufacturing/mounting tilt, which the
+    reflection law doubles into the ray's deflection. ``specularity_mrad``
+    perturbs the REFLECTED ray direction itself, independently per axis,
+    after reflection -- a coating scatter, with no such doubling. Both draw
+    from ``rng``, so a run's random-number sequence is unchanged whenever
+    both are left at zero.
     """
     if sampler is None:
         sampler = _default_sampler()
@@ -233,10 +274,14 @@ def trace_heliostat(
         _, dsdx, dsdy = _zernike_sag_and_slopes(lx, ly, c3, c4, c5)
         normal = n[:, None] - u[:, None] * dsdx - v[:, None] * dsdy
         normal /= np.linalg.norm(normal, axis=0)
+        if slope_error_mrad:
+            normal = _perturb_unit(normal, u, v, slope_error_mrad * 1.0e-3, rng)
         # In-place reflection: d -= 2 (d.n) n, no fresh (3, M) temporaries.
         dot = np.einsum("ij,ij->j", d, normal)
         dot *= 2.0
         d -= dot * normal
+        if specularity_mrad:
+            d = _perturb_unit(d, u, v, specularity_mrad * 1.0e-3, rng)
     else:
         frames = design_facet_frames(design, helio, n, u, v)
         n_in = d.shape[1]
@@ -278,10 +323,19 @@ def trace_heliostat(
             _, dsu, dsv = facet.surface.sag_and_slopes(lu_all[k][ok][grp], lv_all[k][ok][grp])
             nrm = nf[:, None] - fu[:, None] * dsu - fv[:, None] * dsv
             nrm /= np.linalg.norm(nrm, axis=0)
+            if slope_error_mrad:
+                nrm = _perturb_unit(nrm, fu, fv, slope_error_mrad * 1.0e-3, rng)
             normal[:, grp] = nrm
         dot = np.einsum("ij,ij->j", d, normal)
         dot *= 2.0
         d -= dot * normal
+        if specularity_mrad:
+            sigma = specularity_mrad * 1.0e-3
+            for k, (facet, nf, fu, fv, centre) in enumerate(frames):
+                grp = best == k
+                if not np.any(grp):
+                    continue
+                d[:, grp] = _perturb_unit(d[:, grp], fu, fv, sigma, rng)
 
     # --- secondary -------------------------------------------------------
     pre, d, on_sec = secondary.redirect(hit, d, counters)

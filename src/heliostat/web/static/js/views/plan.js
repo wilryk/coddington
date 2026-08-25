@@ -33,6 +33,19 @@ export function setGeometry(data) {
 }
 
 function handleClick(e) {
+  // Phase 3c wave 1: the selection card's "View shape" button
+  // (docs/ui-spec.md 3, "clicking any heliostat in the workspace offers
+  // 'View shape'") -- checked before [data-kind] since the button itself
+  // isn't a heliostat/secondary/receiver shape.
+  const actionEl = e.target.closest && e.target.closest("[data-action]");
+  if (actionEl && actionEl.dataset.action === "view-shape") {
+    const id = Number(actionEl.dataset.id);
+    if (Number.isFinite(id)) {
+      store.set("ui.shapeHeliostatId", id);
+      store.set("ui.tab", "shape");
+    }
+    return;
+  }
   const el = e.target.closest && e.target.closest("[data-kind]");
   if (!el) {
     store.set("ui.selection", null); // empty ground deselects
@@ -206,7 +219,7 @@ function selectionSvg(heliostats, ui, proj, w, h) {
   const ym = helio.y_mm / 1000;
   const rm = Math.hypot(helio.x_mm, helio.y_mm) / 1000;
   const cardW = 150;
-  const cardH = 36;
+  const cardH = 56;
   let cardX = sx + 20;
   let cardY = sy - 30;
   cardX = Math.min(Math.max(cardX, 4), w - cardW - 4);
@@ -217,6 +230,10 @@ function selectionSvg(heliostats, ui, proj, w, h) {
     '<rect width="' + cardW + '" height="' + cardH + '" rx="6" fill="#ffffff" stroke="#d8dee5"></rect>' +
     '<text x="10" y="15" font-size="11" fill="#1f2933" font-weight="600">H-' + helio.id + "</text>" +
     '<text x="10" y="28" font-size="10.5" fill="#64748b">x ' + xm.toFixed(1) + " m · y " + ym.toFixed(1) + " m · r " + rm.toFixed(1) + " m</text>" +
+    '<g data-action="view-shape" data-id="' + helio.id + '" style="cursor:pointer">' +
+    '<rect x="6" y="36" width="' + (cardW - 12) + '" height="16" rx="4" fill="#f2f7fd" stroke="#d8dee5"></rect>' +
+    '<text x="' + (cardW / 2).toFixed(1) + '" y="47" font-size="10.5" fill="#345a80" text-anchor="middle" font-weight="600">View shape →</text>' +
+    "</g>" +
     "</g>"
   );
 }

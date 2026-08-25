@@ -22,9 +22,9 @@
       <h1>Coddington</h1>
       <span class="tag" id="optics-tag">Axicon</span>
       <div class="apptabs">
-        <div class="tab active">Workspace</div>
-        <div class="tab disabled" title="Heliostat Shape tab -- coming in a later phase">Heliostat Shape</div>
-        <div class="tab disabled" title="Analysis tab -- coming in a later phase">Analysis</div>
+        <div class="tab active" id="apptab-workspace">Workspace</div>
+        <div class="tab" id="apptab-shape">Heliostat Shape</div>
+        <div class="tab disabled" id="apptab-analysis" title="Analysis tab -- coming in a later phase">Analysis</div>
       </div>
       <div class="right">
         <div class="btn" id="library-btn">Library</div>
@@ -66,6 +66,12 @@
         </div>
       </div>
     </div>
+
+    <!-- docs/ui-spec.md 3, mockup M6: full-screen Heliostat Shape tab. A
+         sibling of .shell (not inside it) so main.js can show/hide the two
+         mutually exclusively without touching the 3D scene, which keeps
+         running underneath -- js/tabs/shape.js owns everything inside. -->
+    <section id="tab-shape" class="tabpage" hidden></section>
 
     <div id="runbar" class="runbar"></div>
   </div>

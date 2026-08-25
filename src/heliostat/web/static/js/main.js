@@ -24,6 +24,7 @@ import * as inspector from "./inspector.js";
 import * as planView from "./views/plan.js";
 import * as elevationView from "./views/elevation.js";
 import * as library from "./library.js";
+import * as shapeTab from "./tabs/shape.js";
 
 const OPTICS_NAME = Object.fromEntries(OPTICS_LABELS);
 
@@ -67,6 +68,39 @@ libraryBtn.addEventListener("click", () => {
   store.set("ui.libraryOpen", !store.get("ui.libraryOpen"));
 });
 
+// -- full-screen tabs (docs/ui-spec.md 1, 3, phase 3c wave 1) -------------
+// Workspace / Heliostat Shape / Analysis. Analysis stays inert (wave 2) --
+// its click handler is a no-op while index.html keeps it .disabled.
+const apptabWorkspace = document.getElementById("apptab-workspace");
+const apptabShape = document.getElementById("apptab-shape");
+const apptabAnalysis = document.getElementById("apptab-analysis");
+const tabShapeSection = document.getElementById("tab-shape");
+const shellEl = document.querySelector(".shell");
+
+apptabWorkspace.addEventListener("click", () => store.set("ui.tab", "workspace"));
+apptabShape.addEventListener("click", () => store.set("ui.tab", "shape"));
+apptabAnalysis.addEventListener("click", () => {
+  if (apptabAnalysis.classList.contains("disabled")) return;
+  store.set("ui.tab", "analysis");
+});
+
+// The 3D scene (and plan/elevation) keep running underneath -- only
+// visibility toggles, nothing is destroyed. shapeTab.render() is only
+// called while its section is actually visible, matching its own "fetch on
+// tab open, do nothing while hidden" refresh policy (js/tabs/shape.js).
+function renderTabs() {
+  const tab = store.get("ui.tab");
+  apptabWorkspace.classList.toggle("active", tab === "workspace");
+  apptabShape.classList.toggle("active", tab === "shape");
+  apptabAnalysis.classList.toggle("active", tab === "analysis");
+  shellEl.hidden = tab !== "workspace";
+  runbar.hidden = tab !== "workspace";
+  tabShapeSection.hidden = tab !== "shape";
+  if (tab === "shape") {
+    shapeTab.render(tabShapeSection, { geometry: lastGeometryResponse });
+  }
+}
+
 function renderTopbar() {
   const doc = store.get("doc");
   const ui = store.get("ui");
@@ -97,6 +131,7 @@ function renderAllPanels() {
   // see library.js's header comment.
   library.render(libraryDrawer, libraryBackdrop);
   renderTopbar();
+  renderTabs();
 
   renderViewportMode();
 }
@@ -266,6 +301,11 @@ document.addEventListener("keydown", (e) => {
     // and only deselects (docs/ui-spec.md 2.4) once it's already shut.
     if (store.get("ui.libraryOpen")) {
       store.set("ui.libraryOpen", false);
+    } else if (store.get("ui.tab") !== "workspace") {
+      // Phase 3c wave 1: Esc backs out of a full-screen tab (docs/ui-spec.md
+      // 3's "Done -- back to workspace" has a keyboard equivalent) -- one
+      // layer per keypress, like the overlay and drawer above it.
+      store.set("ui.tab", "workspace");
     } else {
       store.set("ui.selection", null);
     }

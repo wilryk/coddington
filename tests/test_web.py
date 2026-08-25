@@ -602,6 +602,121 @@ def test_surface_is_accepted_but_ignored_by_the_preview(client):
         assert resp.content[:8] == PNG_MAGIC
 
 
+# ---------------------------------------------------------------------------
+# optical errors: slope_error_mrad, specularity_mrad, reflectance
+#
+# All three default to zero-error/perfect-reflector, so every test above this
+# block -- including the pinned legacy numbers -- is a standing proof the
+# defaults changed nothing.
+
+
+def test_reflectance_scales_power_and_flux_not_incident_power(client):
+    """reflectance is applied once, after the bounce: power and peak flux
+    scale by it exactly; incident power (measured before the bounce) does
+    not move at all. The default request (no `reflectance`) still lands on
+    the legacy design=None path, so this also proves reflectance reaches
+    that path."""
+    default = client.post("/api/trace", json=_trace_payload(RECT_DESIGN)).json()
+    dimmed = client.post(
+        "/api/trace", json=_trace_payload({**RECT_DESIGN, "reflectance": 0.9})
+    ).json()
+    assert dimmed["power_w"] == pytest.approx(0.9 * default["power_w"], rel=1e-9)
+    assert dimmed["peak_flux_kw_m2"] == pytest.approx(0.9 * default["peak_flux_kw_m2"], rel=1e-9)
+    assert dimmed["incident_power_w"] == pytest.approx(default["incident_power_w"], rel=1e-12)
+
+
+def test_mc_slope_error_grows_the_spot(client):
+    """A per-ray surface-normal tilt spreads the Monte Carlo spot -- same
+    seed path (mc_seed defaults to 1), so the only thing that can move the
+    number is the perturbation itself."""
+    payload = _trace_payload(RECT_DESIGN, mode="monte_carlo")
+    payload["n_rays"] = 5000
+    base = client.post("/api/trace", json=payload).json()
+    blurred = client.post(
+        "/api/trace",
+        json={**payload, "design": {**RECT_DESIGN, "slope_error_mrad": 3.0}},
+    ).json()
+    assert blurred["rms_radius_mm"] > base["rms_radius_mm"]
+
+
+def test_mc_specularity_grows_the_spot(client):
+    """Same direction as slope error, for the post-reflection scatter."""
+    payload = _trace_payload(RECT_DESIGN, mode="monte_carlo")
+    payload["n_rays"] = 5000
+    base = client.post("/api/trace", json=payload).json()
+    blurred = client.post(
+        "/api/trace",
+        json={**payload, "design": {**RECT_DESIGN, "specularity_mrad": 3.0}},
+    ).json()
+    assert blurred["rms_radius_mm"] > base["rms_radius_mm"]
+
+
+def test_cone_fast_accurate_slope_error_grows_the_spot(client):
+    """The cone backend broadens its kernel for the same slope error, with
+    the identical directional effect -- and, being deterministic, needs no
+    seed to hold still."""
+    payload = _trace_payload(RECT_DESIGN, mode="fast_accurate")
+    base = client.post("/api/trace", json=payload).json()
+    blurred = client.post(
+        "/api/trace",
+        json={**payload, "design": {**RECT_DESIGN, "slope_error_mrad": 3.0}},
+    ).json()
+    assert blurred["rms_radius_mm"] > base["rms_radius_mm"]
+
+
+# ---------------------------------------------------------------------------
+# custom polygon designs
+
+
+def _hexagon_vertices_mm(circumradius_mm: float = 2500.0) -> list:
+    """A regular hexagon roughly the manuscript rectangle's own size."""
+    return [
+        [
+            circumradius_mm * math.cos(math.radians(60 * i)),
+            circumradius_mm * math.sin(math.radians(60 * i)),
+        ]
+        for i in range(6)
+    ]
+
+
+CUSTOM_HEX_DESIGN = {"type": "custom", "vertices_mm": _hexagon_vertices_mm()}
+
+
+def test_custom_design_preview_returns_png(client):
+    resp = client.post("/api/design/preview", json={"design": CUSTOM_HEX_DESIGN})
+    assert resp.status_code == 200
+    assert resp.content[:8] == PNG_MAGIC
+
+
+def test_custom_design_traces_and_delivers_power(client):
+    resp = client.post("/api/trace", json=_trace_payload(CUSTOM_HEX_DESIGN))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["power_w"] > 0
+
+
+def test_custom_design_too_few_vertices_is_422(client):
+    resp = client.post(
+        "/api/design/preview",
+        json={"design": {"type": "custom", "vertices_mm": [[0.0, 0.0], [1000.0, 0.0]]}},
+    )
+    assert resp.status_code == 422
+
+
+def test_custom_design_zero_area_is_422(client):
+    """Three collinear points describe a line, not a facet."""
+    resp = client.post(
+        "/api/design/preview",
+        json={
+            "design": {
+                "type": "custom",
+                "vertices_mm": [[0.0, 0.0], [1000.0, 0.0], [2000.0, 0.0]],
+            }
+        },
+    )
+    assert resp.status_code == 422
+
+
 # -- optics_params ----------------------------------------------------------
 
 
@@ -1421,6 +1536,42 @@ def test_sag_rejects_a_sun_below_the_horizon(client):
     """There is no solve, so there is no figure to draw."""
     resp = client.post("/api/design/sag", json=_trace_payload(RECT_DESIGN, solar_el_deg=0.0))
     assert resp.status_code == 422
+
+
+_SAG_CONTOUR_CANDIDATES_MM = (0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0)
+
+
+def test_sag_headers_report_contour_interval_peak_to_valley_and_slant_range(client):
+    """The default manuscript sag request carries its own numbers as
+    headers, not just baked into the picture: a caption the client can
+    render without re-deriving anything, and the same slant range /api/trace
+    reports for the identical heliostat."""
+    payload = _trace_payload(RECT_DESIGN)
+    resp = client.post("/api/design/sag", json=payload)
+    assert resp.status_code == 200
+    assert resp.content[:8] == PNG_MAGIC
+
+    span = float(resp.headers["X-Peak-To-Valley-Mm"])
+    interval = float(resp.headers["X-Contour-Interval-Mm"])
+    slant_range_m = float(resp.headers["X-Slant-Range-M"])
+
+    assert span > 0
+    assert interval in _SAG_CONTOUR_CANDIDATES_MM
+    # At most 12 contour lines across the span, and no smaller candidate
+    # interval would also have fit that budget.
+    assert span / interval <= 12
+    smaller = [c for c in _SAG_CONTOUR_CANDIDATES_MM if c < interval]
+    if smaller:
+        assert span / max(smaller) > 12
+
+    assert slant_range_m > 0
+    sol = _solve_for(
+        payload["optics"], 0.0, -89609.0, payload["solar_az_deg"], payload["solar_el_deg"]
+    )
+    # The header is rounded to 3 decimals (the contract's own precision),
+    # so compare at that granularity rather than bit-for-bit.
+    expected_slant_m = _slant_range_mm(sol, 0.0, -89609.0) / 1000.0
+    assert slant_range_m == pytest.approx(expected_slant_m, abs=5e-4)
 
 
 # -- ray budget, day sweeps and exports --------------------------------------

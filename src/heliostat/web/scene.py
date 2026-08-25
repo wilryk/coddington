@@ -624,6 +624,10 @@ def build_geometry_scene(
             "y_mm": _round(h["y_mm"]),
             "rot_az_deg": None if h.get("rot_az_deg") is None else round(float(h["rot_az_deg"]), 4),
             "rot_el_deg": None if h.get("rot_el_deg") is None else round(float(h["rot_el_deg"]), 4),
+            # Already rounded to 3 decimals by the endpoint (_solve_field's
+            # own slant, mm -> m); carried through verbatim rather than
+            # re-rounded here.
+            "slant_range_m": h.get("slant_range_m"),
         }
         for h in heliostats
     ]

@@ -84,12 +84,14 @@ from heliostat.geometry.aiming import (
     solve_cassegrain,
     solve_prime_focus,
 )
+from heliostat.geometry.aperture import Polygon
 from heliostat.geometry.design import (
     Flat,
     HeliostatDesign,
     Spherical,
     Surface,
     ZernikeAstig,
+    custom_heliostat,
     flower,
     grid_facets,
     rect_heliostat,
@@ -459,9 +461,28 @@ class _DesignBase(BaseModel):
       range.
     * ``"flat"`` -- no figure at all, anywhere. Expect a mirror-shaped wash
       rather than a spot.
+
+    ``slope_error_mrad``/``specularity_mrad``/``reflectance`` are optical
+    errors, orthogonal to ``surface``: they blur and dim whatever figure
+    ``surface`` already chose rather than describing a figure of their own.
+    ``slope_error_mrad`` is a random per-ray tilt of the mirror's local
+    surface normal (a manufacturing/mounting imperfection); it deflects a
+    reflected ray by twice the tilt, same convention the cone backend's
+    ``sunshape_kernel`` already documents. ``specularity_mrad`` is a random
+    per-ray scatter of the reflected beam itself (a coating imperfection),
+    with no such factor of two. Both default to ``0`` -- a perfect mirror --
+    so an old request that has never heard of either field traces exactly as
+    it always has. ``reflectance`` is the fraction of incident power that
+    survives the bounce; it defaults to ``1.0`` for the same reason, so
+    ``power_w``/the flux map are unscaled unless a caller opts in, and
+    ``incident_power_w`` -- power arriving on the mirror, before the bounce
+    -- never carries it.
     """
 
     surface: Literal["twisting", "spherical", "flat"] = "twisting"
+    slope_error_mrad: float = Field(default=0.0, ge=0)
+    specularity_mrad: float = Field(default=0.0, ge=0)
+    reflectance: float = Field(default=1.0, gt=0, le=1)
 
 
 class RectParams(_DesignBase):
@@ -493,7 +514,57 @@ class FlowerParams(_DesignBase):
     cant_focal_mm: float | None = Field(default=None, ge=0)
 
 
-DesignParams = Annotated[Union[RectParams, GridParams, FlowerParams], Field(discriminator="type")]
+class CustomParams(_DesignBase):
+    """A single hand-drawn polygon facet -- the sketch-tool analogue of
+    :class:`RectParams`.
+
+    ``vertices_mm`` is the facet's own outline in the heliostat ``(u, v)``
+    plane, one ``[u, v]`` pair per corner, in order around the perimeter
+    (either winding). No ``cant_focal_mm``: a single facet has nothing to
+    cant against another, exactly like a rectangle.
+    """
+
+    type: Literal["custom"] = "custom"
+    vertices_mm: list[tuple[float, float]] = Field(min_length=3)
+
+    @model_validator(mode="after")
+    def _polygon_must_enclose_area(self) -> "CustomParams":
+        pts = [self.vertices_mm[0]]
+        for u, v in self.vertices_mm[1:]:
+            # Consecutive duplicates contribute a zero-length edge -- drop
+            # them before counting corners, so "a rectangle with one vertex
+            # accidentally sent twice" is not silently treated as a
+            # pentagon.
+            if (u, v) != pts[-1]:
+                pts.append((u, v))
+        if len(pts) > 1 and pts[0] == pts[-1]:
+            pts.pop()
+        if len(pts) < 3:
+            raise ValueError(
+                "vertices_mm needs at least 3 distinct points once consecutive "
+                "duplicates are dropped, to describe a polygon at all"
+            )
+        arr = np.asarray(pts, dtype=float)
+        if not np.isfinite(arr).all():
+            raise ValueError("vertices_mm must be finite")
+        # Shoelace formula, twice the signed area; either winding is
+        # accepted (the sign only says clockwise vs. counter-clockwise), so
+        # only its magnitude is checked. Zero (collinear points, or a
+        # polygon that folds back on itself to no net area) has no facet to
+        # trace.
+        u, v = arr[:, 0], arr[:, 1]
+        signed_area2 = float(np.dot(u, np.roll(v, -1)) - np.dot(v, np.roll(u, -1)))
+        if signed_area2 == 0.0:
+            raise ValueError(
+                "vertices_mm must enclose a positive area -- these points are "
+                "collinear or otherwise describe a zero-area polygon"
+            )
+        return self
+
+
+DesignParams = Annotated[
+    Union[RectParams, GridParams, FlowerParams, CustomParams], Field(discriminator="type")
+]
 
 
 class SetupRequest(BaseModel):
@@ -1069,7 +1140,8 @@ def _faceted(
 
 
 def _build_design(
-    params: RectParams | GridParams | FlowerParams, auto_focal_mm: float | None = None
+    params: RectParams | GridParams | FlowerParams | CustomParams,
+    auto_focal_mm: float | None = None,
 ) -> HeliostatDesign:
     """Turn a validated param model into a :class:`HeliostatDesign`.
 
@@ -1082,19 +1154,21 @@ def _build_design(
     to resolve a figure against anyway; the trace endpoint goes through
     :func:`_build_trace_design`, which honours ``surface``.
 
-    Rectangle figures are not this function's business -- a rectangle's
-    figure depends on a solve (sun position), which this function does not
-    take. This function's rect branch is a plain flat sketch.
+    Rectangle and custom-polygon figures are not this function's business --
+    both depend on a solve (sun position), which this function does not
+    take. Those two branches are plain flat sketches.
     """
     if isinstance(params, RectParams):
         return rect_heliostat(width_mm=params.width_mm, height_mm=params.height_mm)
+    if isinstance(params, CustomParams):
+        return custom_heliostat(vertices_mm=params.vertices_mm)
     cant = _resolved_cant_focal_mm(params.cant_focal_mm, auto_focal_mm)
     surface = Spherical("slant") if cant is not None else None
     return _faceted(params, surface, cant)
 
 
 def _build_trace_design(
-    params: RectParams | GridParams | FlowerParams,
+    params: RectParams | GridParams | FlowerParams | CustomParams,
     sol: Solution,
     slant_range_mm: float,
 ) -> HeliostatDesign | None:
@@ -1130,6 +1204,18 @@ def _build_trace_design(
             # cant focal" is the blank case: this heliostat's slant range.
             figure = Spherical(slant_range_mm)
         return rect_heliostat(width_mm=params.width_mm, height_mm=params.height_mm, surface=figure)
+
+    if isinstance(params, CustomParams):
+        # Same three figures as a rectangle, same reasoning: one facet, no
+        # cant_focal_mm to read, so "spherical" always figures at this
+        # heliostat's own slant range.
+        if params.surface == "twisting":
+            figure = ZernikeAstig(sol.c3, -sol.c4, -sol.c5)
+        elif params.surface == "flat":
+            figure = Flat()
+        else:
+            figure = Spherical(slant_range_mm)
+        return custom_heliostat(vertices_mm=params.vertices_mm, surface=figure)
 
     if params.surface == "twisting":
         return _build_design(params, auto_focal_mm=slant_range_mm)
@@ -1291,6 +1377,9 @@ def _trace_core(
     *,
     mc_seed=1,
     mc_return_paths: bool = True,
+    slope_error_mrad: float = 0.0,
+    specularity_mrad: float = 0.0,
+    reflectance: float = 1.0,
 ) -> dict:
     """Trace ONE heliostat -- the exact call both endpoints make.
 
@@ -1304,9 +1393,19 @@ def _trace_core(
     trace has always used -- so routing that endpoint through this function
     changed nothing about what it returns. The field endpoint passes a
     per-heliostat seed instead (see :data:`FIELD_MC_SEED`).
+
+    ``slope_error_mrad``/``specularity_mrad``/``reflectance`` are the
+    design's own optical-error fields (see :class:`_DesignBase`), threaded
+    through here rather than read off ``design`` because the legacy
+    ``design=None`` path still needs them -- they describe the mirror's
+    material, not its facet layout. The first two are forwarded into
+    whichever backend ran; ``reflectance`` is applied once, here, as a
+    scalar on the REFLECTED result (power and flux), after the backend has
+    already reported ``incident_power_w`` -- see the module's
+    ``_DesignBase`` docstring for why that field never carries it.
     """
     if mode.backend == "mc":
-        return {
+        result = {
             "backend": "mc",
             **trace_heliostat(
                 x_mm,
@@ -1325,10 +1424,21 @@ def _trace_core(
                 source_disk_radius_mm="auto",
                 return_paths=mc_return_paths,
                 design=design,
+                slope_error_mrad=slope_error_mrad,
+                specularity_mrad=specularity_mrad,
             ),
         }
+        if reflectance != 1.0:
+            # watts_per_ray is what every downstream reader (power_w, the
+            # flux histogram, peak flux) scales from -- one multiply here
+            # reaches all of them without touching incident power, which
+            # this backend never reports in the first place.
+            result["watts_per_ray"] = result["watts_per_ray"] * reflectance
+        return result
 
-    kernel = sunshape_kernel("super_gauss")
+    kernel = sunshape_kernel(
+        "super_gauss", slope_error_mrad=slope_error_mrad, specularity_mrad=specularity_mrad
+    )
     cone_kwargs = dict(mode.cone_kwargs)
     if _design_is_flat(design, sol.c3, sol.c4, sol.c5):
         # A deliberately flat mirror (explicit cant_focal_mm=0 on a
@@ -1340,7 +1450,7 @@ def _trace_core(
         # for this deliberately-flat case, so it is not the mode's own
         # default.
         cone_kwargs["grid"] = (40, 24)
-    return {
+    result = {
         "backend": "cone",
         **trace_heliostat_cone(
             x_mm,
@@ -1359,6 +1469,12 @@ def _trace_core(
             **cone_kwargs,
         ),
     }
+    if reflectance != 1.0:
+        # incident_power_w is deliberately left untouched: it is measured
+        # before the bounce, and this scalar models loss AT the bounce.
+        result["flux"] = result["flux"] * reflectance
+        result["power_w"] = result["power_w"] * reflectance
+    return result
 
 
 def _slant_range_mm(sol: Solution, x_mm: float, y_mm: float) -> float:
@@ -1499,6 +1615,9 @@ def _trace_instant_metrics(
             mode,
             mc_seed=np.random.SeedSequence((FIELD_MC_SEED, int(ids[i]))),
             mc_return_paths=False,
+            slope_error_mrad=req.design.slope_error_mrad,
+            specularity_mrad=req.design.specularity_mrad,
+            reflectance=req.design.reflectance,
         )
         eta = float(eta_union[i])
         if result["backend"] == "mc":
@@ -1553,6 +1672,9 @@ def _flux_grid_for(body: "TraceRequest") -> tuple[np.ndarray, np.ndarray, np.nda
         receiver,
         body.trace_mode(),
         mc_return_paths=False,
+        slope_error_mrad=body.design.slope_error_mrad,
+        specularity_mrad=body.design.specularity_mrad,
+        reflectance=body.design.reflectance,
     )
     if result["backend"] == "mc":
         flux, u_edges, v_edges, _rms, _cen = _mc_flux_and_metrics(
@@ -1612,7 +1734,31 @@ def _day_energy_kwh(steps: list[dict]) -> float:
     return float(np.trapz(power_kw, hours))
 
 
-def _render_sag_png(design, sol, params, half_x_mm: float, half_y_mm: float) -> bytes:
+#: Candidate contour spacings for the sag map, millimetres, smallest first.
+_SAG_CONTOUR_INTERVALS_MM = (0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0)
+#: Contour-line budget the interval is chosen against -- a manuscript rect's
+#: ~9 mm peak-to-valley span lands on the 1.0 mm interval (9 lines), the
+#: largest spacing that still keeps a hand-picked "roughly a dozen" ceiling.
+_SAG_MAX_CONTOUR_LINES = 12
+
+
+def _sag_contour_interval_mm(span_mm: float) -> float:
+    """Smallest interval from :data:`_SAG_CONTOUR_INTERVALS_MM` giving at
+    most :data:`_SAG_MAX_CONTOUR_LINES` contour lines across ``span_mm``.
+
+    Falls back to the coarsest interval for a span so large that even that
+    one draws more lines than the budget -- still the smallest overshoot
+    available, rather than raising over a legitimately huge figure.
+    """
+    for interval in _SAG_CONTOUR_INTERVALS_MM:
+        if span_mm / interval <= _SAG_MAX_CONTOUR_LINES:
+            return interval
+    return _SAG_CONTOUR_INTERVALS_MM[-1]
+
+
+def _render_sag_png(
+    design, sol, params, half_x_mm: float, half_y_mm: float
+) -> tuple[bytes, float | None, float | None]:
     """Sag map of the mirror a trace would use, in millimetres.
 
     "Sag" is how far the reflecting surface departs from the flat plane
@@ -1626,6 +1772,12 @@ def _render_sag_png(design, sol, params, half_x_mm: float, half_y_mm: float) -> 
     evaluated in that facet's frame. Points outside every facet -- the gaps
     in a grid, the space between petals -- are left blank rather than
     filled with the value a facet would have had if it were there.
+
+    :returns: ``(png_bytes, peak_to_valley_mm, contour_interval_mm)``. Both
+        numbers are ``None`` when no facet covers any sampled point ("no
+        surface here"); ``contour_interval_mm`` is additionally ``None`` for
+        a flat mirror (span at or below float noise), which draws no
+        contours at all -- there is nothing for a spacing to describe.
     """
     import matplotlib
 
@@ -1657,6 +1809,8 @@ def _render_sag_png(design, sol, params, half_x_mm: float, half_y_mm: float) -> 
 
     fig, ax = plt.subplots(figsize=(5.6, 4.6))
     finite = np.isfinite(sag)
+    span: float | None = None
+    interval: float | None = None
     if not finite.any():
         ax.text(0.5, 0.5, "no surface here", ha="center", va="center", transform=ax.transAxes)
     else:
@@ -1673,8 +1827,20 @@ def _render_sag_png(design, sol, params, half_x_mm: float, half_y_mm: float) -> 
         # Contours make a smooth figure legible; pointless on a flat mirror,
         # where the whole map is one value and matplotlib would warn.
         if span > 1e-9:
-            ax.contour(gx, gy, sag, levels=8, colors="white", linewidths=0.4, alpha=0.6)
-        ax.set_title(f"peak-to-valley {span:.3f} mm")
+            interval = _sag_contour_interval_mm(span)
+            lo, hi = float(np.nanmin(sag)), float(np.nanmax(sag))
+            ax.contour(
+                gx,
+                gy,
+                sag,
+                levels=np.arange(lo, hi + interval, interval),
+                colors="white",
+                linewidths=0.4,
+                alpha=0.6,
+            )
+            ax.set_title(f"peak-to-valley {span:.3f} mm · contours every {interval:g} mm")
+        else:
+            ax.set_title(f"peak-to-valley {span:.3f} mm")
     ax.set_xlabel("u (mm)")
     ax.set_ylabel("v (mm)")
     fig.tight_layout()
@@ -1684,7 +1850,7 @@ def _render_sag_png(design, sol, params, half_x_mm: float, half_y_mm: float) -> 
         fig.savefig(buf, format="png", dpi=110)
     finally:
         plt.close(fig)
-    return buf.getvalue()
+    return buf.getvalue(), span, interval
 
 
 def _render_flux_png(
@@ -1823,7 +1989,18 @@ def _field_geometry(design: HeliostatDesign | None):
         return None, outline, MIRROR_HALF_X_MM, MIRROR_HALF_Y_MM
 
     u0, u1, v0, v1 = design.bbox
-    region = design.silhouette(OCCLUDER_SILHOUETTE_VERTICES)
+    facets = design.facets
+    single_polygon = len(facets) == 1 and isinstance(facets[0].region, Polygon)
+    if single_polygon and facets[0].offset_mm == (0.0, 0.0):
+        # A custom design's single facet already IS its own outline -- the
+        # vertices a caller drew, exactly. Radial-tracing it through
+        # silhouette() below would only resample those same corners into
+        # OCCLUDER_SILHOUETTE_VERTICES approximations of themselves, so a
+        # hand-authored hexagon comes back as a hexagon, not a 72-gon that
+        # merely looks like one.
+        region = facets[0].region
+    else:
+        region = design.silhouette(OCCLUDER_SILHOUETTE_VERTICES)
     return region, region.vertices_mm, max(abs(u0), abs(u1)), max(abs(v0), abs(v1))
 
 
@@ -2196,11 +2373,8 @@ def create_app():
                 body.solar_el_deg,
                 optics_params,
             )
-            design = _build_trace_design(
-                body.design,
-                sol,
-                _slant_range_mm(sol, body.heliostat_x_mm, body.heliostat_y_mm),
-            )
+            slant_range_mm = _slant_range_mm(sol, body.heliostat_x_mm, body.heliostat_y_mm)
+            design = _build_trace_design(body.design, sol, slant_range_mm)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -2210,8 +2384,13 @@ def create_app():
             u0, u1, v0, v1 = design.bbox
             half_x = max(abs(u0), abs(u1))
             half_y = max(abs(v0), abs(v1))
-        png = _render_sag_png(design, sol, body.design, half_x, half_y)
-        return Response(content=png, media_type="image/png")
+        png, span_mm, interval_mm = _render_sag_png(design, sol, body.design, half_x, half_y)
+        headers = {"X-Slant-Range-M": f"{slant_range_mm / 1000.0:.3f}"}
+        if span_mm is not None:
+            headers["X-Peak-To-Valley-Mm"] = f"{span_mm:.6g}"
+        if interval_mm is not None:
+            headers["X-Contour-Interval-Mm"] = f"{interval_mm:g}"
+        return Response(content=png, media_type="image/png", headers=headers)
 
     @app.post("/api/trace")
     def trace(body: TraceRequest) -> JSONResponse:
@@ -2262,6 +2441,9 @@ def create_app():
             secondary,
             receiver,
             mode,
+            slope_error_mrad=body.design.slope_error_mrad,
+            specularity_mrad=body.design.specularity_mrad,
+            reflectance=body.design.reflectance,
         )
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
 
@@ -2430,6 +2612,9 @@ def create_app():
                 # that will not use it.
                 mc_seed=np.random.SeedSequence((FIELD_MC_SEED, int(ids[i]))),
                 mc_return_paths=False,
+                slope_error_mrad=body.design.slope_error_mrad,
+                specularity_mrad=body.design.specularity_mrad,
+                reflectance=body.design.reflectance,
             )
             eta = float(eta_union[i])
             if result["backend"] == "mc":
@@ -2577,6 +2762,7 @@ def create_app():
                     "c4": None,
                     "c5": None,
                     "design": None,
+                    "slant_range_m": None,
                 }
                 for i, (x, y) in zip(ids, xy_mm)
             ]
@@ -2588,7 +2774,7 @@ def create_app():
             _region, outline, _hw, _hh = _field_geometry(None)
         else:
             try:
-                solutions, designs, _slants = _solve_field(
+                solutions, designs, slants = _solve_field(
                     body.optics,
                     optics_params,
                     body.design,
@@ -2609,6 +2795,7 @@ def create_app():
                     "c4": solutions[i].c4,
                     "c5": solutions[i].c5,
                     "design": designs[i],
+                    "slant_range_m": round(slants[i] / 1000.0, 3),
                 }
                 for i in range(len(ids))
             ]

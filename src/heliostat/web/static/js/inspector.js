@@ -49,6 +49,24 @@ function build(container) {
   // -- heliostat: the Heliostat stage's own fields ------------------------
   const helioWrap = document.createElement("div");
 
+  // Phase 3c wave 1 (docs/ui-spec.md 3): "clicking any heliostat in the
+  // workspace offers 'View shape'" -- locks the Heliostat Shape tab's
+  // preview to this exact heliostat rather than its own median-heliostat
+  // default.
+  const viewShapeLink = document.createElement("a");
+  viewShapeLink.href = "#";
+  viewShapeLink.className = "hint";
+  viewShapeLink.style.display = "block";
+  viewShapeLink.style.marginBottom = "8px";
+  viewShapeLink.textContent = "View shape →";
+  viewShapeLink.addEventListener("click", (e) => {
+    e.preventDefault();
+    const sel = store.get("ui.selection");
+    if (sel && sel.kind === "heliostat") store.set("ui.shapeHeliostatId", sel.id);
+    store.set("ui.tab", "shape");
+  });
+  helioWrap.appendChild(viewShapeLink);
+
   const typeSeg = document.createElement("div");
   typeSeg.className = "seg";
   const rectBtn = segButton(typeSeg, "Rectangle", true, () => store.set("doc.design.type", "rect"));

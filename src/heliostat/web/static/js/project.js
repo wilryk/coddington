@@ -6,11 +6,18 @@
 // into this module, and it owns the network/DOM side of the Library
 // drawer, so this file stays free of both.
 import { store, DEFAULT_DOC } from "./store.js";
-import { currentDesignPayload, currentLayoutPayload, currentOpticsParams, getManuscriptField } from "./api.js";
+import {
+  DESIGN_ERROR_KEYS,
+  currentDesignPayload,
+  currentLayoutPayload,
+  currentOpticsParams,
+  errorsFromDesignDocument,
+  getManuscriptField,
+} from "./api.js";
 import { OPTICS_LABELS } from "./fields.js";
 
 const OPTICS_KEYS = OPTICS_LABELS.map(([key]) => key);
-const DESIGN_TYPES = ["rect", "grid"]; // the two this client's UI understands (see applyProject)
+const DESIGN_TYPES = ["rect", "grid", "custom"]; // the three this client's UI understands (see applyProject)
 
 function stripKeys(obj, keys) {
   const out = Object.assign({}, obj);
@@ -99,7 +106,13 @@ export function applyProject(document) {
   // -- validated: now write --------------------------------------------
   store.set("doc.design.type", design.type);
   store.set("doc.design.surface", design.surface || "twisting");
-  const designParams = stripKeys(design, ["type", "surface"]);
+  // The optical-error fields ride flat in the design document (phase 3c);
+  // they belong under doc.design.errors, not in doc.designParams, so strip
+  // them before the params merge. A custom design's document carries its
+  // mirror-expanded vertex list, so it loads with mirror off -- same shape,
+  // just no longer editable as a half-sketch.
+  store.set("doc.design.errors", errorsFromDesignDocument(design));
+  const designParams = stripKeys(design, ["type", "surface"].concat(DESIGN_ERROR_KEYS));
   store.set(`doc.designParams.${design.type}`, Object.assign({}, DEFAULT_DOC.designParams[design.type], designParams));
 
   store.set("doc.optics", receiver.optics);

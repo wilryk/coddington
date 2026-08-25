@@ -26,6 +26,12 @@ const DEFAULT_DOC = {
   design: {
     type: "rect",
     surface: "twisting",
+    // Phase 3c wave 1 (docs/ui-spec.md 3, "Optical errors"): part of the
+    // heliostat design, not a per-trace setting -- feeds Monte Carlo and
+    // rides through SolTrace/SolarPILOT export. The UI keeps the operator's
+    // usual unit (reflectance as a percent); api.js's currentDesignPayload
+    // converts to the wire's 0-1 fraction. Manuscript defaults: 0 / 0 / 90%.
+    errors: { slope_error_mrad: 0, specularity_mrad: 0, reflectance_pct: 90 },
   },
   designParams: {
     rect: { width_mm: 5000, height_mm: 3000 },
@@ -37,6 +43,13 @@ const DEFAULT_DOC = {
       gap_mm: 40,
       cant_focal_mm: null,
     },
+    // Custom outline (docs/ui-spec.md 3): a closed polygon of straight
+    // segments, SolidWorks-sketch style. `vertices_mm` is the SKETCH the
+    // user edits -- the right half of the shape when `mirror` is true (see
+    // api.js's currentDesignPayload/expandCustomVertices for how mirror
+    // symmetry closes it into the wire's full vertex list). Default: a
+    // 5m x 3m rectangle sketched as its own four corners, mirror off.
+    custom: { vertices_mm: [[-2500, -1500], [2500, -1500], [2500, 1500], [-2500, 1500]], mirror: false },
   },
   optics: "axicon",
   opticsParams: {
@@ -101,6 +114,16 @@ const DEFAULT_UI = {
   libraryTab: "receivers", // "designs" | "receivers" | "projects"
   projectName: null,
   dirty: false,
+  // Phase 3c wave 1 (docs/ui-spec.md 1, 3): which full-screen tab is showing
+  // -- "workspace" | "shape" | "analysis" (Analysis stays inert until wave
+  // 2). js/main.js's renderTabs() owns showing/hiding .shell, #runbar and
+  // #tab-shape off this. `shapeHeliostatId` is which heliostat the
+  // Heliostat Shape tab previews (docs/ui-spec.md 3's "the previewed
+  // heliostat is always named") -- null means "no explicit pick yet", so
+  // js/tabs/shape.js falls back to a deterministic median-radius heliostat
+  // from the live field rather than storing a fabricated default here.
+  tab: "workspace",
+  shapeHeliostatId: null,
 };
 
 function createStore() {

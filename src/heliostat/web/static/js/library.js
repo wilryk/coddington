@@ -15,7 +15,17 @@
 // arriving over the network isn't state main.js or any other module needs
 // to react to.
 import { store, DEFAULT_DOC } from "./store.js";
-import { getLibrary, getLibraryEntry, saveLibraryEntry, deleteLibraryEntry, getSetups, getSetup } from "./api.js";
+import {
+  DESIGN_ERROR_KEYS,
+  currentDesignPayload,
+  deleteLibraryEntry,
+  errorsFromDesignDocument,
+  getLibrary,
+  getLibraryEntry,
+  getSetup,
+  getSetups,
+  saveLibraryEntry,
+} from "./api.js";
 import { OPTICS_LABELS } from "./fields.js";
 import { serializeProject, applyProject, convertLegacySetup } from "./project.js";
 
@@ -88,6 +98,10 @@ function designSubtitle(doc) {
   if (doc.type === "grid") {
     return `${doc.n_u}×${doc.n_v} facet grid — ${doc.surface}`;
   }
+  if (doc.type === "custom") {
+    const n = (doc.vertices_mm && doc.vertices_mm.length) || 0;
+    return `custom outline, ${n} vertices — ${doc.surface}`;
+  }
   return `${doc.type} — ${doc.surface}`;
 }
 
@@ -116,13 +130,26 @@ function receiverMatchesCurrent(doc, entryDocument) {
   return true;
 }
 
+// numsClose over nested arrays too -- a custom design's vertices_mm is a
+// list of [u, v] pairs, and phase 3c's error fields make the wire payload
+// (not doc.designParams) the honest thing to compare a saved document
+// against: currentDesignPayload carries reflectance as the same 0-1
+// fraction the document does, and the mirror-expanded vertex list.
+function valuesClose(a, b) {
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((v, i) => valuesClose(v, b[i]));
+  }
+  return numsClose(a, b);
+}
+
 function designMatchesCurrent(doc, entryDocument) {
-  if (entryDocument.type !== doc.design.type) return false;
-  if ((entryDocument.surface || "twisting") !== doc.design.surface) return false;
-  const current = doc.designParams[doc.design.type] || {};
+  const current = currentDesignPayload(doc);
+  if (entryDocument.type !== current.type) return false;
+  if ((entryDocument.surface || "twisting") !== current.surface) return false;
   for (const key of Object.keys(entryDocument)) {
     if (key === "type" || key === "surface") continue;
-    if (!numsClose(current[key], entryDocument[key])) return false;
+    if (!valuesClose(current[key], entryDocument[key])) return false;
   }
   return true;
 }
@@ -211,11 +238,16 @@ function useDesign(name) {
   const d = entry.document;
   const params = Object.assign({}, DEFAULT_DOC.designParams[d.type]);
   for (const key of Object.keys(d)) {
-    if (key === "type" || key === "surface") continue;
+    // The optical-error fields ride flat in the document but live under
+    // doc.design.errors in the store (phase 3c) -- routed there below, not
+    // into designParams, where they'd be stray keys the request builder
+    // then shadows.
+    if (key === "type" || key === "surface" || DESIGN_ERROR_KEYS.indexOf(key) !== -1) continue;
     params[key] = d[key];
   }
   store.set("doc.design.type", d.type);
   store.set("doc.design.surface", d.surface || "twisting");
+  store.set("doc.design.errors", errorsFromDesignDocument(d));
   store.set(`doc.designParams.${d.type}`, params);
 }
 
