@@ -103,7 +103,10 @@ const DEFAULT_DOC = {
 };
 
 const DEFAULT_UI = {
-  expanded: { heliostat: true, field: true, receiver: true, sun: true },
+  // All collapsed on open: the workspace opens on the 3D scene, and an
+  // expanded Field or Receiver stage would immediately swap it for that
+  // stage's own plan or elevation view.
+  expanded: { heliostat: false, field: false, receiver: false, sun: false },
   // "3d" | "plan" | "elevation". Not derived fresh from ui.expanded on
   // read, so a manual "back to 3D" isn't clobbered by an already-expanded
   // stage.
@@ -116,6 +119,10 @@ const DEFAULT_UI = {
   traceBusy: false,
   traceError: null,
   traceResult: null, // last successful trace response, plus derived fields
+  // A field trace's job snapshot while ui.traceBusy (heliostat.web.jobs'
+  // Job.snapshot() -- done/total/detail/eta_s/state) -- null for a
+  // single-heliostat trace, which has no job behind it to poll.
+  traceProgress: null,
   staleResults: false,
   fluxOverlayOpen: false,
   // In-scene selection + miss warnings.

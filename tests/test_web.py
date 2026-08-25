@@ -1703,6 +1703,213 @@ def test_reversed_radius_bounds_are_rejected(client):
     assert "r_max_m" in json.dumps(resp.json())
 
 
+# ---------------------------------------------------------------------------
+# field trace as a background job (/api/field/trace/start|status|cancel|
+# result) -- same job-registry shape as /api/day/*, and the same physics as
+# a synchronous /api/field/trace, so most of these compare the two rather
+# than re-deriving expected numbers. Kept deliberately small (well under
+# MAX_FIELD_HELIOSTATS): the point is the job/cancel/parallel machinery, not
+# giving the tracer real work -- the 643-heliostat default field is not
+# something a test should ever run.
+
+# Keys that legitimately differ between two otherwise-identical traces:
+# flux_png embeds a wall-clock "traced in Xms" caption, and elapsed_ms/
+# timings_ms/workers/state/elapsed_s describe the run itself, not the field.
+_VOLATILE_TRACE_KEYS = {"flux_png", "elapsed_ms", "timings_ms", "workers", "state", "elapsed_s"}
+
+
+def _strip_volatile(payload: dict) -> dict:
+    return {k: v for k, v in payload.items() if k not in _VOLATILE_TRACE_KEYS}
+
+
+def _run_field_trace_job(client, payload):
+    started = client.post("/api/field/trace/start", json=payload)
+    assert started.status_code == 200, started.json()
+    job_id = started.json()["job_id"]
+    status = None
+    for _ in range(600):
+        status = client.get(f"/api/field/trace/status/{job_id}").json()
+        if status["state"] != "running":
+            break
+        time.sleep(0.02)
+    return job_id, status
+
+
+def test_field_trace_job_matches_the_synchronous_endpoint(client):
+    """The job endpoint is the same trace as /api/field/trace, just run in
+    the background -- everything but the volatile timing/caption fields must
+    come back identical."""
+    payload = _field_payload(layout={"type": "fermat", "n": 8}, workers=1)
+    sync = client.post("/api/field/trace", json=payload)
+    assert sync.status_code == 200
+
+    job_id, status = _run_field_trace_job(client, payload)
+    assert status["state"] == "done"
+    assert status["done"] == status["total"] == 8
+
+    result = client.get(f"/api/field/trace/result/{job_id}")
+    assert result.status_code == 200
+    assert _strip_volatile(result.json()) == _strip_volatile(sync.json())
+
+
+def test_field_trace_job_progress_reports_done_out_of_total(client):
+    payload = _field_payload(layout={"type": "fermat", "n": 12}, workers=1)
+    started = client.post("/api/field/trace/start", json=payload)
+    snap = started.json()
+    assert snap["total"] == 12
+    assert snap["done"] == 0
+    job_id, status = _run_field_trace_job(client, payload)
+    assert status["done"] == status["total"] == 12
+
+
+def test_field_trace_result_409s_while_running_and_404s_when_unknown(client):
+    assert client.get("/api/field/trace/status/nosuchjob").status_code == 404
+    assert client.get("/api/field/trace/result/nosuchjob").status_code == 404
+    assert client.post("/api/field/trace/cancel/nosuchjob").status_code == 409
+
+    payload = _field_payload(layout={"type": "fermat", "n": 8}, workers=1)
+    started = client.post("/api/field/trace/start", json=payload)
+    job_id = started.json()["job_id"]
+    # A cancel already accepted (or a job already finished) cannot be
+    # cancelled again -- mirrors /api/day/cancel's own 409.
+    _run_field_trace_job(client, payload)
+    assert client.post(f"/api/field/trace/cancel/{job_id}").status_code == 409
+
+
+def test_field_trace_cancel_stops_before_completion(client, monkeypatch):
+    """Serial path (workers=1): slow each heliostat trace down slightly so
+    the cancel call, issued the moment the job starts, reliably lands before
+    the job would finish on its own -- same technique as
+    test_year_cancel_stops_the_job. This is the cooperative should_cancel
+    check inside _trace_field_heliostats's serial loop, not the pool path
+    below."""
+    original = app_module._trace_core
+
+    def slow_trace_core(*args, **kwargs):
+        time.sleep(0.05)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(app_module, "_trace_core", slow_trace_core)
+
+    payload = _field_payload(layout={"type": "fermat", "n": 30}, workers=1)
+    t0 = time.perf_counter()
+    started = client.post("/api/field/trace/start", json=payload)
+    job_id = started.json()["job_id"]
+    assert client.post(f"/api/field/trace/cancel/{job_id}").status_code == 200
+
+    status = None
+    for _ in range(600):
+        status = client.get(f"/api/field/trace/status/{job_id}").json()
+        if status["state"] != "running":
+            break
+        time.sleep(0.02)
+    elapsed = time.perf_counter() - t0
+
+    assert status["state"] == "cancelled"
+    assert status["done"] < status["total"], "cancel did not stop the trace before it finished"
+    # 30 heliostats at the injected 0.05s each is 1.5s serial; a prompt
+    # cancel should land in a small fraction of that.
+    assert elapsed < 1.0, f"cancel took {elapsed:.2f}s to land"
+
+    assert client.get(f"/api/field/trace/result/{job_id}").status_code == 409
+
+
+def test_field_trace_cancel_stops_promptly_under_a_worker_pool(client):
+    """Parallel path (workers>1): a real, unmocked trace -- monkeypatching
+    _trace_core has no effect inside a worker process, so this proves the
+    ProcessPoolExecutor's own should_cancel poll (in
+    _trace_field_heliostats) actually interrupts a pool mid-run, using
+    monte_carlo (slow enough per heliostat that a field of 30 does not
+    finish before the cancel below can land)."""
+    payload = _field_payload(
+        design=RECT_DESIGN,
+        layout={"type": "fermat", "n": 30},
+        mode="monte_carlo",
+        n_rays=20_000,
+        workers=4,
+    )
+    started = client.post("/api/field/trace/start", json=payload)
+    job_id = started.json()["job_id"]
+
+    # Wait for real progress so the cancel is proven to interrupt a pool
+    # that is actually mid-trace, not just to beat the job to its start.
+    status = None
+    for _ in range(600):
+        status = client.get(f"/api/field/trace/status/{job_id}").json()
+        if status["done"] > 2 or status["state"] != "running":
+            break
+        time.sleep(0.02)
+    assert status["state"] == "running", "field finished before any cancel could be tested"
+
+    t_cancel = time.perf_counter()
+    assert client.post(f"/api/field/trace/cancel/{job_id}").status_code == 200
+    for _ in range(600):
+        status = client.get(f"/api/field/trace/status/{job_id}").json()
+        if status["state"] != "running":
+            break
+        time.sleep(0.02)
+    elapsed = time.perf_counter() - t_cancel
+
+    assert status["state"] == "cancelled"
+    assert status["done"] < status["total"], "cancel did not stop the pool before it finished"
+    assert elapsed < 5.0, f"cancel took {elapsed:.2f}s to land under a worker pool"
+
+
+def test_field_trace_parallel_matches_serial(client):
+    """Determinism: FIELD_MC_SEED is seeded per heliostat id, not by
+    completion order, so a field traced across several worker processes must
+    sum to exactly the same numbers as one traced serially -- monte_carlo
+    is the more demanding case, since it is also seed-sensitive per ray."""
+    payload = _field_payload(
+        design=RECT_DESIGN,
+        layout={"type": "fermat", "n": 10},
+        mode="monte_carlo",
+        n_rays=5_000,
+    )
+    serial = client.post("/api/field/trace", json={**payload, "workers": 1})
+    parallel = client.post("/api/field/trace", json={**payload, "workers": 3})
+    assert serial.status_code == parallel.status_code == 200
+    assert _strip_volatile(serial.json()) == _strip_volatile(parallel.json())
+
+
+def test_field_trace_parallel_matches_serial_via_the_job_endpoint(client):
+    """Same determinism claim, exercised through the actual background-job
+    path a big field goes through (this is the endpoint that defaults to
+    parallel), not just the synchronous one."""
+    payload = _field_payload(layout={"type": "fermat", "n": 8})
+    _job1, status1 = _run_field_trace_job(client, {**payload, "workers": 1})
+    _job2, status2 = _run_field_trace_job(client, {**payload, "workers": 3})
+    assert status1["state"] == status2["state"] == "done"
+    result1 = client.get(f"/api/field/trace/result/{_job1}").json()
+    result2 = client.get(f"/api/field/trace/result/{_job2}").json()
+    assert _strip_volatile(result1) == _strip_volatile(result2)
+
+
+def test_synchronous_field_trace_default_workers_is_serial(client):
+    """/api/field/trace's own behaviour is pinned: with no `workers` in the
+    request it must trace one heliostat at a time, exactly as it always
+    has -- the scripts and tests that already call it synchronously are not
+    signing up for parallelism (or its process-pool startup cost) just
+    because it is now available."""
+    payload = _field_payload(layout={"type": "fermat", "n": 6})
+    default = client.post("/api/field/trace", json=payload)
+    explicit_serial = client.post("/api/field/trace", json={**payload, "workers": 1})
+    assert default.status_code == explicit_serial.status_code == 200
+    assert _strip_volatile(default.json()) == _strip_volatile(explicit_serial.json())
+
+
+def test_default_trace_workers_env_override(monkeypatch):
+    monkeypatch.delenv(app_module.TRACE_WORKERS_ENV, raising=False)
+    monkeypatch.setattr(app_module.os, "cpu_count", lambda: 8)
+    assert app_module._default_trace_workers() == 7
+
+    monkeypatch.setenv(app_module.TRACE_WORKERS_ENV, "3")
+    assert app_module._default_trace_workers() == 3
+
+    monkeypatch.setenv(app_module.TRACE_WORKERS_ENV, "not-a-number")
+    assert app_module._default_trace_workers() == 7
+
+
 # -- saved setups -----------------------------------------------------------
 
 

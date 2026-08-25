@@ -2002,9 +2002,13 @@ def _trace_field_heliostats(
     Serial for ``workers <= 1`` or a field of one heliostat; otherwise a
     :class:`~concurrent.futures.ProcessPoolExecutor` sized to
     ``min(workers, n)``. Per-heliostat seeding (``FIELD_MC_SEED``, the
-    heliostat's own id) does not depend on which worker traced it or when,
-    so the summed result is identical whatever ``workers`` is -- only the
-    wall clock changes.
+    heliostat's own id) does not depend on which worker traced it or when --
+    but summing floats does depend on the order they're added in, and
+    workers finish in whatever order the OS schedules them. So the parallel
+    branch collects every heliostat's own result first and only sums them
+    afterwards, in the same fixed index order the serial branch uses; that
+    is what makes the summed result identical whatever ``workers`` is,
+    bit for bit, not merely close.
 
     ``should_cancel``, checked at least every 0.25 s regardless of how long
     an in-flight heliostat trace takes, raises :class:`_TraceCancelled`
@@ -2091,6 +2095,14 @@ def _trace_field_heliostats(
             reflectance,
         ),
     )
+    # Collected here, keyed by original index, but not summed until every
+    # heliostat is in: workers finish in whatever order the OS schedules
+    # them, and floating-point addition is not associative, so summing as
+    # results arrive would make the result depend on worker count -- not
+    # just slower with one worker, a DIFFERENT number. Summing in a fixed
+    # pass afterwards (below) makes it the identical arithmetic the serial
+    # branch above does, whatever `workers` is.
+    raw_results: list[dict | None] = [None] * n
     try:
         pending = {
             pool.submit(
@@ -2111,7 +2123,7 @@ def _trace_field_heliostats(
             finished, pending = wait(pending, timeout=0.25, return_when=FIRST_COMPLETED)
             for future in finished:
                 i, result = future.result()
-                consume(i, result)
+                raw_results[i] = result
                 completed += 1
                 if on_progress is not None:
                     on_progress(completed)
@@ -2120,6 +2132,9 @@ def _trace_field_heliostats(
         # running in a worker -- those finish on their own and are simply
         # never collected. cancel_futures drops everything still queued.
         pool.shutdown(wait=False, cancel_futures=True)
+
+    for i in range(n):
+        consume(i, raw_results[i])
 
     return {
         "flux": flux,
@@ -3789,9 +3804,9 @@ def create_app():
 
             def on_progress(done: int) -> None:
                 job.done = done
-                job.detail = f"{done} / {n} heliostats traced"
+                job.detail = f"{done} / {n} heliostats"
 
-            job.detail = f"0 / {n} heliostats traced"
+            job.detail = f"0 / {n} heliostats"
             try:
                 traced = _trace_field_heliostats(
                     designs,

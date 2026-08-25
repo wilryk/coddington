@@ -66,6 +66,28 @@ export function postFieldTrace(body, signal) {
   return postJSON("/field/trace", body, signal);
 }
 
+// A whole-field trace on a background job -- same request/response shape as
+// postFieldTrace, but for fields large enough that holding the request open
+// is not acceptable (docs/ui-spec.md 2.5). Same poll contract as the day
+// sweep below: /result 409s while the job is still running, and again if it
+// was cancelled (a field's flux is a sum across every mirror, so a partial
+// one is not a valid answer to hand back).
+export function postFieldTraceStart(body, signal) {
+  return postJSON("/field/trace/start", body, signal);
+}
+
+export function getFieldTraceStatus(jobId) {
+  return getJSON(`/field/trace/status/${encodeURIComponent(jobId)}`);
+}
+
+export function postFieldTraceCancel(jobId) {
+  return postJSON(`/field/trace/cancel/${encodeURIComponent(jobId)}`, {});
+}
+
+export function getFieldTraceResult(jobId) {
+  return getJSON(`/field/trace/result/${encodeURIComponent(jobId)}`);
+}
+
 export async function postFluxCsv(body) {
   const resp = await fetch(API_BASE + "/trace/flux.csv", {
     method: "POST",

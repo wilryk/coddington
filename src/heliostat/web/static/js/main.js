@@ -8,7 +8,10 @@ import {
   createGeometryRequester,
   postGeometry,
   postTrace,
-  postFieldTrace,
+  postFieldTraceStart,
+  getFieldTraceStatus,
+  postFieldTraceCancel,
+  getFieldTraceResult,
   postFluxCsv,
   fetchManuscriptField,
   setManuscriptField,
@@ -341,6 +344,34 @@ function refreshGeometryDebounced() {
 
 // -- run bar: trace ----------------------------------------------------------
 
+// A single-heliostat trace is one request/response, same as always. A field
+// trace runs on a background job instead (heliostat.web.jobs, the same shape
+// tabs/analysis.js's day sweep already polls) -- a field is hundreds of
+// mirrors and, even parallel across cores, minutes of work at the 1000-
+// heliostat cap, which is too long to hold a request open with nothing to
+// show and no way to stop it. `traceJobId`/`tracePollTimer` are module-local
+// (not store state) for the same reason analysis.js's own poll state is:
+// they belong to this network loop, not to anything a re-render should own.
+let traceJobId = null;
+let tracePollTimer = null;
+
+function traceSucceeded(data) {
+  store.set("ui.traceBusy", false);
+  store.set("ui.traceProgress", null);
+  store.set("ui.traceResult", data);
+  store.set("ui.traceTimestamp", Date.now());
+  store.set("ui.staleResults", false);
+  if (data.scene && data.scene.rays) scene.showTraceRays(data.scene.rays);
+  renderAllPanels();
+}
+
+function traceFailed(message) {
+  store.set("ui.traceBusy", false);
+  store.set("ui.traceProgress", null);
+  store.set("ui.traceError", message || "trace failed");
+  renderAllPanels();
+}
+
 function runTrace() {
   if (store.get("ui.traceBusy")) return;
   store.set("ui.traceBusy", true);
@@ -348,21 +379,89 @@ function runTrace() {
   const doc = store.get("doc");
   const ui = store.get("ui");
   const body = buildTraceRequest(doc, ui);
-  const call = doc.field.mode === "field" ? postFieldTrace(body) : postTrace(body);
-  call
-    .then((data) => {
-      store.set("ui.traceBusy", false);
-      store.set("ui.traceResult", data);
-      store.set("ui.traceTimestamp", Date.now());
-      store.set("ui.staleResults", false);
-      if (data.scene && data.scene.rays) scene.showTraceRays(data.scene.rays);
-      renderAllPanels();
+  if (doc.field.mode === "field") {
+    runFieldTraceJob(body);
+    return;
+  }
+  postTrace(body).then(traceSucceeded).catch((err) => traceFailed(err && err.message));
+}
+
+function runFieldTraceJob(body) {
+  if (tracePollTimer) {
+    clearTimeout(tracePollTimer);
+    tracePollTimer = null;
+  }
+  store.set("ui.traceProgress", null);
+  postFieldTraceStart(body)
+    .then((snap) => {
+      traceJobId = snap.job_id;
+      store.set("ui.traceProgress", snap);
+      scheduleTracePoll();
     })
     .catch((err) => {
-      store.set("ui.traceBusy", false);
-      store.set("ui.traceError", (err && err.message) || "trace failed");
-      renderAllPanels();
+      traceJobId = null;
+      traceFailed(err && err.message);
     });
+}
+
+function scheduleTracePoll() {
+  if (tracePollTimer) clearTimeout(tracePollTimer);
+  tracePollTimer = setTimeout(tracePollTick, 500);
+}
+
+function tracePollTick() {
+  tracePollTimer = null;
+  if (!traceJobId) return;
+  const thisJob = traceJobId;
+  getFieldTraceStatus(thisJob)
+    .then((snap) => {
+      if (traceJobId !== thisJob) return; // superseded by a newer run
+      store.set("ui.traceProgress", snap);
+      if (snap.state === "running") {
+        scheduleTracePoll();
+        return;
+      }
+      if (snap.state === "cancelled") {
+        // No partial field to show -- see field_trace_start's own doc: a
+        // field's flux is a sum across every mirror, so half of one is not
+        // a smaller-but-valid answer.
+        traceJobId = null;
+        store.set("ui.traceBusy", false);
+        store.set("ui.traceProgress", null);
+        renderAllPanels();
+        return;
+      }
+      if (snap.state === "error") {
+        traceJobId = null;
+        traceFailed(snap.error || "the field trace failed");
+        return;
+      }
+      getFieldTraceResult(thisJob)
+        .then((data) => {
+          if (traceJobId !== thisJob) return;
+          traceJobId = null;
+          traceSucceeded(data);
+        })
+        .catch((err) => {
+          if (traceJobId !== thisJob) return;
+          traceJobId = null;
+          traceFailed(err && err.message);
+        });
+    })
+    .catch((err) => {
+      if (traceJobId !== thisJob) return;
+      traceJobId = null;
+      traceFailed((err && err.message) || "lost track of the trace");
+    });
+}
+
+function cancelTrace() {
+  if (!traceJobId) return;
+  postFieldTraceCancel(traceJobId).catch(() => {
+    // The poll loop above is the source of truth for whether the job
+    // actually stopped -- a failed cancel call just means it may run to
+    // completion, not that the UI should get stuck saying "cancelling".
+  });
 }
 
 function exportFluxCsv() {
@@ -395,7 +494,12 @@ function closeFluxOverlay() {
   fluxOverlay.hidden = true;
 }
 
-const runActions = { onRunTrace: runTrace, onExportCsv: exportFluxCsv, onOpenFlux: openFluxOverlay };
+const runActions = {
+  onRunTrace: runTrace,
+  onCancelTrace: cancelTrace,
+  onExportCsv: exportFluxCsv,
+  onOpenFlux: openFluxOverlay,
+};
 
 // docs/ui-spec.md 2.1: "a view pill in the corner ... offers 'back to 3D'
 // at all times" -- the owning stage stays expanded (only ui.view resets).

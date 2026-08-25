@@ -36,7 +36,7 @@ from __future__ import annotations
 import numpy as np
 
 from ..geometry.receiver import Receiver
-from ..geometry.secondary import Secondary
+from ..geometry.secondary import AxiconSecondary, CassegrainSecondary, NoSecondary, Secondary
 from ..geometry.shading import _blocked_mask
 from .kernels import RadialKernel, deposit
 from .mc import (
@@ -50,6 +50,118 @@ from .mc import (
 from .samplers import BUIE_LIMB_MRAD, SUPER_GAUSS_ORDER, SUPER_GAUSS_SIGMA_RAD
 
 STANDARD_IRRADIANCE_W_MM2 = 1000.0e-6  # 1000 W/m^2, the trace normalisation
+
+# Skip-test safety cushions (see `_reach_mm`/`_secondary_ring_clears`): both
+# bounds are good estimates of the true footprint, not airtight proofs, so
+# each is required to clear its boundary by more than just zero.
+WINDOW_SAFETY_FACTOR = 1.25  # relative cushion on the receiver-window reach
+WINDOW_MARGIN_FLOOR_MM = 5.0  # absolute floor for a near-zero reach
+SECONDARY_MARGIN_FRAC = 0.01  # relative cushion on the secondary aperture
+SECONDARY_MARGIN_FLOOR_MM = 20.0  # absolute floor for a small aperture
+RING_PROBES = 12  # boundary directions probed per sample for the rim check
+
+#: Test-only escape hatch: forces every sample through the full node raster,
+#: bypassing the skip test below, so a test can compare "skip enabled" against
+#: "skip forced off" on the same geometry. Never set outside a test.
+DISABLE_TRANSMISSION_SKIP = False
+
+
+#: Tail mass fraction treated as negligible when tightening the skip test's
+#: footprint radius below the kernel's own (deliberately generous)
+#: ``support_rad`` -- two orders of magnitude under the ``deposit`` full_pass
+#: threshold of ``1e-9`` (see ``_effective_support_rad``), so even a worst
+#: case where every bit of that tail were clipped cannot flip a skip result.
+SKIP_TAIL_MASS_TOL = 1.0e-11
+
+
+def _effective_support_rad(kernel: RadialKernel, tail_tol: float = SKIP_TAIL_MASS_TOL) -> float:
+    """Angular radius beyond which ``kernel``'s remaining mass is provably
+    below ``tail_tol`` of its total.
+
+    ``kernel.support_rad`` is simply where the tabulated profile ends --
+    for a smooth sunshape that is deep in a negligible tail, and using it
+    directly makes the skip test's footprint bound needlessly wide. This
+    integrates the kernel's own tabulated density (its ``__init__`` already
+    normalises ``2*pi*integral(density*theta, theta) == 1``) to find the
+    smallest radius whose remaining tail mass is negligible even against
+    ``deposit``'s ``1e-9`` full_pass threshold, then uses only that radius
+    for the skip test -- ``deposit`` itself is untouched and keeps using
+    the kernel's full support.
+    """
+    theta = kernel.theta_rad
+    mass = 2.0 * np.pi * kernel.density * theta
+    cum = np.concatenate([[0.0], np.cumsum(0.5 * (mass[1:] + mass[:-1]) * np.diff(theta))])
+    tail = cum[-1] - cum
+    within_tol = tail <= tail_tol * cum[-1]
+    if not np.any(within_tol):
+        return kernel.support_rad
+    return float(theta[np.argmax(within_tol)])
+
+
+def _reach_mm(
+    jac_all: np.ndarray, hess_all: np.ndarray | None, full_stencil: np.ndarray, support_rad: float
+) -> np.ndarray:
+    """Vectorised form of :func:`~heliostat.trace.kernels.deposit`'s own
+    footprint-reach bound, one value per sample: the top singular value of
+    the local Jacobian times the kernel support radius, plus the order-2
+    Hessian correction where one was measured (see ``deposit`` for the
+    derivation of both terms). Samples without a Jacobian get a harmless
+    zero-filled reach; callers gate those out separately.
+    """
+    jac_safe = np.where(np.isnan(jac_all), 0.0, jac_all)
+    jjt = np.einsum("mij,mkj->mik", jac_safe, jac_safe)
+    smax = np.sqrt(np.clip(np.linalg.eigvalsh(jjt)[:, -1], 0.0, None))
+    reach = smax * support_rad
+    if hess_all is not None:
+        hmax = np.zeros(jac_all.shape[0])
+        hmax[full_stencil] = np.abs(hess_all[full_stencil]).max(axis=(1, 2, 3))
+        reach = reach + hmax * support_rad**2
+    return reach
+
+
+def _secondary_ring_clears(
+    pts: np.ndarray,
+    normal: np.ndarray,
+    s: np.ndarray,
+    e1: np.ndarray,
+    e2: np.ndarray,
+    support_rad: float,
+    secondary,
+    margin_mm: float,
+    n_ring: int,
+) -> np.ndarray:
+    """True per sample if every ray at the kernel's angular *boundary*
+    lands on ``secondary`` within its aperture, less ``margin_mm``.
+
+    Reflecting the sun cone's boundary circle (radius ``support_rad`` around
+    ``-s``) off a sample's fixed mirror point and normal is an isometry --
+    it maps onto exactly the boundary circle of the outgoing ray cone
+    around the sample's chief reflected direction, so these probes are
+    exact rays through the real secondary, not a linear extrapolation.
+    Testing only the boundary (not the interior) bounds the whole disk for
+    a surface whose hit-radius has no interior maximum strictly inside the
+    disk -- true for these axisymmetric conics away from grazing
+    incidence; ``margin_mm`` is the cushion against a finite ring count and
+    against that assumption. A probe that misses ``secondary`` outright
+    scores an infinite radius, so it always fails the margin.
+    """
+    m = pts.shape[1]
+    psi = 2.0 * np.pi * np.arange(n_ring) / n_ring
+    au = support_rad * np.cos(psi)
+    av = support_rad * np.sin(psi)
+    d_in = -s[:, None] + au[None, :] * e1[:, None] + av[None, :] * e2[:, None]
+    d_in /= np.linalg.norm(d_in, axis=0, keepdims=True)  # (3, n_ring)
+
+    dots = normal.T @ d_in  # (m, n_ring)
+    d_out = d_in[:, None, :] - 2.0 * dots[None, :, :] * normal[:, :, None]  # (3, m, n_ring)
+    d_out_flat = d_out.reshape(3, m * n_ring).copy()
+    p_flat = np.repeat(pts, n_ring, axis=1)
+
+    hit_pt, _, on_sec = secondary.redirect(p_flat, d_out_flat, {})
+    radial = np.full(m * n_ring, np.inf)
+    radial[on_sec] = np.hypot(hit_pt[0], hit_pt[1])
+    worst = radial.reshape(m, n_ring).max(axis=1)
+    return worst <= (secondary.aperture_radius_mm - margin_mm)
 
 
 def sunshape_kernel(
@@ -320,7 +432,8 @@ def trace_heliostat_cone(
         hess_all[f, :, 0, 1] = mixed.T
         hess_all[f, :, 1, 0] = mixed.T
 
-    # --- angular transmission, measured on a node grid for EVERY sample --
+    # --- angular transmission, measured on a node grid where it can't be
+    # ruled out cheaply -----------------------------------------------------
     # The stencil spans only ~delta_rad and cannot detect a boundary lying
     # elsewhere inside the kernel's ~10 mrad support, so transmission is
     # not detected — it is measured: mask_nodes² node rays per sample, one
@@ -329,6 +442,7 @@ def trace_heliostat_cone(
     # secondary aperture and receiver window on the way out).
     support = kernel.support_rad
     occluders = occluders or []
+    (u0, u1), (v0, v1) = receiver.uv_extent()
     k = mask_nodes
     kk = k * k
     axis_nodes = np.linspace(-support, support, k)
@@ -338,39 +452,95 @@ def trace_heliostat_cone(
     d_in_nodes = -s[:, None] + au.ravel()[None, :] * e1[:, None] + av.ravel()[None, :] * e2[:, None]
     d_in_nodes /= np.linalg.norm(d_in_nodes, axis=0, keepdims=True)  # (3, k²)
 
+    # A sample cannot be clipped if its whole angular footprint provably
+    # misses every boundary that can exist with no occluders and no shadow
+    # body: the secondary aperture and the receiver window. Proven, not
+    # measured, its transmitted fraction is exactly 1.0 and the mask_nodes²
+    # probe below is skipped for it entirely.
+    can_skip = np.zeros(m, dtype=bool)
+    if not occluders and shadow_body is None and not DISABLE_TRANSMISSION_SKIP:
+        skip_support = _effective_support_rad(kernel)
+        with np.errstate(invalid="ignore"):
+            reach = _reach_mm(jac_all, hess_all, full_stencil, skip_support)
+            uv0 = uv[:, 0, :]
+            margin = reach * WINDOW_SAFETY_FACTOR + WINDOW_MARGIN_FLOOR_MM
+            within_window = (
+                chief_ok
+                & can_jac
+                & (uv0[0] - margin >= u0)
+                & (uv0[0] + margin <= u1)
+                & (uv0[1] - margin >= v0)
+                & (uv0[1] + margin <= v1)
+            )
+        if isinstance(secondary, NoSecondary):
+            can_skip = within_window
+        elif isinstance(secondary, (AxiconSecondary, CassegrainSecondary)) and np.any(within_window):
+            cand = np.flatnonzero(within_window)
+            ap_margin = max(
+                SECONDARY_MARGIN_FRAC * secondary.aperture_radius_mm, SECONDARY_MARGIN_FLOOR_MM
+            )
+            ring_ok = _secondary_ring_clears(
+                pts[:, cand],
+                normal[:, cand],
+                s,
+                e1,
+                e2,
+                skip_support,
+                secondary,
+                ap_margin,
+                RING_PROBES,
+            )
+            can_skip[cand] = ring_ok
+        # Any other secondary (a pyramid's flat facets, or a future shape)
+        # has no cheap conservative rim bound derived here, so it keeps the
+        # full raster below.
+
+    counters["transmission_skipped"] = int(can_skip.sum())
+    need = ~can_skip
+    frac = np.ones(m)
     node_ok = np.ones((m, kk), dtype=bool)
-    pts_t = pts.T
-    if occluders or shadow_body is not None:
-        for j in range(kk):
-            toward_sun_j = -d_in_nodes[:, j]
-            if occluders:
-                node_ok[:, j] &= ~_blocked_mask(pts_t, toward_sun_j, occluders)
-            if shadow_body is not None:
-                node_ok[:, j] &= ~shadow_body.occludes(pts_t, toward_sun_j)
+    uv_nodes = np.full((2, m, kk), np.nan)
 
-    # Reflect every node direction at every sample's normal and push the
-    # whole bundle through the optical chain at once. Sample-major layout:
-    # ray index i*k² + j is node j of sample i.
-    dots = normal.T @ d_in_nodes  # (m, k²)
-    d_out_nodes = d_in_nodes[:, None, :] - 2.0 * dots[None, :, :] * normal[:, :, None]
-    d_out_flat = d_out_nodes.reshape(3, m * kk)
-    p_nodes = np.repeat(pts, kk, axis=1)  # (3, m*k²)
-    if occluders:
-        blocked_out = _blocked_mask(p_nodes.T, d_out_flat.T, occluders).reshape(m, kk)
-        node_ok &= ~blocked_out
-    pre_n, d_n, on_n = secondary.redirect(p_nodes, d_out_flat.copy(), {})
-    hit_n, uv_n = receiver.intersect(pre_n, d_n)
-    pass_out = np.zeros(m * kk, dtype=bool)
-    uv_nodes = np.full((2, m * kk), np.nan)
-    surv = np.flatnonzero(on_n)[hit_n]
-    (u0, u1), (v0, v1) = receiver.uv_extent()
-    in_ext = (uv_n[0] >= u0) & (uv_n[0] <= u1) & (uv_n[1] >= v0) & (uv_n[1] <= v1)
-    pass_out[surv[in_ext]] = True
-    uv_nodes[:, surv] = uv_n
-    node_ok &= pass_out.reshape(m, kk)
-    uv_nodes = uv_nodes.reshape(2, m, kk)
+    if np.any(need):
+        idxn = np.flatnonzero(need)
+        pts_n = pts[:, idxn]
+        normal_n = normal[:, idxn]
+        mn = idxn.size
 
-    frac = (node_ok @ w_nodes) / w_sum  # kernel-weighted transmitted fraction
+        node_ok_n = np.ones((mn, kk), dtype=bool)
+        pts_t = pts_n.T
+        if occluders or shadow_body is not None:
+            for j in range(kk):
+                toward_sun_j = -d_in_nodes[:, j]
+                if occluders:
+                    node_ok_n[:, j] &= ~_blocked_mask(pts_t, toward_sun_j, occluders)
+                if shadow_body is not None:
+                    node_ok_n[:, j] &= ~shadow_body.occludes(pts_t, toward_sun_j)
+
+        # Reflect every node direction at every needed sample's normal and
+        # push the whole bundle through the optical chain at once.
+        # Sample-major layout: ray index i*k² + j is node j of sample i.
+        dots = normal_n.T @ d_in_nodes  # (mn, k²)
+        d_out_nodes = d_in_nodes[:, None, :] - 2.0 * dots[None, :, :] * normal_n[:, :, None]
+        d_out_flat = d_out_nodes.reshape(3, mn * kk)
+        p_nodes = np.repeat(pts_n, kk, axis=1)  # (3, mn*k²)
+        if occluders:
+            blocked_out = _blocked_mask(p_nodes.T, d_out_flat.T, occluders).reshape(mn, kk)
+            node_ok_n &= ~blocked_out
+        pre_n, d_n, on_n = secondary.redirect(p_nodes, d_out_flat.copy(), {})
+        hit_n, uv_n = receiver.intersect(pre_n, d_n)
+        pass_out = np.zeros(mn * kk, dtype=bool)
+        uv_nodes_n = np.full((2, mn * kk), np.nan)
+        surv = np.flatnonzero(on_n)[hit_n]
+        in_ext = (uv_n[0] >= u0) & (uv_n[0] <= u1) & (uv_n[1] >= v0) & (uv_n[1] <= v1)
+        pass_out[surv[in_ext]] = True
+        uv_nodes_n[:, surv] = uv_n
+        node_ok_n &= pass_out.reshape(mn, kk)
+        uv_nodes_n = uv_nodes_n.reshape(2, mn, kk)
+
+        frac[idxn] = (node_ok_n @ w_nodes) / w_sum  # kernel-weighted transmitted fraction
+        node_ok[idxn] = node_ok_n
+        uv_nodes[:, idxn] = uv_nodes_n
 
     # --- classify and deposit --------------------------------------------
     cos_aoi = np.abs(normal.T @ s)  # incoming is -s; |normal . s| is cos(aoi)
