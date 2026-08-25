@@ -52,7 +52,9 @@ from __future__ import annotations
 import base64
 import csv
 import datetime as _dt
+import math
 import os
+import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import replace
@@ -67,6 +69,8 @@ import pandas as pd
 
 try:
     from fastapi import FastAPI, HTTPException, Request, Response
+    from fastapi.encoders import jsonable_encoder
+    from fastapi.exceptions import RequestValidationError
     from fastapi.responses import HTMLResponse, JSONResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import (
@@ -335,7 +339,65 @@ CASSEGRAIN_RECEIVER_Z_MM = 7000.0
 # another is the failure mode this design exists to make impossible.
 
 
-class PrimeFocusOptics(BaseModel):
+def _reject_non_finite(value):
+    """Raise if ``value`` (or anything nested in it) is a non-finite float.
+
+    ``gt``/``ge`` alone do not do this: ``inf > 0`` and ``inf >= 0`` are both
+    true, so an unbounded field waves ``Infinity`` through, and a field with
+    no bound at all (``receiver_center_x_mm``) waves both ``Infinity`` and
+    ``NaN`` through. Recurses into lists/tuples so a vertex array or an
+    ``xy_mm`` layout is covered the same as a scalar field.
+    """
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("must be finite (Infinity/-Infinity/NaN are not accepted)")
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _reject_non_finite(item)
+    return value
+
+
+def _json_safe(value):
+    """Recursively swap a non-finite float for a JSON-safe placeholder.
+
+    Only used to render a validation error's own ``input`` back to the
+    caller: Starlette's ``JSONResponse`` encodes with ``allow_nan=False``,
+    so a 422 body that quotes the rejected ``Infinity``/``NaN`` verbatim
+    fails to serialize at all -- the caller would see a confusing generic
+    JSON-encoding error instead of which field was the problem.
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        if value > 0:
+            return "Infinity"
+        if value < 0:
+            return "-Infinity"
+        return "NaN"
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    return value
+
+
+class _StrictModel(BaseModel):
+    """Base for every request/document model in this module.
+
+    JSON's own grammar has no ``Infinity``/``NaN`` literals, but Python's
+    ``json`` module -- and the parser behind FastAPI's request body -- accept
+    them as an extension. Unchecked, one of those reaches the physics as a
+    NaN flux map instead of a 422. A single wildcard validator here covers
+    every field of every model that inherits from it (directly or through
+    another model in this file), so a field gains the same protection
+    whether or not it also carries a ``gt``/``ge`` bound of its own.
+    """
+
+    @field_validator("*", mode="after")
+    @classmethod
+    def _finite_only(cls, value):
+        return _reject_non_finite(value)
+
+
+class PrimeFocusOptics(_StrictModel):
     """Receiver at the field's common focus; no secondary mirror.
 
     ``focus_height_mm``/``window_half_u_mm``/``window_half_v_mm`` describe
@@ -398,7 +460,7 @@ class PrimeFocusOptics(BaseModel):
         return self
 
 
-class AxiconOptics(BaseModel):
+class AxiconOptics(_StrictModel):
     """Conical secondary above the field, flat receiver on the ground below.
 
     Field names match :class:`~heliostat.geometry.secondary.AxiconSecondary`'s
@@ -430,7 +492,7 @@ class AxiconOptics(BaseModel):
         return self
 
 
-class CassegrainOptics(BaseModel):
+class CassegrainOptics(_StrictModel):
     """Hyperboloid relay: adjustable, with the relay solved to match.
 
     The relay used to be fixed, because its vertex radius and conic constant
@@ -544,7 +606,7 @@ def _solve_for(
 # request models
 
 
-class _DesignBase(BaseModel):
+class _DesignBase(_StrictModel):
     """Shared design fields -- in practice, the mirror's optical figure.
 
     **Independent axes, and mixing them up is the easy mistake.**
@@ -700,7 +762,7 @@ DesignParams = Annotated[
 ]
 
 
-class SetupRequest(BaseModel):
+class SetupRequest(_StrictModel):
     """A named snapshot of the GUI's controls.
 
     ``document`` is deliberately unvalidated free-form JSON: it is the
@@ -715,7 +777,7 @@ class SetupRequest(BaseModel):
     document: dict
 
 
-class SunRequest(BaseModel):
+class SunRequest(_StrictModel):
     """A place and a moment, for the sun-position endpoint.
 
     The GUI's own sun controls are azimuth and elevation, because that is
@@ -738,11 +800,11 @@ class SunRequest(BaseModel):
     hour: float = Field(default=12.0, ge=0.0, lt=24.0)
 
 
-class PreviewRequest(BaseModel):
+class PreviewRequest(_StrictModel):
     design: DesignParams
 
 
-class _TraceRequestBase(BaseModel):
+class _TraceRequestBase(_StrictModel):
     """Everything a trace needs except *which mirrors* -- design, fidelity,
     tower, sun. Shared verbatim by the single-heliostat and whole-field
     endpoints so the two cannot drift in what they accept or default to; the
@@ -792,7 +854,7 @@ class TraceRequest(_TraceRequestBase):
 # field layouts
 
 
-class FermatLayout(BaseModel):
+class FermatLayout(_StrictModel):
     """``n`` heliostats on a golden-ratio Fermat spiral.
 
     The same call ``heliostat layout fermat`` makes: no filters, generate's
@@ -908,7 +970,7 @@ class FermatLayout(BaseModel):
         )
 
 
-class PositionsLayout(BaseModel):
+class PositionsLayout(_StrictModel):
     """Explicit heliostat positions, mm, in the tracers' world frame.
 
     The path a loaded field file will arrive on, and the path the GUI's
@@ -942,7 +1004,7 @@ class PositionsLayout(BaseModel):
         return xy
 
 
-class RadialStaggeredLayout(BaseModel):
+class RadialStaggeredLayout(_StrictModel):
     """Concentric rings of heliostats, the classic DELSOL/Campo pattern.
 
     The field is organised into bands: each band has its own heliostat
@@ -1082,7 +1144,7 @@ GeometryFieldLayout = Annotated[
 ]
 
 
-class GeometryRequest(BaseModel):
+class GeometryRequest(_StrictModel):
     """Where a field stands and points -- no trace, no flux.
 
     Everything a trace's phase 1 (:func:`_solve_field`) needs and nothing
@@ -1132,7 +1194,7 @@ class GeometryRequest(BaseModel):
         return v
 
 
-class DaySite(BaseModel):
+class DaySite(_StrictModel):
     """Where and when. The sun angles come from this, per timestep."""
 
     model_config = ConfigDict(extra="forbid")
@@ -1167,7 +1229,7 @@ class DayTraceRequest(_TraceRequestBase):
     heliostat_y_mm: float = -89609.0
 
 
-class YearSite(BaseModel):
+class YearSite(_StrictModel):
     """Where, and which calendar year -- a year estimate has no single
     clock time, so this drops :class:`DaySite`'s ``month``/``day``."""
 
@@ -1223,7 +1285,7 @@ class YearTraceRequest(_TraceRequestBase):
 # same name.
 
 
-class LibrarySaveRequest(BaseModel):
+class LibrarySaveRequest(_StrictModel):
     """A name and a document, for any of the three library collections.
 
     The collection itself comes from the URL, not the body -- one request
@@ -1237,7 +1299,7 @@ class LibrarySaveRequest(BaseModel):
     document: dict
 
 
-class ReceiverDocument(BaseModel):
+class ReceiverDocument(_StrictModel):
     """A tower: which optics layout, and its params.
 
     The shape of one ``receivers`` library entry's document, and of
@@ -1263,7 +1325,7 @@ class ReceiverDocument(BaseModel):
         return self
 
 
-class ProjectField(BaseModel):
+class ProjectField(_StrictModel):
     """Where the mirrors stand, mirroring a trace request's own
     "layout, else a single position" choice (see :class:`DayTraceRequest`)."""
 
@@ -1274,7 +1336,7 @@ class ProjectField(BaseModel):
     heliostat_y_mm: float = -89609.0
 
 
-class ProjectSun(BaseModel):
+class ProjectSun(_StrictModel):
     """A sun direction, and optionally the site/time that produced it.
 
     ``site`` is carried alongside the angles rather than instead of them --
@@ -1291,7 +1353,7 @@ class ProjectSun(BaseModel):
     site: DaySite | None = None
 
 
-class ProjectRun(BaseModel):
+class ProjectRun(_StrictModel):
     """The fidelity a project was (or should be) traced at."""
 
     model_config = ConfigDict(extra="forbid")
@@ -1300,7 +1362,7 @@ class ProjectRun(BaseModel):
     n_rays: int | None = Field(default=None, ge=100, le=2_000_000)
 
 
-class ProjectDocument(BaseModel):
+class ProjectDocument(_StrictModel):
     """A saved project: design + field + receiver + sun + run, bundled as
     the Library's "save my work" unit (docs/ui-spec.md 5).
 
@@ -1325,7 +1387,7 @@ class ProjectDocument(BaseModel):
     runs: list[str] = Field(default_factory=list)
 
 
-class SavedRunDocument(BaseModel):
+class SavedRunDocument(_StrictModel):
     """A finished day sweep or year estimate, persisted so it reopens
     without re-running (docs/ui-spec.md 4).
 
@@ -2949,6 +3011,19 @@ def create_app():
         # forgets to -- a bad request should read as "you asked for
         # something impossible", never as an unhandled 500.
         return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+    @app.exception_handler(RequestValidationError)
+    def _validation_error_body_is_json_safe(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        # FastAPI's own default handler already 422s a RequestValidationError
+        # -- this exists only so the body still renders when the rejected
+        # input was itself Infinity/NaN (see _StrictModel): unsanitized, it
+        # sits in exc.errors()'s "input", and Starlette's JSONResponse
+        # (allow_nan=False) fails to encode it, turning a clean 422 into an
+        # opaque "not JSON compliant" one.
+        detail = _json_safe(jsonable_encoder(exc.errors()))
+        return JSONResponse(status_code=422, content={"detail": detail})
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> HTMLResponse:
