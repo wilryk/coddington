@@ -29,6 +29,15 @@ The tooltip for each mode also states, honestly, what it trades away (Ultra fast
 - The Analysis tab's sweep header notes when a run used estimated occlusion ("shadowing/blocking interpolated between N anchors"), so a published number is never silently approximate.
 - Fast accurate and Monte Carlo keep exact occlusion always — consistent with §A's promise.
 
+## B2. Coefficient-space flux accumulation (experimental prototype, approved 2026-08-25)
+
+Instead of depositing every heliostat's footprint into a shared flux grid ("binning space"), accumulate each heliostat's contribution as coefficients of a smooth basis and evaluate the summed map once at the end — the DELSOL3 approach (Hermite expansion per heliostat, summed in coefficient space). Motivation is doubled by the 2026-08-25 profiling result: per-heliostat deposit cost grows with footprint area (∝ slant range²), which is exactly what made the outer rings 4–8× slower; a coefficient deposit is O(basis terms) regardless of spot size.
+
+- **Prototype compares two bases head-to-head** against the current binning on the default 643-heliostat field: **Hermite–Gauss** (DELSOL precedent; the cone stencil already measures the needed local moments) and **tensor B-splines** (locally supported, so the hard edges survive — receiver-window clipping and blocking penumbras are discontinuities a truncated global series rings at; with real blocking in every field this is why B-splines earn their comparison slot).
+- **Pass/fail gates, judged against Monte Carlo:** total power, peak flux, intercept efficiency — with the clipped-edge cases (window edge, heavy blocking, cylinder seam wrap) as the deciding tests, since that is where our release-night energy-conservation bugs lived.
+- Scope: cone backends only, Ultra Fast first. **Monte Carlo stays binned** — fitting a basis to rays is smoothing, which biases peak flux low in the one mode positioned as the reference.
+- Outcome is a benchmark report + recommendation before any production cutover; the current binned deposit remains until the prototype beats it at the gates.
+
 ## C. Secondary-mirror irradiance and absorbed heat
 
 For layouts with a secondary (axicon, Cassegrain):

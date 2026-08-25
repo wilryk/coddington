@@ -423,12 +423,12 @@
       </div>
       <div class="frow"><label>Specularity (mrad)</label><div class="val">0.0</div></div>
       <div class="frow highlight">
-        <label>Pointing error (mrad)</label>
+        <label>Pointing error (mrad RMS)</label>
         <div class="val">0.0</div>
         <span class="newtag">new</span>
       </div>
       <div class="frow"><label>Reflectance (%)</label><div class="val">90</div></div>
-      <div class="hint">Manuscript baseline unchanged: 0 / 0 / 0 / 90 %. Pointing error folds into cone-mode kernels like slope error; Monte Carlo draws it per heliostat, per instant.</div>
+      <div class="hint">Manuscript baseline unchanged: 0 / 0 / 0 / 90 %. Quoted on the <strong>reflected beam</strong> (resolved §K.1) — no factor-of-two applied. Folds into cone-mode kernels like slope error; Monte Carlo draws it per heliostat, per instant.</div>
 
       <div class="subhead">Measured error map <span class="newtag">new</span></div>
       <div class="measrow">
@@ -489,7 +489,7 @@
 </div></template></div></div>
   <div class="checknote"><strong>Sign-off item:</strong> the glossary wording shown open above (slope error) is the literal draft text from spec §G — specularity and pointing error get matching one-sentence tooltips.</div>
   <div class="checknote">The measured map applies on top of the analytic figure, in Monte Carlo only, and is pre-processed once at import into slope grids — per-ray lookup is a bilinear read, so trace cost is unaffected by map resolution.</div>
-  <div class="checknote"><strong>Open question:</strong> pointing-error convention — is the quoted number the RMS tilt of the mirror normal (doubles on the reflected beam) or the RMS deviation of the reflected beam itself? Flagged in spec §F/§K for sign-off; the label and tooltip will state whichever we pick explicitly.</div>
+  <div class="checknote"><strong>Resolved 2026-08-25 (§K.1):</strong> pointing error is quoted as <strong>reflected-beam RMS</strong> — no factor-of-two on reflection is applied to the user's number. The label and tooltip state it explicitly; a vendor's mirror-normal spec must be doubled before entry.</div>
 
   <h2><span class="num">11</span>Fidelity picker with purpose subtitles</h2>
   <p class="screennote">The run bar's three modes become cards, each with a one-line subtitle describing intent rather than algorithm. Monte Carlo's tooltip is drawn open here to show the honest trade-off wording; Ultra fast carries a footnote disclosing its estimated-occlusion sweep behavior (spec §B, in flight as a bug fix but visible here since it shares this UI).</p>
@@ -653,8 +653,8 @@
         <div class="subhead">Window facing</div>
         <div class="seg"><button>Down (surround)</button><button class="active">Field</button></div>
         <div class="frow"><label>Facing azimuth</label><div class="val">0° (N)</div></div>
-        <div class="frow"><label>Tilt from vertical (°)</label><div class="val">12.5</div></div>
-        <div class="hint">PS10 precedent ≈ 12.5° down from vertical — tilt is a user parameter; the literature ties the optimum to latitude and tower height.</div>
+        <div class="frow"><label>Tilt from vertical (°)</label><div class="val">Auto (optimal) → 12.5</div></div>
+        <div class="hint">Default <strong>Auto (optimal)</strong> (resolved §K.5): the window normal aims at the field's flux-weighted centroid and the computed angle is shown; a manual override studies off-optimal tilts. PS10 as-built ≈ 12.5°.</div>
       </div>
 
       <div class="stage2"><h2>Sun</h2><div style="color: #64748b; font-size: 12px"><strong style="color: #1f2933">Az 165.2° · El 61.4°</strong></div></div>
@@ -749,7 +749,7 @@
 
 </div></template></div></div>
   <div class="checknote">Field span and Window facing both generalize the shipped radial-staggered generator and existing flat-window aiming/deposit — the published parameterization (Lipps &amp; Vant-Hull 1978; Collado &amp; Guallar 2012; SolarPILOT's angular field bound), not a new layout engine.</div>
-  <div class="checknote">Tilt from vertical is a user parameter — PS10 precedent ≈ 12.5°, never hard-coded, since the literature ties the optimum to latitude and tower height.</div>
+  <div class="checknote"><strong>Resolved 2026-08-25 (§K.5):</strong> half-span defaults to ±60°, and receiver tilt defaults to <strong>Auto (optimal)</strong> — computed from the field, displayed, and overridable — since the literature ties the optimum to latitude and tower height (PS10 as-built ≈ 12.5°).</div>
   <div class="checknote">All positions (plan view, inspector) now display and edit in meters at 0.01 m; dimensions — window size, tower height — stay in mm. Acceptance test: a sector field with a flat, tilted window traced end to end — historically the exact combination that failed silently in SolarPILOT for flat receivers.</div>
 
   <h2><span class="num">13</span>Secondary perturbations</h2>
@@ -928,20 +928,20 @@
       <li><strong>Secondary-mirror perturbations</strong> — rigid-body decenter/tip/tilt trace at every fidelity as exact geometry, live in the 3D scene; a measured deformation map layers on top in Monte Carlo only, same convention as the heliostat map (§E2).</li>
       <li><strong>Parametric warp + secondary sag map</strong> (confirmed 2026-08-25) — defocus and astigmatism terms give quick what-ifs without an FEA file, summed with the imported map; a "View sag" for the secondary mirrors the heliostat sag map exactly, with its own FEA export, closing the perturb → view sag → retrace → absorbed-heat loop on one screen (§E2).</li>
     </ul>
-    <h2>Open questions for you</h2>
+    <h2>Open questions — all resolved 2026-08-25</h2>
     <ul class="qs">
-      <li><strong>Pointing-error convention</strong> — mirror-normal tilt vs. reflected-beam RMS (§F/§K.1).</li>
-      <li><strong>Dimension units</strong> — mirror/receiver dimensions stay in mm while positions move to meters (§H/§K.2); confirm that split reads right.</li>
-      <li><strong>Secondary reflectance default</strong> — surface today's assumed throughput value, or set a fresh default (§C/§K.3)?</li>
-      <li><strong>Ultra-fast anchor spacing</strong> — fixed (e.g. every 3rd timestep) or auto-chosen to the error budget (§B/§K.4)?</li>
-      <li><strong>Polar-field defaults</strong> — half-span default (±60°?) and whether the receiver tilt default is vertical (0°) or PS10-like (~12.5°) (§I/§K.5).</li>
+      <li><strong>Pointing-error convention</strong> → <strong>reflected-beam RMS</strong>; the label and tooltip say so (§F/§K.1).</li>
+      <li><strong>Dimension units</strong> → confirmed: mirror/receiver dimensions and sag stay in mm; positions move to meters at 0.01 m (§H/§K.2).</li>
+      <li><strong>Secondary reflectance default</strong> → <strong>0.90</strong>, the value already in use, now a visible input (§C/§K.3).</li>
+      <li><strong>Ultra-fast anchor spacing</strong> → <strong>auto-chosen to the error budget</strong> — dense near sunrise/sunset where occlusion changes fast, sparse at midday (§B/§K.4).</li>
+      <li><strong>Polar-field defaults</strong> → half-span <strong>±60°</strong>; receiver tilt defaults to <strong>Auto (optimal)</strong> with manual override (§I/§K.5).</li>
+      <li><strong>Secondary parametric warp</strong> → in, with the secondary sag map and FEA export — see M13 (§E2/§K.6).</li>
     </ul>
-    <p style="color: var(--muted); font-size: 13px; margin-top: -4px">§K.6 (secondary parametric warp) is resolved — see M13 above — and no longer listed here.</p>
     <h2>Sign-off checklist</h2>
     <ul class="checklist">
       <li>Trace status bar placement and behavior (M8) match how you'd expect it on every tab</li>
       <li>Secondary map, absorbed-heat readout, and FEA export convention (M9) match what your FEA colleagues expect</li>
-      <li>Glossary tooltip wording and the measured-error-map workflow (M10) are right, including the open pointing-error question</li>
+      <li>Glossary tooltip wording and the measured-error-map workflow (M10) are right, with pointing error quoted as reflected-beam RMS</li>
       <li>Fidelity subtitles (M11) read the way you'd explain each mode to a plant engineer</li>
       <li>North/sector field, window facing, tilt-from-vertical default, and the meters display (M12) are right</li>
       <li>Secondary perturbations — decenter/tip/tilt fields, parametric warp, the deformation-map workflow, and the secondary sag map/export (M13) are right</li>
