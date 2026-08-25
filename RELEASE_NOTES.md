@@ -29,9 +29,7 @@ installation of anything else required.
 
 Download `Coddington-Setup-0.1.0.exe` from this release and run it. It
 installs Coddington with a Start Menu shortcut, an optional desktop
-shortcut, and an uninstaller — no other software required. Prefer not to
-install anything? The `.zip` build works the same way: unzip it and
-double-click `Coddington.exe` inside.
+shortcut, and an uninstaller — no other software required.
 
 **About the SmartScreen warning:** this build isn't signed with a paid
 code-signing certificate, so Windows will show *"Windows protected your
@@ -51,9 +49,9 @@ itself.
   the reference tracer. Cylindrical and frustum receivers exist and share
   the same interface, but have no fixture coverage yet — treat their
   results as unconfirmed.
-- **Unsigned build**, Windows and macOS only for this release (see the
-  SmartScreen note above). A Linux build is produced from the same source
-  but is not part of this installer.
+- **Windows only, and unsigned** (see the SmartScreen note above). The app
+  runs on macOS and Linux from source, but no installer is built for them
+  in this release.
 - **Console window is the off switch.** Closing the console window that
   opens alongside your browser stops the app; there's no separate quit
   button yet.

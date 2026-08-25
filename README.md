@@ -18,8 +18,8 @@ console window opens, then your browser — closing the console quits the
 app. Prefer not to install anything? The plain `.zip` build works the same
 way: unzip it and double-click `Coddington.exe` inside.
 
-**On macOS or Linux**, download the build for your platform, unzip, and
-double-click (or run) `Coddington`.
+**On macOS or Linux**, there is no packaged build in this release — install
+from source with `pip install heliostat[web]` and run `heliostat`.
 
 The build is unsigned, so the first launch shows a warning:
 

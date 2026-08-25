@@ -52,7 +52,9 @@ from __future__ import annotations
 import base64
 import csv
 import datetime as _dt
+import os
 import time
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import replace
 from io import BytesIO, StringIO
 from pathlib import Path
@@ -260,6 +262,28 @@ FERMAT_B = 0.55
 #: identical field requests return identical numbers; per-heliostat, so 600
 #: mirrors do not all draw the same sample pattern.
 FIELD_MC_SEED = 20260818
+
+#: Env var overriding the field-trace worker count below. A request's own
+#: ``workers`` field (FieldTraceRequest) takes precedence over this when set.
+TRACE_WORKERS_ENV = "HELIOSTAT_TRACE_WORKERS"
+
+
+def _default_trace_workers() -> int:
+    """``max(1, cpu_count - 1)``: one core left for the UI/server process
+    itself. Measured per-worker cost on the 643-heliostat manuscript field
+    is well under Zemax's own ~2 GB/thread rule of thumb (see the build
+    report), so this default does not try to fit inside a memory budget the
+    way a thread count sized for Zemax would.
+    """
+    override = os.environ.get(TRACE_WORKERS_ENV)
+    if override:
+        try:
+            n = int(override)
+            if n >= 1:
+                return n
+        except ValueError:
+            pass
+    return max(1, (os.cpu_count() or 2) - 1)
 
 #: Vertices in the occluder silhouette, matching
 #: :meth:`heliostat.geometry.shading.MirrorGeometry.from_design`'s own default
@@ -1017,6 +1041,13 @@ class FieldTraceRequest(_TraceRequestBase):
     #: original layout index as their id, so dropping one does not renumber
     #: the rest -- an id in a response means the same mirror across requests.
     exclude_ids: list[int] = Field(default_factory=list)
+    #: Process-pool size for the per-heliostat trace loop (see
+    #: _trace_field_heliostats). ``None`` means "this endpoint's own
+    #: default": 1 (serial, unchanged) for ``/api/field/trace``, and
+    #: ``max(1, cpu_count - 1)`` (see HELIOSTAT_TRACE_WORKERS) for the
+    #: ``/api/field/trace/start`` background job, which is the one meant for
+    #: fields large enough that parallelism matters.
+    workers: int | None = Field(default=None, ge=1, le=256)
 
 
 # ---------------------------------------------------------------------------
@@ -1866,6 +1897,237 @@ def _clean(x) -> float | None:
     trace where nothing landed would otherwise produce a response the
     frontend cannot parse."""
     return None if x is None or not np.isfinite(x) else float(x)
+
+
+# ---------------------------------------------------------------------------
+# Parallel field tracing.
+#
+# Threads do not help here: the cone and Monte Carlo backends are Python/
+# NumPy loops that hold the GIL for their whole run, so a thread pool
+# measured only ~1.7x on 8 cores (owner-measured). A process pool sidesteps
+# the GIL entirely, at the cost of pickling each heliostat's own inputs
+# across the process boundary -- everything a worker needs *per field*
+# (secondary, receiver, mode, sun angles, optical-error scalars) is instead
+# set once per worker via ``_init_field_worker``/``ProcessPoolExecutor``'s
+# own ``initargs``, exactly the pattern ``heliostat.sweep``'s own
+# ``_init_worker`` uses for a CLI sweep's ``multiprocessing.Pool``.
+#
+# Both module-level (not closures), so they pickle under every start
+# method -- including Windows' ``spawn``, which re-imports this module in
+# each worker rather than forking it.
+# ---------------------------------------------------------------------------
+
+_FIELD_WORKER_STATE: dict = {}
+
+
+def _init_field_worker(
+    secondary,
+    receiver: Receiver,
+    mode: TraceMode,
+    solar_az_deg: float,
+    solar_el_deg: float,
+    slope_error_mrad: float,
+    specularity_mrad: float,
+    reflectance: float,
+) -> None:
+    _FIELD_WORKER_STATE.update(
+        secondary=secondary,
+        receiver=receiver,
+        mode=mode,
+        solar_az_deg=solar_az_deg,
+        solar_el_deg=solar_el_deg,
+        slope_error_mrad=slope_error_mrad,
+        specularity_mrad=specularity_mrad,
+        reflectance=reflectance,
+    )
+
+
+def _field_trace_task(task: tuple) -> tuple[int, dict]:
+    """One heliostat's trace, run in a worker process. ``task`` is
+    ``(index, heliostat_id, design, x_mm, y_mm, sol)`` -- the per-heliostat
+    inputs a call to :func:`_trace_core` needs beyond the shared state
+    ``_init_field_worker`` already set. Returns ``(index, result)`` so the
+    caller can place it back at its original position regardless of the
+    order workers finish in.
+    """
+    index, heliostat_id, design, x_mm, y_mm, sol = task
+    st = _FIELD_WORKER_STATE
+    result = _trace_core(
+        design,
+        x_mm,
+        y_mm,
+        sol,
+        st["solar_az_deg"],
+        st["solar_el_deg"],
+        st["secondary"],
+        st["receiver"],
+        st["mode"],
+        mc_seed=np.random.SeedSequence((FIELD_MC_SEED, int(heliostat_id))),
+        mc_return_paths=False,
+        slope_error_mrad=st["slope_error_mrad"],
+        specularity_mrad=st["specularity_mrad"],
+        reflectance=st["reflectance"],
+    )
+    return index, result
+
+
+def _trace_field_heliostats(
+    designs: list[HeliostatDesign | None],
+    xy_mm: np.ndarray,
+    ids: list[int],
+    solutions: list[Solution],
+    eta_shade: np.ndarray,
+    eta_block: np.ndarray,
+    eta_union: np.ndarray,
+    secondary,
+    receiver: Receiver,
+    mode: TraceMode,
+    solar_az_deg: float,
+    solar_el_deg: float,
+    slope_error_mrad: float,
+    specularity_mrad: float,
+    reflectance: float,
+    u_edges: np.ndarray,
+    v_edges: np.ndarray,
+    bin_area_m2: np.ndarray,
+    *,
+    workers: int = 1,
+    should_cancel: Callable[[], bool] | None = None,
+    on_progress: Callable[[int], None] | None = None,
+) -> dict:
+    """One trace per heliostat, summed onto the receiver grid -- the whole
+    field endpoint's "phase 3", shared by the synchronous endpoint and the
+    background job so the two cannot compute it differently.
+
+    Serial for ``workers <= 1`` or a field of one heliostat; otherwise a
+    :class:`~concurrent.futures.ProcessPoolExecutor` sized to
+    ``min(workers, n)``. Per-heliostat seeding (``FIELD_MC_SEED``, the
+    heliostat's own id) does not depend on which worker traced it or when,
+    so the summed result is identical whatever ``workers`` is -- only the
+    wall clock changes.
+
+    ``should_cancel``, checked at least every 0.25 s regardless of how long
+    an in-flight heliostat trace takes, raises :class:`_TraceCancelled`
+    rather than returning a partial sum: a field's flux is a physical total
+    across every mirror, and half of one summed with the other half missing
+    is not a smaller-but-valid answer the way a day sweep's finished
+    timesteps are.
+    """
+    n = xy_mm.shape[0]
+    flux = np.zeros((FLUX_GRID, FLUX_GRID))
+    power_w = 0.0
+    incident_power_w = 0.0 if mode.backend == "cone" else None
+    counters: dict[str, float] = {}
+    rows: list[dict | None] = [None] * n
+
+    def consume(i: int, result: dict) -> None:
+        nonlocal power_w, incident_power_w, flux
+        eta = float(eta_union[i])
+        if result["backend"] == "mc":
+            counts, _, _ = np.histogram2d(
+                result["xy"][1], result["xy"][0], bins=[v_edges, u_edges]
+            )
+            own_power = result["watts_per_ray"] * result["counters"].get("in_window", 0)
+            flux += counts * result["watts_per_ray"] / bin_area_m2 * eta
+        else:
+            own_power = result["power_w"]
+            incident_power_w += result["incident_power_w"] * eta
+            flux += result["flux"] * eta
+        power_w += own_power * eta
+        for k, v in result["counters"].items():
+            counters[k] = counters.get(k, 0) + v
+        rows[i] = {
+            "id": int(ids[i]),
+            "x_mm": float(xy_mm[i, 0]),
+            "y_mm": float(xy_mm[i, 1]),
+            "eta_shade": float(eta_shade[i]),
+            "eta_block": float(eta_block[i]),
+            "eta": eta,
+            "power_w": _clean(own_power * eta),
+        }
+
+    if workers <= 1 or n <= 1:
+        for i in range(n):
+            if should_cancel is not None and should_cancel():
+                raise _TraceCancelled
+            result = _trace_core(
+                designs[i],
+                float(xy_mm[i, 0]),
+                float(xy_mm[i, 1]),
+                solutions[i],
+                solar_az_deg,
+                solar_el_deg,
+                secondary,
+                receiver,
+                mode,
+                mc_seed=np.random.SeedSequence((FIELD_MC_SEED, int(ids[i]))),
+                mc_return_paths=False,
+                slope_error_mrad=slope_error_mrad,
+                specularity_mrad=specularity_mrad,
+                reflectance=reflectance,
+            )
+            consume(i, result)
+            if on_progress is not None:
+                on_progress(i + 1)
+        return {
+            "flux": flux,
+            "power_w": power_w,
+            "incident_power_w": incident_power_w,
+            "counters": counters,
+            "rows": rows,
+        }
+
+    pool = ProcessPoolExecutor(
+        max_workers=min(workers, n),
+        initializer=_init_field_worker,
+        initargs=(
+            secondary,
+            receiver,
+            mode,
+            solar_az_deg,
+            solar_el_deg,
+            slope_error_mrad,
+            specularity_mrad,
+            reflectance,
+        ),
+    )
+    try:
+        pending = {
+            pool.submit(
+                _field_trace_task,
+                (i, int(ids[i]), designs[i], float(xy_mm[i, 0]), float(xy_mm[i, 1]), solutions[i]),
+            )
+            for i in range(n)
+        }
+        completed = 0
+        while pending:
+            if should_cancel is not None and should_cancel():
+                raise _TraceCancelled
+            # A short timeout, not a plain wait for the next result: with a
+            # handful of workers each mid-trace, "next completion" can be
+            # most of a second away, and cancel has to be checked well
+            # before that to land "within a couple of seconds" on a big
+            # field.
+            finished, pending = wait(pending, timeout=0.25, return_when=FIRST_COMPLETED)
+            for future in finished:
+                i, result = future.result()
+                consume(i, result)
+                completed += 1
+                if on_progress is not None:
+                    on_progress(completed)
+    finally:
+        # wait=False: a cancel must not sit blocked on heliostats already
+        # running in a worker -- those finish on their own and are simply
+        # never collected. cancel_futures drops everything still queued.
+        pool.shutdown(wait=False, cancel_futures=True)
+
+    return {
+        "flux": flux,
+        "power_w": power_w,
+        "incident_power_w": incident_power_w,
+        "counters": counters,
+        "rows": rows,
+    }
 
 
 def _zero_power_note(counters: dict, power_w: float | None) -> str | None:
@@ -3308,10 +3570,15 @@ def create_app():
         that heliostat's flux and power, which is the convention
         :mod:`heliostat.sweep` and the run store both use.
 
-        Serial, one heliostat at a time. At n=100 ultra_fast that is a few
-        seconds; making it fast is a separate piece of work, so the response
-        carries ``timings_ms`` (solve, occlusion, trace, scene) to keep the
-        cost measurable rather than anecdotal.
+        One heliostat at a time by default (``workers`` unset or 1) -- this
+        endpoint's behaviour is pinned for the scripts and tests that already
+        call it synchronously. Pass ``workers`` > 1 to trace the field across
+        a process pool instead (see :func:`_trace_field_heliostats`); a big
+        field is better traced through ``/api/field/trace/start``, which
+        parallelises by default and can be polled and cancelled instead of
+        holding this request open for minutes. The response carries
+        ``timings_ms`` (solve, occlusion, trace, scene) either way, to keep
+        the cost measurable rather than anecdotal.
 
         Two honest differences from the single-heliostat endpoint, both
         consequences of summing rather than of different physics:
@@ -3368,64 +3635,42 @@ def create_app():
         )
         t_occlusion = time.perf_counter()
 
-        # -- phase 3: one trace per heliostat, summed on the receiver.
+        # -- phase 3: one trace per heliostat, summed on the receiver. A
+        # field's rays are drawn by the scene's own side trace, so this pass
+        # has no use for MC ray paths -- and 600 heliostats' worth of them is
+        # a lot of array for a picture that will not use it (mc_return_paths
+        # inside _trace_field_heliostats is always False).
         (u0, u1), (v0, v1) = receiver.uv_extent()
         u_edges = np.linspace(u0, u1, FLUX_GRID + 1)
         v_edges = np.linspace(v0, v1, FLUX_GRID + 1)
         bin_area_m2 = receiver.bin_areas_m2((FLUX_GRID, FLUX_GRID))
 
-        flux = np.zeros((FLUX_GRID, FLUX_GRID))
-        power_w = 0.0
-        incident_power_w = 0.0 if mode.backend == "cone" else None
-        counters: dict[str, float] = {}
-        rows = []
-
-        for i in range(n):
-            result = _trace_core(
-                designs[i],
-                float(xy_mm[i, 0]),
-                float(xy_mm[i, 1]),
-                solutions[i],
-                body.solar_az_deg,
-                body.solar_el_deg,
-                secondary,
-                receiver,
-                mode,
-                # A field's rays are drawn by the scene's own side trace, so
-                # the reported trace has no use for paths -- and 600
-                # heliostats' worth of them is a lot of array for a picture
-                # that will not use it.
-                mc_seed=np.random.SeedSequence((FIELD_MC_SEED, int(ids[i]))),
-                mc_return_paths=False,
-                slope_error_mrad=body.design.slope_error_mrad,
-                specularity_mrad=body.design.specularity_mrad,
-                reflectance=body.design.reflectance,
-            )
-            eta = float(eta_union[i])
-            if result["backend"] == "mc":
-                counts, _, _ = np.histogram2d(
-                    result["xy"][1], result["xy"][0], bins=[v_edges, u_edges]
-                )
-                own_power = result["watts_per_ray"] * result["counters"].get("in_window", 0)
-                flux += counts * result["watts_per_ray"] / bin_area_m2 * eta
-            else:
-                own_power = result["power_w"]
-                incident_power_w += result["incident_power_w"] * eta
-                flux += result["flux"] * eta
-            power_w += own_power * eta
-            for k, v in result["counters"].items():
-                counters[k] = counters.get(k, 0) + v
-            rows.append(
-                {
-                    "id": int(ids[i]),
-                    "x_mm": float(xy_mm[i, 0]),
-                    "y_mm": float(xy_mm[i, 1]),
-                    "eta_shade": float(eta_shade[i]),
-                    "eta_block": float(eta_block[i]),
-                    "eta": eta,
-                    "power_w": _clean(own_power * eta),
-                }
-            )
+        traced = _trace_field_heliostats(
+            designs,
+            xy_mm,
+            ids,
+            solutions,
+            eta_shade,
+            eta_block,
+            eta_union,
+            secondary,
+            receiver,
+            mode,
+            body.solar_az_deg,
+            body.solar_el_deg,
+            body.design.slope_error_mrad,
+            body.design.specularity_mrad,
+            body.design.reflectance,
+            u_edges,
+            v_edges,
+            bin_area_m2,
+            workers=body.workers or 1,
+        )
+        flux = traced["flux"]
+        power_w = traced["power_w"]
+        incident_power_w = traced["incident_power_w"]
+        counters = traced["counters"]
+        rows = traced["rows"]
         t_trace = time.perf_counter()
 
         rms_mm, centroid = _cone_metrics(flux, u_edges, v_edges)
@@ -3483,6 +3728,193 @@ def create_app():
                 "scene": scene,
             }
         )
+
+    @app.post("/api/field/trace/start")
+    def field_trace_start(body: FieldTraceRequest) -> JSONResponse:
+        """The same trace as ``/api/field/trace``, run on a background job
+        instead of held open on the request.
+
+        Same shape as ``/api/day/start``: returns a job id immediately,
+        progress is ``done``/``total`` heliostats via
+        ``/api/field/trace/status/{job_id}``, and the finished payload --
+        identical in every key to a synchronous ``/api/field/trace``
+        response -- is collected from ``/api/field/trace/result/{job_id}``
+        (409 while still running, matching the day endpoint).
+
+        Unlike ``/api/field/trace``, ``workers`` here defaults to
+        ``max(1, cpu_count - 1)`` rather than 1 -- this is the endpoint a big
+        field is meant to go through, so it parallelises unless told not to.
+        A cancelled run has no result to fetch: a field's flux is a sum
+        across every mirror, and a sum missing half its terms is not a
+        smaller-but-valid answer worth returning.
+        """
+        if body.solar_el_deg <= 0:
+            raise HTTPException(
+                status_code=422,
+                detail="solar_el_deg must be > 0 (the sun is below the horizon)",
+            )
+        # Phase 1 (solve) runs here, synchronously, exactly as
+        # /api/field/trace runs it -- it is not the cost centre (a plain
+        # scalar loop, not a trace) and a bad layout/optics combination
+        # should 422 immediately rather than only be discovered by polling a
+        # job. Only the parts that actually cost seconds to minutes --
+        # occlusion and the per-heliostat trace -- run inside the job.
+        t0 = time.perf_counter()
+        try:
+            optics_params = resolve_optics_params(body.optics, body.optics_params)
+            xy_mm, ids = _field_positions(body.layout, body.exclude_ids)
+            secondary, receiver = _geometry_for(body.optics, optics_params)
+            solutions, designs, _slants = _solve_field(
+                body.optics, optics_params, body.design, xy_mm, body.solar_az_deg, body.solar_el_deg
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        t_solve = time.perf_counter()
+
+        n = xy_mm.shape[0]
+        mode = body.trace_mode()
+        workers = body.workers or _default_trace_workers()
+
+        def work(job):
+            job.detail = "computing shading and blocking"
+            eta_shade, eta_block, eta_union, outline = _field_occlusion(
+                xy_mm, ids, solutions, designs[0], body.solar_az_deg, body.solar_el_deg
+            )
+            t_occlusion = time.perf_counter()
+
+            (u0, u1), (v0, v1) = receiver.uv_extent()
+            u_edges = np.linspace(u0, u1, FLUX_GRID + 1)
+            v_edges = np.linspace(v0, v1, FLUX_GRID + 1)
+            bin_area_m2 = receiver.bin_areas_m2((FLUX_GRID, FLUX_GRID))
+
+            def on_progress(done: int) -> None:
+                job.done = done
+                job.detail = f"{done} / {n} heliostats traced"
+
+            job.detail = f"0 / {n} heliostats traced"
+            try:
+                traced = _trace_field_heliostats(
+                    designs,
+                    xy_mm,
+                    ids,
+                    solutions,
+                    eta_shade,
+                    eta_block,
+                    eta_union,
+                    secondary,
+                    receiver,
+                    mode,
+                    body.solar_az_deg,
+                    body.solar_el_deg,
+                    body.design.slope_error_mrad,
+                    body.design.specularity_mrad,
+                    body.design.reflectance,
+                    u_edges,
+                    v_edges,
+                    bin_area_m2,
+                    workers=workers,
+                    should_cancel=job.cancelled,
+                    on_progress=on_progress,
+                )
+            except _TraceCancelled:
+                return None
+            t_trace = time.perf_counter()
+
+            flux = traced["flux"]
+            power_w = traced["power_w"]
+            incident_power_w = traced["incident_power_w"]
+            counters = traced["counters"]
+            rows = traced["rows"]
+
+            rms_mm, centroid = _cone_metrics(flux, u_edges, v_edges)
+            elapsed_ms = (t_trace - t0) * 1000.0
+            png_bytes = _render_flux_png(flux, u_edges, v_edges, body.mode, elapsed_ms)
+
+            job.detail = "building scene"
+            scene = build_field_scene(
+                [
+                    {
+                        "id": int(ids[i]),
+                        "x_mm": float(xy_mm[i, 0]),
+                        "y_mm": float(xy_mm[i, 1]),
+                        "rot_az_deg": solutions[i].rot_az_deg,
+                        "rot_el_deg": solutions[i].rot_el_deg,
+                        "c3": solutions[i].c3,
+                        "c4": solutions[i].c4,
+                        "c5": solutions[i].c5,
+                        "design": designs[i],
+                        "eta": float(eta_union[i]),
+                    }
+                    for i in range(n)
+                ],
+                outline,
+                body.solar_az_deg,
+                body.solar_el_deg,
+                secondary,
+                receiver,
+            )
+            t_scene = time.perf_counter()
+
+            return {
+                "power_w": _clean(power_w),
+                "incident_power_w": _clean(incident_power_w),
+                "note": _zero_power_note(counters, _clean(power_w)),
+                "peak_flux_kw_m2": _clean(float(np.max(flux)) / 1000.0),
+                "rms_radius_mm": _clean(rms_mm),
+                "centroid_mm": [_clean(centroid[0]), _clean(centroid[1])],
+                "counters": {k: int(v) for k, v in counters.items()},
+                "elapsed_ms": elapsed_ms,
+                "timings_ms": {
+                    "solve": (t_solve - t0) * 1000.0,
+                    "occlusion": (t_occlusion - t_solve) * 1000.0,
+                    "trace": (t_trace - t_occlusion) * 1000.0,
+                    "scene": (t_scene - t_trace) * 1000.0,
+                },
+                "mode": body.mode,
+                "flux_png": base64.b64encode(png_bytes).decode("ascii"),
+                "n_heliostats": n,
+                "eta_min": _clean(float(np.min(eta_union))),
+                "eta_median": _clean(float(np.median(eta_union))),
+                "eta_max": _clean(float(np.max(eta_union))),
+                "optics_resolved": optics_params.model_dump(),
+                "heliostats": rows,
+                "scene": scene,
+                "workers": workers,
+            }
+
+        job = JOBS.start(n, work, label=f"field trace, {n} heliostats, {workers} workers")
+        return JSONResponse(job.snapshot())
+
+    @app.get("/api/field/trace/status/{job_id}")
+    def field_trace_status(job_id: str) -> JSONResponse:
+        job = JOBS.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"no job {job_id!r}")
+        return JSONResponse(job.snapshot())
+
+    @app.post("/api/field/trace/cancel/{job_id}")
+    def field_trace_cancel(job_id: str) -> JSONResponse:
+        if not JOBS.cancel(job_id):
+            raise HTTPException(status_code=409, detail="that job is not running")
+        return JSONResponse({"cancelled": job_id})
+
+    @app.get("/api/field/trace/result/{job_id}")
+    def field_trace_result(job_id: str) -> JSONResponse:
+        job = JOBS.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"no job {job_id!r}")
+        if job.state == "running":
+            raise HTTPException(status_code=409, detail="still running")
+        if job.state == "error":
+            raise HTTPException(status_code=500, detail=job.error or "the run failed")
+        if job.result is None:
+            # state == "cancelled": see field_trace_start's work() -- a
+            # cancelled field trace has no partial answer worth returning.
+            raise HTTPException(status_code=409, detail="that run was cancelled -- no result to fetch")
+        payload = dict(job.result)
+        payload["state"] = job.state
+        payload["elapsed_s"] = round(job.elapsed_s, 2)
+        return JSONResponse(payload)
 
     @app.post("/api/scene/geometry")
     def scene_geometry(body: GeometryRequest) -> JSONResponse:

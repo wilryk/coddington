@@ -154,11 +154,24 @@ if ($SkipInstaller) {
 }
 
 # ---------------------------------------------------------------------------
-# 5. Summary
+# 5. Portable zip -- the no-installer download.
+
+Write-Step "Packaging the portable zip"
+$zipPath = Join-Path $root "dist\Coddington-$version-windows.zip"
+if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+Compress-Archive -Path (Join-Path $root "dist\Coddington\*") -DestinationPath $zipPath
+Write-Host "    $zipPath"
+
+# ---------------------------------------------------------------------------
+# 6. Summary
 
 Write-Step "Done"
 $exeSize = "{0:N0}" -f ((Get-Item $exePath).Length / 1MB)
-Write-Host "    App:       $exePath ($exeSize MB launcher; dist\Coddington\ is the full folder to zip)"
+Write-Host "    App:       $exePath ($exeSize MB launcher)"
+if (Test-Path $zipPath) {
+    $zipSize = "{0:N0}" -f ((Get-Item $zipPath).Length / 1MB)
+    Write-Host "    Portable:  $zipPath ($zipSize MB)"
+}
 $installer = Join-Path $root "dist\installer\Coddington-Setup-$version.exe"
 if (Test-Path $installer) {
     $instSize = "{0:N0}" -f ((Get-Item $installer).Length / 1MB)
