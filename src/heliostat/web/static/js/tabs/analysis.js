@@ -1329,6 +1329,10 @@ function build(container) {
   yearPlaceholder.textContent = "Run a year estimate to see collection across the year.";
   yearFrame.appendChild(yearImg);
   yearFrame.appendChild(yearPlaceholder);
+  // Hidden until there is a curve to show: an empty plot frame is 250 px of
+  // nothing, and on a short window it pushes the Run button off the bottom
+  // of the tab -- the one control the panel exists for.
+  yearFrame.hidden = true;
   yearPanel.appendChild(yearFrame);
 
   const yearReopenBanner = document.createElement("div");
@@ -1488,6 +1492,7 @@ function build(container) {
     yearStaleChip,
     yearErr,
     yearTotal,
+    yearFrame,
     yearImg,
     yearPlaceholder,
     yearReopenBanner,
@@ -1780,6 +1785,10 @@ function paintYearControls() {
 function paintYearResult() {
   const days = yearResult && yearResult.days;
   const haveResult = !!(days && days.length);
+
+  // The frame only takes up room once it has something in it, or once a run
+  // is under way and about to.
+  els.yearFrame.hidden = !(haveResult || (yearJobSnapshot && yearJobSnapshot.state === "running"));
 
   if (yearResult && yearResult.plot_png) {
     els.yearImg.src = "data:image/png;base64," + yearResult.plot_png;
