@@ -25,7 +25,7 @@ The tooltip for each mode also states, honestly, what it trades away (Ultra fast
 **Gate: the low-elevation occlusion validation (in flight) must first confirm the exact computation is correct; approximation is measured against that trusted reference.**
 
 - **During day sweeps and year estimates**, Ultra fast computes exact per-heliostat shading/blocking factors only at **anchor timesteps** and interpolates the per-heliostat factors for the timesteps in between. Anchor spacing is chosen so interpolation error stays within ~1–2 % where the sun is low and tighter at high sun (error budget agreed 2026-08-25). Single-instant traces from the run bar have nothing to interpolate and stay exact.
-- **Per-instant cost** in Ultra fast additionally drops by coarsening the occlusion mask resolution in that mode only (Fast accurate and Monte Carlo unchanged), bounded by the same error budget.
+- **Per-instant cost** in Ultra fast additionally drops by coarsening the occlusion mask resolution in that mode only (Fast accurate and Monte Carlo unchanged), bounded by the same error budget. **Caution from the 2026-08-25 validation:** the cone kernel's 16-node transmission raster already shows several-percent MC discrepancies in its (non-production) direct-occluder path once 12+ neighbouring penumbras overlap — so any coarsening must be re-validated against MC on dense inner-ring clusters specifically, not just the average heliostat.
 - The Analysis tab's sweep header notes when a run used estimated occlusion ("shadowing/blocking interpolated between N anchors"), so a published number is never silently approximate.
 - Fast accurate and Monte Carlo keep exact occlusion always — consistent with §A's promise.
 
