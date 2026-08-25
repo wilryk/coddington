@@ -102,28 +102,65 @@ def test_resaving_the_identical_name_still_overwrites(library_dir):
     assert load_entry("designs", "My design")["document"] == OTHER_DOC
 
 
-def test_case_collision_is_caught_even_if_both_files_already_coexist(library_dir):
-    """Simulate what only a case-sensitive filesystem (Linux) could ever
-    produce on its own: two files coexisting that differ only by case. The
-    rejection must come from the directory listing in Python, not from the
-    host's own case folding -- so this must catch it on any platform,
-    including the case-insensitive one these files were just written on."""
-    collection_dir = library_dir / "designs"
-    collection_dir.mkdir(parents=True)
-    (collection_dir / "My design.json").write_text(
-        json.dumps({"name": "My design", "saved_at": "a", "document": DESIGN_DOC}),
-        encoding="utf-8",
-    )
-    (collection_dir / "my design.json").write_text(
-        json.dumps({"name": "my design", "saved_at": "b", "document": OTHER_DOC}),
-        encoding="utf-8",
-    )
-    # Both pre-existing entries still load individually.
-    assert load_entry("designs", "My design")["document"] == DESIGN_DOC
-    assert load_entry("designs", "my design")["document"] == OTHER_DOC
-    # A *new* save adding a third colliding spelling is refused.
+class _FakeExisting:
+    """Stand-in for a ``Path`` result from a directory scan -- only
+    ``.stem`` is read by :func:`_find_by_identity`, so a real file is not
+    needed to exercise its selection logic."""
+
+    def __init__(self, stem):
+        self.stem = stem
+
+    def __repr__(self):
+        return f"_FakeExisting({self.stem!r})"
+
+
+class _FakeDir:
+    """Duck-typed stand-in for the directory :func:`_find_by_identity`
+    scans -- lets a test hand it two colliding stems directly, which is the
+    only way to exercise "two entries already collide" at all: on the
+    case-insensitive filesystem this suite runs its other tests on
+    (Windows), writing "My design.json" then "my design.json" for real
+    does not produce two files, it silently overwrites the first -- the
+    very bug this module exists to prevent going forward. This is what
+    "simulate rather than depend on the host" means in practice."""
+
+    def __init__(self, stems):
+        self._stems = stems
+
+    def is_dir(self):
+        return True
+
+    def glob(self, pattern):
+        return (_FakeExisting(s) for s in self._stems)
+
+
+def test_reject_case_collision_does_not_depend_on_host_case_folding():
+    """The collision check is pure string comparison over a supplied stem
+    list -- proof it cannot be relying on the host filesystem to fold
+    names together, since no filesystem is involved here at all."""
+    from heliostat.web.library import _reject_case_collision as reject
+
     with pytest.raises(LibraryError):
-        save_entry("designs", "MY DESIGN", DESIGN_DOC)
+        reject(["My design"], "my design", LibraryError, "design entry")
+    with pytest.raises(LibraryError):
+        reject(["MY DESIGN"], "My Design", LibraryError, "design entry")
+    reject(["My design"], "My design", LibraryError, "design entry")  # same name: no conflict
+    reject(["Other design"], "My design", LibraryError, "design entry")  # unrelated: no conflict
+
+
+def test_find_by_identity_prefers_the_exact_match_when_a_collision_already_exists():
+    """If two on-disk entries already collide by identity (only reachable
+    from data predating this rule), a lookup by either one's *exact* saved
+    name still finds that one, deterministically -- not whichever the
+    directory scan happens to reach first."""
+    from heliostat.web.library import _find_by_identity
+
+    fake_dir = _FakeDir(["My design", "my design"])
+    assert _find_by_identity(fake_dir, "My design").stem == "My design"
+    assert _find_by_identity(fake_dir, "my design").stem == "my design"
+    # A third spelling that only fold-matches is inherently ambiguous
+    # between the two -- it resolves to one of them, not to neither.
+    assert _find_by_identity(fake_dir, "MY DESIGN").stem in {"My design", "my design"}
 
 
 def test_runs_collection_also_enforces_case_uniqueness(library_dir):

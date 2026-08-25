@@ -382,40 +382,48 @@ class FrustumReceiver(Receiver):
             t1 = (-b - sq) / (2.0 * a)
             t2 = (-b + sq) / (2.0 * a)
 
-        def _root(t: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-            """A root is the physical hit only if, AT THE INTERSECTION: it
-            is on the correct nappe (below the apex the mirror cone opens
-            the other way -- the physical wall satisfies
-            ``sign(zc) == sign(m * r)``) and the ray approaches the
-            absorbing exterior, ``d . n_outward < 0``, with the outward
-            normal at ``(x, y, z)`` proportional to ``(x, y, -m**2 * zc)``.
+        # ``c`` (the quadratic's constant term) is F = r^2 - (m*(z-z_apex))^2
+        # evaluated AT THE RAY ORIGIN: positive when the origin sits outside
+        # the infinite double cone's local silhouette, negative when inside
+        # it -- true of most near heliostats under a frustum that only
+        # flares out well above the ground, even though nothing physical
+        # occupies that cone below the finite band. The old code used this
+        # sign to reject such rays outright; a ray from an origin like that
+        # can still validly reach the real (finite) band, so it is used here
+        # only to pick which crossing TYPE is the physical one, never to
+        # reject a ray outright.
+        #
+        # Along any ray, F is a quadratic in t and its derivative at a root
+        # is +-sqrt(disc): unconditionally negative at t1 (F falling through
+        # zero -- an ENTERING crossing) and unconditionally positive at t2
+        # (F rising through zero -- an EXITING crossing), regardless of the
+        # cone's opening direction. A ray that starts outside (F(0) > 0) can
+        # only first meet the surface by entering it -- t1; one that starts
+        # inside (F(0) <= 0, the near-heliostat case) can only first meet it
+        # by exiting -- t2. Either way, the crossing found is on the correct
+        # (outward-facing, absorbing) side of the thin shell by construction,
+        # once combined with the nappe test below.
+        origin_outside = c > 0
 
-            Both are evaluated at the intersection, not the ray's origin.
-            Testing the origin against the *infinite* double cone (the old
-            ``c > 0`` gate) silently rejected a heliostat that stands
-            inside the cone's envelope beyond the finite frustum band --
-            true of any near heliostat under a frustum that only flares
-            out well above the ground.
-            """
+        def _root(t: np.ndarray, needs_origin_outside: bool) -> tuple[np.ndarray, ...]:
             x = px + t * dx
             y = py + t * dy
             zc = pz + t * dz
+            # Correct nappe: below the apex the mirror cone opens the other
+            # way, so the physical wall satisfies sign(zc) == sign(m * r).
             nappe_ok = (zc * m) > 0
-            outward_ok = (dx * x + dy * y - m2 * dz * zc) < 0
-            valid = ok & np.isfinite(t) & (t > 0) & nappe_ok & outward_ok
+            side_ok = origin_outside if needs_origin_outside else ~origin_outside
+            valid = ok & np.isfinite(t) & (t > 0) & nappe_ok & side_ok
             return valid, x, y, zc
 
-        v1, x1, y1, zc1 = _root(t1)
-        v2, x2, y2, zc2 = _root(t2)
-        # The nearer of the two valid roots wins -- a ray can cross one
-        # finite nappe twice (grazing past the wide end); an invalid root
-        # never wins over a valid one regardless of its own t.
-        use1 = v1 & (~v2 | (t1 <= t2))
-        use2 = v2 & ~use1
-        hit = use1 | use2
-        x = np.where(use1, x1, x2)[hit]
-        y = np.where(use1, y1, y2)[hit]
-        zc = np.where(use1, zc1, zc2)[hit]
+        v1, x1, y1, zc1 = _root(t1, needs_origin_outside=True)
+        v2, x2, y2, zc2 = _root(t2, needs_origin_outside=False)
+        # origin_outside partitions every ray between the two branches, so
+        # v1 and v2 never both hold for the same ray -- no tie-break needed.
+        hit = v1 | v2
+        x = np.where(v1, x1, x2)[hit]
+        y = np.where(v1, y1, y2)[hit]
+        zc = np.where(v1, zc1, zc2)[hit]
 
         z_field = zc + z_apex
         # Slant coordinate from the bottom rim; azimuth arc at mean radius,

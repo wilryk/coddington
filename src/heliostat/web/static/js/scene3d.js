@@ -46,6 +46,9 @@ const RECEIVER_FILL = 0xd97b29;
 const RAY_COLOR = 0xff9236;
 const SUN_COLOR = 0xf0b429;
 const GRID_COLOR = 0x6e8296;
+// Heliostat plane above the ground, mm -- the same datum the elevation view
+// dimensions against (js/views/elevation.js).
+const GROUND_OFFSET_MM = 2500;
 // --select (app.css) and --error-border (app.css) -- the same blue/red the
 // sidebar and inspector use for selection and warning/error state, so the
 // 3D view reads as the same language as the 2D chrome around it.
@@ -224,6 +227,11 @@ export function createScene(container, callbacks) {
     const divisions = Math.min(60, Math.max(10, Math.round(extent / 5)));
     const grid = new THREE.GridHelper(extent * 2, divisions, GRID_COLOR, GRID_COLOR);
     grid.rotation.x = Math.PI / 2; // GridHelper is authored in the XZ plane; tip it into world XY (Z-up)
+    // z = 0 is the heliostat PIVOT plane, and a mirror hangs half its height
+    // below that -- a grid drawn there cuts through every heliostat in the
+    // field. The ground is the pivot plane less the ground offset, which is
+    // where it belongs anyway.
+    grid.position.z = -GROUND_OFFSET_MM * MM;
     grid.material.transparent = true;
     grid.material.opacity = 0.12;
     groundGroup.add(grid);
