@@ -1,0 +1,968 @@
+<meta charset="utf-8">
+<title>Coddington v0.2 Mockups</title>
+<style>
+  :root {
+    --bg: #f2f4f7;
+    --panel: #ffffff;
+    --text: #1f2933;
+    --muted: #5b6b7c;
+    --accent: #45739e;
+    --accent-dark: #345a80;
+    --border: #d8dee5;
+    --note-bg: #fdf6e7;
+    --note-border: #e4c96b;
+    --note-text: #6b5310;
+  }
+  :root:not([data-theme="light"]) {
+    /* placeholder so the guard pattern below is complete */
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #161b22;
+      --panel: #1f2630;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --accent: #7ba3c9;
+      --accent-dark: #a8c6e0;
+      --border: #323b47;
+      --note-bg: #2b2515;
+      --note-border: #7a6420;
+      --note-text: #e0c86a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #161b22;
+    --panel: #1f2630;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --accent: #7ba3c9;
+    --accent-dark: #a8c6e0;
+    --border: #323b47;
+    --note-bg: #2b2515;
+    --note-border: #7a6420;
+    --note-text: #e0c86a;
+  }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.55;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 40px 24px 80px 24px; }
+  header.intro { margin-bottom: 8px; }
+  .eyebrow { text-transform: uppercase; letter-spacing: 0.08em; font-size: 12px; font-weight: 600; color: var(--muted); }
+  h1 { font-size: 30px; margin: 6px 0 10px 0; font-weight: 650; letter-spacing: -0.01em; text-wrap: balance; }
+  .lede { color: var(--muted); max-width: 62ch; margin: 0 0 6px 0; }
+  .lede strong { color: var(--text); font-weight: 600; }
+  h2 { font-size: 19px; margin: 56px 0 4px 0; font-weight: 650; letter-spacing: -0.005em; }
+  h2 .num { color: var(--accent); font-variant-numeric: tabular-nums; margin-right: 8px; }
+  .screennote { color: var(--muted); max-width: 72ch; margin: 0 0 14px 0; }
+  .screennote strong { color: var(--text); font-weight: 600; }
+  .stage { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: #f7f8fa; box-shadow: 0 2px 10px rgba(15, 23, 42, 0.06); }
+  .mock { transform-origin: top left; width: 1440px; height: 900px; }
+  .checknote { font-size: 13px; color: var(--note-text); background: var(--note-bg); border: 1px solid var(--note-border); border-radius: 8px; padding: 9px 13px; margin-top: 12px; max-width: 72ch; }
+  .checknote + .checknote { margin-top: 8px; }
+  .checknote strong { font-weight: 650; }
+  section.text { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 24px 28px; margin-top: 56px; }
+  section.text h2 { margin-top: 0; }
+  ul { padding-left: 20px; margin: 10px 0; }
+  li { margin: 6px 0; }
+  li strong { font-weight: 600; }
+  .qs li { margin: 10px 0; }
+  .checklist { list-style: none; padding-left: 0; }
+  .checklist li { display: flex; gap: 10px; align-items: baseline; }
+  .checklist li::before { content: ""; flex: 0 0 13px; height: 13px; border: 1.5px solid var(--muted); border-radius: 3px; transform: translateY(2px); }
+  footer { margin-top: 48px; color: var(--muted); font-size: 13px; }
+  code { background: var(--panel); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; font-size: 0.9em; }
+  .tagpill { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 700; color: var(--accent); border: 1px solid var(--border); border-radius: 20px; padding: 3px 10px; margin-left: 10px; vertical-align: 2px; }
+  /* Compact non-scaled crop used for the M8 tab-independence variant — plain HTML, no shadow DOM, no 1440x900 scaling */
+  .stagesmall { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; max-width: 640px; margin-top: 14px; box-shadow: 0 2px 10px rgba(15, 23, 42, 0.06); }
+  .m8b { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f7f8fa; color: #1f2933; }
+  .m8b .topbar { display: flex; align-items: center; gap: 8px; padding: 0 14px; height: 40px; background: #ffffff; border-bottom: 1px solid #d8dee5; }
+  .m8b .logo { width: 18px; height: 18px; border: 1.3px dashed #45739e; border-radius: 5px; display: flex; align-items: center; justify-content: center; color: #45739e; font-size: 9px; font-weight: 700; flex: 0 0 auto; }
+  .m8b h1 { font-size: 13px; margin: 0; font-weight: 600; }
+  .m8b .tag { color: #64748b; font-size: 10.5px; }
+  .m8b .apptabs { display: flex; gap: 4px; margin-left: 16px; }
+  .m8b .tab { padding: 4px 9px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 5px; font-size: 10.5px; }
+  .m8b .tab.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+  .m8b .tracebar { display: flex; align-items: center; gap: 8px; padding: 6px 14px; background: #eef4fb; border-bottom: 1px solid #c9dbef; font-size: 10.5px; }
+  .m8b .tracetext strong { font-weight: 700; }
+  .m8b .tracecount { color: #345a80; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .m8b .tracetrack { flex: 1 1 auto; height: 5px; background: #ffffff; border: 1px solid #c9dbef; border-radius: 3px; overflow: hidden; }
+  .m8b .tracefill { height: 100%; background: #45739e; }
+  .m8b .traceelapsed { color: #64748b; }
+  .m8b .btn { padding: 4px 8px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 5px; font-size: 10.5px; }
+  .m8b .subjectstrip { padding: 7px 14px; background: #ffffff; color: #64748b; font-size: 10.5px; }
+  .m8b .subjectstrip strong { color: #1f2933; }
+</style>
+<div class="wrap">
+  <header class="intro">
+    <div class="eyebrow">For sign-off · v0.2 additions · draft · Aug 25, 2026</div>
+    <h1>Coddington v0.2 Mockups</h1>
+    <p class="lede"><strong>v0.2 additions</strong> — companion to the Coddington Workspace mockups (M1–M7) and <code>ui-spec-v0.2.md</code>. <strong>DRAFT for sign-off.</strong> Six screens: the trace status bar moving to the top of the screen (M8), secondary-mirror irradiance with FEA-oriented CSV exports (M9), the optical-error glossary tooltips plus pointing error and measured error-map import (M10), a fidelity picker that explains itself in plain language (M11), the polar (sector) field with a tilted vertical receiver window (M12), and rigid-body/deformation perturbations on the secondary mirror (M13).</p>
+    <p class="lede">M12's polar-field research (spec §I) finished on 2026-08-25 — the screen below reflects the final control names and defaults (Field span, Center azimuth, Half-span, Window facing, Tilt from vertical), not a preliminary sketch.</p>
+    <p class="lede">The companion spec is <code>docs/ui-spec-v0.2.md</code> in the repo. Nothing gets built until you approve both this document and that one.</p>
+  </header>
+
+  <h2><span class="num">8</span>Trace status bar, top of screen</h2>
+  <p class="screennote">A slim status bar appears directly under the top bar, full width, the moment any trace starts — <strong>visible on every tab</strong>, not just Workspace. It never covers the tab bar or a control; it replaces the old bottom-corner "tracing…" chip everywhere that chip used to show up.</p>
+  <div class="stage"><div class="mock"><template shadowrootmode="open"><style>
+    :host { display: block; margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 14px; color: #1f2933; background: #f7f8fa; }
+    a { color: #45739e; }
+    .topbar { display: flex; align-items: center; gap: 10px; padding: 0 20px; height: 52px; background: #ffffff; border-bottom: 1px solid #d8dee5; }
+    .topbar h1 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: 0.02em; }
+    .tag { color: #64748b; font-size: 12px; }
+    .apptabs { display: flex; gap: 6px; margin-left: 28px; }
+    .apptabs .tab { padding: 7px 14px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; }
+    .apptabs .tab.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .topbar .right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+    .btn { padding: 7px 12px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; }
+    .btn.primary { background: #45739e; border-color: #345a80; color: #ffffff; font-weight: 600; }
+    .btn.disabled { opacity: 0.5; }
+    .tracebar { display: flex; align-items: center; gap: 14px; padding: 9px 20px; background: #eef4fb; border-bottom: 1px solid #c9dbef; }
+    .tracetext { font-size: 13px; white-space: nowrap; }
+    .tracetext strong { font-weight: 700; }
+    .tracecount { font-size: 12.5px; color: #345a80; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .tracetrack { flex: 1 1 auto; height: 7px; background: #ffffff; border: 1px solid #c9dbef; border-radius: 4px; overflow: hidden; }
+    .tracefill { height: 100%; width: 64%; background: #45739e; }
+    .traceelapsed { font-size: 12px; color: #64748b; white-space: nowrap; }
+    .shell { display: flex; height: 674px; }
+    .sidebar { flex: 0 0 300px; background: #ffffff; border-right: 1px solid #d8dee5; overflow: hidden; display: flex; flex-direction: column; }
+    .stagerow { border-bottom: 1px solid #d8dee5; padding: 12px 16px; }
+    .stagerow h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: #64748b; margin: 0; font-weight: 600; }
+    .summary { color: #64748b; font-size: 12.5px; margin-top: 6px; }
+    .summary strong { color: #1f2933; font-weight: 600; }
+    .viewport { flex: 1 1 auto; position: relative; overflow: hidden; }
+    .chip { position: absolute; left: 14px; bottom: 14px; background: rgba(255,255,255,0.85); border: 1px solid #d8dee5; border-radius: 6px; padding: 5px 10px; font-size: 11.5px; color: #64748b; }
+    .runbar { display: flex; align-items: center; gap: 16px; padding: 12px 20px; background: #ffffff; border-top: 1px solid #d8dee5; height: 86px; }
+    .seg { display: flex; gap: 6px; }
+    .seg button { flex: 0 0 auto; padding: 7px 12px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; }
+    .seg button.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .runnote { color: #64748b; font-size: 12px; margin-left: auto; }
+  </style><div style="width: 1440px; height: 900px; display: flex; flex-direction: column; background: #f7f8fa; overflow: hidden">
+
+  <div class="topbar">
+    <div style="width: 26px; height: 26px; border: 1.5px dashed #45739e; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: #45739e; font-size: 11px; font-weight: 700">C</div>
+    <h1>Coddington</h1>
+    <span class="tag">Manuscript baseline — axicon</span>
+    <div class="apptabs">
+      <div class="tab active">Workspace</div>
+      <div class="tab">Heliostat Shape</div>
+      <div class="tab">Analysis</div>
+    </div>
+    <div class="right">
+      <div class="btn">Library</div>
+      <span class="tag">Unsaved changes</span>
+    </div>
+  </div>
+
+  <div class="tracebar">
+    <svg width="15" height="15" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.5" fill="none" stroke="#c9dbef" stroke-width="2.4"></circle><path d="M8 1.5 A6.5 6.5 0 0 1 14.5 8" fill="none" stroke="#45739e" stroke-width="2.4" stroke-linecap="round"></path></svg>
+    <div class="tracetext"><strong>Tracing field</strong> — ultra fast</div>
+    <div class="tracecount">412 / 643 heliostats</div>
+    <div class="tracetrack"><div class="tracefill"></div></div>
+    <div class="traceelapsed">39 s elapsed</div>
+    <div class="btn">Cancel</div>
+  </div>
+
+  <div class="shell">
+    <div class="sidebar">
+      <div class="stagerow"><h2>Heliostat</h2><div class="summary"><strong>Manuscript 5 × 3 m</strong> — rectangle, twisting figure</div></div>
+      <div class="stagerow"><h2>Field</h2><div class="summary"><strong>Radial staggered · 643</strong> — 30 m to 90 m</div></div>
+      <div class="stagerow"><h2>Receiver &amp; Tower</h2><div class="summary"><strong>Axicon 27 m / 20° / 14 m</strong> — receiver at 7 m</div></div>
+      <div class="stagerow"><h2>Sun</h2><div class="summary"><strong>Az 165.2° · El 61.4°</strong> — Mar 21 12:30</div></div>
+    </div>
+    <div class="viewport">
+      <svg viewBox="0 0 1140 674" width="100%" height="100%" preserveAspectRatio="xMidYMid slice">
+        <defs><linearGradient id="skyv8" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f4f7fb"></stop><stop offset="1" stop-color="#dbe4ee"></stop></linearGradient></defs>
+        <rect width="1140" height="674" fill="url(#skyv8)"></rect>
+        <line x1="570" y1="580" x2="570" y2="260" stroke="#7b8794" stroke-width="5"></line>
+        <path d="M570 262 L468 150 L672 150 Z" fill="rgba(126,158,196,0.28)" stroke="rgba(52,90,128,0.5)" stroke-width="1.5"></path>
+        <ellipse cx="570" cy="150" rx="110" ry="19" fill="rgba(126,158,196,0.16)" stroke="rgba(52,90,128,0.5)" stroke-width="1.5"></ellipse>
+        <text x="570" y="630" text-anchor="middle" font-size="12.5" fill="#94a3b8">3D viewport — geometry live as always; only the status chrome above is new</text>
+      </svg>
+      <div class="chip">643 heliostats · viewport unaffected by the trace running above</div>
+    </div>
+  </div>
+
+  <div class="runbar">
+    <div class="seg"><button class="active">Ultra fast</button><button>Fast accurate</button><button>Monte Carlo</button></div>
+    <div class="btn disabled">Tracing…</div>
+    <div class="runnote">Results below refresh automatically when the trace above finishes</div>
+  </div>
+
+</div></template></div></div>
+  <div class="checknote"><strong>New:</strong> full-width status bar under the top bar — heliostats done / total, elapsed time, and Cancel. Visible while a trace runs on <strong>any</strong> tab; it never overlaps the tabs or the fidelity/run controls beneath it.</div>
+
+  <p class="screennote" style="margin-top: 22px"><strong>Same bar, Analysis tab</strong> — shown here at a smaller crop to make the point plainly: it's chrome that belongs to the trace, not to the Workspace screen.</p>
+  <div class="stagesmall"><div class="m8b">
+    <div class="topbar">
+      <div class="logo">C</div>
+      <h1>Coddington</h1>
+      <span class="tag">Manuscript baseline — axicon</span>
+      <div class="apptabs"><div class="tab">Workspace</div><div class="tab">Heliostat Shape</div><div class="tab active">Analysis</div></div>
+    </div>
+    <div class="tracebar">
+      <div class="tracetext"><strong>Tracing field</strong> — ultra fast</div>
+      <div class="tracecount">412 / 643</div>
+      <div class="tracetrack"><div class="tracefill" style="width: 64%"></div></div>
+      <div class="traceelapsed">39 s</div>
+      <div class="btn">Cancel</div>
+    </div>
+    <div class="subjectstrip">Analyzing the current project: <strong>Axicon 27 m / 20° / 14 m</strong> · <strong>643 heliostats</strong> (Radial staggered 30–90 m)</div>
+  </div></div>
+  <div class="checknote"><strong>Tab-independent:</strong> the same bar, same fields, same Cancel — it tracks the trace, not the screen you happen to be looking at.</div>
+
+  <h2><span class="num">9</span>Analysis — secondary irradiance &amp; FEA exports</h2>
+  <p class="screennote">For layouts with a secondary (axicon shown), the timestep irradiance panel gains a <strong>Receiver / Secondary</strong> selector. The secondary map shows incident flux in the same colormap and units as the receiver map; beside it, a readout reports absorbed heat. A regular grid CSV — the FEA-oriented convention used everywhere a map exists — exports underneath.</p>
+  <div class="stage"><div class="mock"><template shadowrootmode="open"><style>
+    :host { display: block; margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 14px; color: #1f2933; background: #f7f8fa; }
+    a { color: #45739e; }
+    .topbar { display: flex; align-items: center; gap: 10px; padding: 0 20px; height: 52px; background: #ffffff; border-bottom: 1px solid #d8dee5; }
+    .topbar h1 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: 0.02em; }
+    .tag { color: #64748b; font-size: 12px; }
+    .apptabs { display: flex; gap: 6px; margin-left: 28px; }
+    .apptabs .tab { padding: 7px 14px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; }
+    .apptabs .tab.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .topbar .right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+    .btn { padding: 7px 12px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; }
+    .btn.primary { background: #45739e; border-color: #345a80; color: #ffffff; font-weight: 600; }
+    .subject { display: flex; align-items: center; gap: 8px; padding: 10px 20px; background: #ffffff; border-bottom: 1px solid #d8dee5; color: #64748b; font-size: 12.5px; }
+    .subject strong { color: #1f2933; font-weight: 600; }
+    .content { display: flex; gap: 18px; padding: 18px 20px; height: 706px; }
+    .panel { background: #ffffff; border: 1px solid #d8dee5; border-radius: 10px; padding: 16px 18px; }
+    .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: #64748b; margin: 0; font-weight: 600; }
+    .left { flex: 1 1 auto; display: flex; flex-direction: column; gap: 18px; }
+    .right { flex: 0 0 320px; display: flex; flex-direction: column; gap: 18px; }
+    .maphead { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+    .surfaceseg { display: flex; gap: 6px; margin-left: auto; }
+    .surfaceseg button { padding: 6px 12px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12px; }
+    .surfaceseg button.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .newtag { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: #0b5fd0; font-weight: 700; }
+    .mapbody { display: flex; gap: 18px; }
+    .frame { flex: 1 1 auto; border: 1px solid #d8dee5; border-radius: 8px; background: #ffffff; overflow: hidden; }
+    .readout { flex: 0 0 250px; border: 1px solid #d8dee5; border-radius: 8px; padding: 14px; background: #fbfcfd; }
+    .readout h3 { margin: 0 0 10px 0; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; font-weight: 600; }
+    .rmetric { display: flex; justify-content: space-between; align-items: baseline; padding: 7px 0; border-bottom: 1px solid #eef1f4; }
+    .rmetric:last-of-type { border-bottom: none; }
+    .rmetric .rnum { font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; }
+    .rmetric .rlbl { font-size: 11.5px; color: #64748b; text-align: right; }
+    .rformula { margin-top: 10px; padding-top: 10px; border-top: 1px dashed #d8dee5; font-size: 11px; color: #64748b; font-family: ui-monospace, Consolas, monospace; }
+    .exportrow { display: flex; align-items: center; gap: 12px; margin-top: 14px; }
+    .exporthint { color: #64748b; font-size: 11.5px; }
+    table { border-collapse: collapse; width: 100%; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+    th { text-align: right; color: #64748b; font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; padding: 6px 10px; border-bottom: 1px solid #d8dee5; }
+    th:first-child, td:first-child { text-align: left; }
+    td { text-align: right; padding: 6px 10px; border-bottom: 1px solid #eef1f4; }
+    tr.sel td { background: #f2f7fd; box-shadow: inset 3px 0 0 #0b5fd0; }
+  </style><div style="width: 1440px; height: 900px; display: flex; flex-direction: column; background: #f7f8fa; overflow: hidden">
+
+  <div class="topbar">
+    <div style="width: 26px; height: 26px; border: 1.5px dashed #45739e; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: #45739e; font-size: 11px; font-weight: 700">C</div>
+    <h1>Coddington</h1>
+    <span class="tag">Manuscript baseline — axicon</span>
+    <div class="apptabs"><div class="tab">Workspace</div><div class="tab">Heliostat Shape</div><div class="tab active">Analysis</div></div>
+    <div class="right"><div class="btn">Library</div><span class="tag">Saved</span></div>
+  </div>
+
+  <div class="subject">
+    Analyzing the current project:
+    <strong>Axicon 27 m / 20° / 14 m, secondary reflectance 90 %</strong> · <strong>643 heliostats</strong>
+    <a style="margin-left: auto; font-size: 12px">change in Workspace →</a>
+  </div>
+
+  <div class="content">
+    <div class="left">
+      <div class="panel" style="flex: 1 1 auto; display: flex; flex-direction: column">
+        <div class="maphead">
+          <h2 style="margin: 0">Irradiance map — 12:30 solar</h2>
+          <span class="newtag">new</span>
+          <div class="surfaceseg"><button>Receiver</button><button class="active">Secondary</button></div>
+        </div>
+        <div class="mapbody" style="flex: 1 1 auto">
+          <div class="frame">
+            <svg viewBox="0 0 460 320" width="100%" height="100%">
+              <defs>
+                <radialGradient id="magma9" cx="0.5" cy="0.48" r="0.75">
+                  <stop offset="0" stop-color="#fcfdbf"></stop>
+                  <stop offset="0.28" stop-color="#fe9f6d"></stop>
+                  <stop offset="0.52" stop-color="#de4968"></stop>
+                  <stop offset="0.74" stop-color="#8c2981"></stop>
+                  <stop offset="0.9" stop-color="#3b0f70"></stop>
+                  <stop offset="1" stop-color="#000004"></stop>
+                </radialGradient>
+              </defs>
+              <rect x="34" y="24" width="380" height="272" fill="url(#magma9)"></rect>
+              <rect x="34" y="24" width="380" height="272" fill="none" stroke="#33455c" stroke-width="1"></rect>
+              <rect x="418" y="24" width="14" height="272" fill="url(#magma9)" stroke="#33455c" stroke-width="0.8"></rect>
+              <text x="435" y="32" font-size="9.5" fill="#64748b">380</text>
+              <text x="435" y="300" font-size="9.5" fill="#64748b">0</text>
+              <text x="224" y="313" text-anchor="middle" font-size="10.5" fill="#64748b">incident flux on secondary, kW/m² · same colormap &amp; units as the receiver map</text>
+            </svg>
+          </div>
+          <div class="readout">
+            <h3>Secondary readout</h3>
+            <div class="rmetric"><div class="rlbl">incident</div><div class="rnum">21.4 MW</div></div>
+            <div class="rmetric"><div class="rlbl">absorbed (R = 90.0 %)</div><div class="rnum">2.14 MW</div></div>
+            <div class="rmetric"><div class="rlbl">peak absorbed</div><div class="rnum">38 kW/m²</div></div>
+            <div class="rformula">absorbed = (1 − R) × incident</div>
+          </div>
+        </div>
+        <div class="exportrow">
+          <div class="btn primary">Export CSV for FEA</div>
+          <span class="exporthint">x, y, flux (secondary adds an absorbed column) · meters / W·m⁻² · targets ANSYS External Data</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="right">
+      <div class="panel" style="flex: 1 1 auto; overflow: hidden">
+        <h2 style="margin-bottom: 12px">Timesteps</h2>
+        <table>
+          <thead><tr><th>Solar</th><th>El (°)</th><th>DNI</th><th>MW</th></tr></thead>
+          <tbody>
+            <tr><td>11:30</td><td>58.9</td><td>912</td><td>11.3</td></tr>
+            <tr><td>12:00</td><td>61.2</td><td>917</td><td>11.6</td></tr>
+            <tr class="sel"><td>12:30</td><td>61.4</td><td>918</td><td>11.6</td></tr>
+            <tr><td>13:00</td><td>60.1</td><td>915</td><td>11.4</td></tr>
+            <tr><td>13:30</td><td>57.4</td><td>909</td><td>11.1</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="panel">
+        <h2 style="margin-bottom: 8px">Receiver &amp; Tower</h2>
+        <div style="font-size: 12.5px; color: #64748b">Secondary reflectance <strong style="color: #1f2933">90 %</strong> — now a visible input here (was buried in throughput)</div>
+      </div>
+    </div>
+  </div>
+
+</div></template></div></div>
+  <div class="checknote"><strong>New:</strong> the Receiver / Secondary selector only appears when the current layout has a secondary (axicon, Cassegrain) — prime-focus layouts never show it.</div>
+  <div class="checknote">Absorbed = (1 − R) × incident, computed live; R (secondary reflectance) is now an explicit, visible field in Receiver &amp; Tower rather than an assumed constant.</div>
+  <div class="checknote">Export is the same regular x, y, flux grid convention used everywhere a map exists (§D) — comma-separated, units stated in commented header lines, targeting ANSYS External Data import.</div>
+
+  <h2><span class="num">10</span>Heliostat Shape — error glossary, pointing error, measured error map</h2>
+  <p class="screennote">The optical-errors section gains a fourth input, <strong>pointing error</strong>, and hover tooltips form a small glossary — drawn open here on slope error to show the exact wording for sign-off. Below, a measured (FEA) error map can be imported and applies in Monte Carlo only; the sag map gains its own FEA export.</p>
+  <div class="stage"><div class="mock"><template shadowrootmode="open"><style>
+    :host { display: block; margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 14px; color: #1f2933; background: #f7f8fa; }
+    a { color: #45739e; }
+    .topbar { display: flex; align-items: center; gap: 10px; padding: 0 20px; height: 52px; background: #ffffff; border-bottom: 1px solid #d8dee5; }
+    .topbar h1 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: 0.02em; }
+    .tag { color: #64748b; font-size: 12px; }
+    .apptabs { display: flex; gap: 6px; margin-left: 28px; }
+    .apptabs .tab { padding: 7px 14px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; }
+    .apptabs .tab.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .topbar .right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+    .btn { padding: 7px 12px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; }
+    .btn.primary { background: #45739e; border-color: #345a80; color: #ffffff; font-weight: 600; }
+    .editbar { display: flex; align-items: center; gap: 12px; padding: 10px 20px; background: #ffffff; border-bottom: 1px solid #d8dee5; }
+    .editbar .name { font-size: 13.5px; font-weight: 600; }
+    .content { display: flex; gap: 18px; padding: 18px 20px 60px 20px; height: 640px; }
+    .panel { background: #ffffff; border: 1px solid #d8dee5; border-radius: 10px; padding: 16px 18px; }
+    .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: #64748b; margin: 0 0 12px 0; font-weight: 600; }
+    .controls { flex: 0 0 360px; position: relative; }
+    .summary { color: #64748b; font-size: 12.5px; }
+    .summary strong { color: #1f2933; font-weight: 600; }
+    .subhead { color: #64748b; font-size: 12.5px; margin: 16px 0 6px 0; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+    .frow { display: flex; align-items: center; gap: 10px; margin-bottom: 9px; position: relative; }
+    .frow label { flex: 0 0 148px; color: #64748b; font-size: 12.5px; }
+    .frow .val { flex: 1 1 auto; padding: 5px 8px; border: 1px solid #d8dee5; border-radius: 5px; background: #ffffff; font-size: 13px; font-variant-numeric: tabular-nums; }
+    .frow.highlight { background: #fdf3e7; margin: 0 -8px 9px -8px; padding: 5px 8px; border-radius: 6px; }
+    .frow.highlight .val { border-color: #d97b29; }
+    .newtag { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.05em; color: #8a4d12; font-weight: 700; flex: 0 0 auto; }
+    .glosstip { position: absolute; bottom: calc(100% + 12px); left: 0; width: 280px; background: #ffffff; border: 1px solid #d8dee5; border-radius: 8px; box-shadow: 0 8px 22px rgba(31,41,51,0.16); padding: 11px 13px; font-size: 11.5px; color: #334455; line-height: 1.5; z-index: 5; }
+    .glosstip strong { display: block; font-size: 12px; color: #1f2933; margin-bottom: 4px; }
+    .glosstip::after { content: ""; position: absolute; top: 100%; left: 24px; border: 7px solid transparent; border-top-color: #ffffff; }
+    .glosstip::before { content: ""; position: absolute; top: 100%; left: 23px; border: 8px solid transparent; border-top-color: #d8dee5; }
+    .measrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .loadedchip { display: flex; align-items: center; gap: 8px; background: #f2f7fd; border: 1px solid #bcd6f2; color: #1f2933; border-radius: 6px; padding: 6px 10px; font-size: 11.5px; }
+    .mcbadge { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.04em; color: #0b5fd0; font-weight: 700; border: 1px solid #bcd6f2; border-radius: 4px; padding: 1px 5px; }
+    .removex { color: #8a2c22; cursor: pointer; font-size: 13px; margin-left: 2px; }
+    .hint { color: #64748b; font-size: 11.5px; margin-top: 4px; }
+    .previews { flex: 1 1 auto; display: flex; gap: 18px; }
+    .previews .panel { flex: 1 1 50%; display: flex; flex-direction: column; }
+    .frame { flex: 1 1 auto; border: 1px solid #d8dee5; border-radius: 8px; background: #ffffff; position: relative; overflow: hidden; }
+    .caption { color: #64748b; font-size: 11.5px; margin-top: 8px; }
+    .cornerbtn { position: absolute; right: 10px; bottom: 10px; background: #ffffff; border: 1px solid #d8dee5; border-radius: 6px; padding: 6px 11px; font-size: 11.5px; box-shadow: 0 2px 8px rgba(15,23,42,0.12); font-weight: 600; color: #1f2933; }
+    .mcflag { position: absolute; left: 10px; top: 10px; background: rgba(11,95,208,0.92); color: #ffffff; border-radius: 5px; padding: 3px 8px; font-size: 10px; font-weight: 700; letter-spacing: 0.03em; }
+  </style><div style="width: 1440px; height: 900px; display: flex; flex-direction: column; background: #f7f8fa; overflow: hidden">
+
+  <div class="topbar">
+    <div style="width: 26px; height: 26px; border: 1.5px dashed #45739e; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: #45739e; font-size: 11px; font-weight: 700">C</div>
+    <h1>Coddington</h1>
+    <span class="tag">Manuscript baseline — axicon</span>
+    <div class="apptabs"><div class="tab">Workspace</div><div class="tab active">Heliostat Shape</div><div class="tab">Analysis</div></div>
+    <div class="right"><div class="btn">Library</div><span class="tag">Unsaved changes</span></div>
+  </div>
+
+  <div class="editbar">
+    <span class="name">Editing: Faceted 5 × 4 grid</span>
+    <span style="color: #64748b; font-size: 12px">previewing on <strong style="color: #1f2933">H-214</strong> · r 45.2 m</span>
+    <div style="margin-left: auto; display: flex; gap: 8px">
+      <div class="btn">Save to library as…</div>
+      <div class="btn primary">Done — back to workspace</div>
+    </div>
+  </div>
+
+  <div class="content">
+    <div class="panel controls">
+      <h2>Design</h2>
+      <div class="summary"><strong>Facet grid 5 × 4</strong>, 1 180 × 730 mm facets · twisting figure · canting auto (slant range)</div>
+
+      <div class="subhead">Optical errors <span class="newtag" style="text-transform: none; letter-spacing: 0; font-size: 10.5px">hover any field for its glossary tooltip</span></div>
+
+      <div class="frow">
+        <label>Slope error (mrad)</label>
+        <div class="val">0.0</div>
+        <div class="glosstip">
+          <strong>Slope error</strong>
+          Large-scale waviness of the mirror surface: the local surface normal deviates from the design surface by this RMS angle. Broadens the beam (doubled on reflection). Not pointing error (that's the tracker, §F) and not canting error (that's facet aiming).
+        </div>
+      </div>
+      <div class="frow"><label>Specularity (mrad)</label><div class="val">0.0</div></div>
+      <div class="frow highlight">
+        <label>Pointing error (mrad)</label>
+        <div class="val">0.0</div>
+        <span class="newtag">new</span>
+      </div>
+      <div class="frow"><label>Reflectance (%)</label><div class="val">90</div></div>
+      <div class="hint">Manuscript baseline unchanged: 0 / 0 / 0 / 90 %. Pointing error folds into cone-mode kernels like slope error; Monte Carlo draws it per heliostat, per instant.</div>
+
+      <div class="subhead">Measured error map <span class="newtag">new</span></div>
+      <div class="measrow">
+        <div class="btn">Import CSV…</div>
+        <div class="loadedchip">
+          <span>gravity_sag_45deg.csv · 81 × 51 grid · implied slope 1.31 mrad RMS</span>
+          <span class="mcbadge">Monte Carlo only</span>
+          <span class="removex">×</span>
+        </div>
+      </div>
+      <div class="hint">Applies on top of the analytic slope-error figure, Monte Carlo only — cone traces ignore it. Pre-processed once at import, so trace cost doesn't change with map resolution.</div>
+    </div>
+
+    <div class="previews">
+      <div class="panel">
+        <h2>Aperture layout</h2>
+        <div class="frame">
+          <svg viewBox="0 0 300 220" width="90%">
+            <rect width="300" height="220" fill="#ffffff"></rect>
+            <g fill="rgba(196,218,238,0.96)" stroke="#33455c" stroke-width="1.1">
+              <rect x="28" y="22" width="46" height="38"></rect><rect x="80" y="22" width="46" height="38"></rect><rect x="132" y="22" width="46" height="38"></rect><rect x="184" y="22" width="46" height="38"></rect><rect x="236" y="22" width="46" height="38"></rect>
+              <rect x="28" y="66" width="46" height="38"></rect><rect x="80" y="66" width="46" height="38"></rect><rect x="132" y="66" width="46" height="38"></rect><rect x="184" y="66" width="46" height="38"></rect><rect x="236" y="66" width="46" height="38"></rect>
+              <rect x="28" y="110" width="46" height="38"></rect><rect x="80" y="110" width="46" height="38"></rect><rect x="132" y="110" width="46" height="38"></rect><rect x="184" y="110" width="46" height="38"></rect><rect x="236" y="110" width="46" height="38"></rect>
+              <rect x="28" y="154" width="46" height="38"></rect><rect x="80" y="154" width="46" height="38"></rect><rect x="132" y="154" width="46" height="38"></rect><rect x="184" y="154" width="46" height="38"></rect><rect x="236" y="154" width="46" height="38"></rect>
+            </g>
+            <text x="150" y="212" text-anchor="middle" font-size="10" fill="#64748b">6.06 m × 3.04 m · 20 facets</text>
+          </svg>
+        </div>
+        <div class="caption">Unchanged from M6 — shown for context.</div>
+      </div>
+
+      <div class="panel">
+        <h2>Sag map — H-214</h2>
+        <div class="frame">
+          <span class="mcflag">MC error map applied</span>
+          <svg viewBox="0 0 300 220" width="90%" style="display: block; margin: 0 auto">
+            <defs>
+              <radialGradient id="sag10" cx="0.5" cy="0.5" r="0.75">
+                <stop offset="0" stop-color="#00007f"></stop>
+                <stop offset="0.2" stop-color="#0020ff"></stop>
+                <stop offset="0.4" stop-color="#00d4ff"></stop>
+                <stop offset="0.55" stop-color="#66ff8c"></stop>
+                <stop offset="0.7" stop-color="#ffe32e"></stop>
+                <stop offset="0.85" stop-color="#ff5c00"></stop>
+                <stop offset="1" stop-color="#a00000"></stop>
+              </radialGradient>
+            </defs>
+            <rect x="26" y="20" width="234" height="176" fill="url(#sag10)" stroke="#33455c" stroke-width="1"></rect>
+            <text x="143" y="210" text-anchor="middle" font-size="9.5" fill="#64748b">sag (mm) + measured map, twisting figure at Az 165.2° El 61.4°</text>
+          </svg>
+          <div class="cornerbtn">Export CSV for FEA</div>
+        </div>
+        <div class="caption">x, y, z_sag on a regular grid for the traced surface — the same convention a measured map round-trips through.</div>
+      </div>
+    </div>
+  </div>
+
+</div></template></div></div>
+  <div class="checknote"><strong>Sign-off item:</strong> the glossary wording shown open above (slope error) is the literal draft text from spec §G — specularity and pointing error get matching one-sentence tooltips.</div>
+  <div class="checknote">The measured map applies on top of the analytic figure, in Monte Carlo only, and is pre-processed once at import into slope grids — per-ray lookup is a bilinear read, so trace cost is unaffected by map resolution.</div>
+  <div class="checknote"><strong>Open question:</strong> pointing-error convention — is the quoted number the RMS tilt of the mirror normal (doubles on the reflected beam) or the RMS deviation of the reflected beam itself? Flagged in spec §F/§K for sign-off; the label and tooltip will state whichever we pick explicitly.</div>
+
+  <h2><span class="num">11</span>Fidelity picker with purpose subtitles</h2>
+  <p class="screennote">The run bar's three modes become cards, each with a one-line subtitle describing intent rather than algorithm. Monte Carlo's tooltip is drawn open here to show the honest trade-off wording; Ultra fast carries a footnote disclosing its estimated-occlusion sweep behavior (spec §B, in flight as a bug fix but visible here since it shares this UI).</p>
+  <div class="stage"><div class="mock"><template shadowrootmode="open"><style>
+    :host { display: block; margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 14px; color: #1f2933; background: #f7f8fa; }
+    a { color: #45739e; }
+    .topbar { display: flex; align-items: center; gap: 10px; padding: 0 20px; height: 52px; background: #ffffff; border-bottom: 1px solid #d8dee5; }
+    .topbar h1 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: 0.02em; }
+    .tag { color: #64748b; font-size: 12px; }
+    .apptabs { display: flex; gap: 6px; margin-left: 28px; }
+    .apptabs .tab { padding: 7px 14px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; }
+    .apptabs .tab.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .topbar .right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+    .btn { padding: 7px 12px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; }
+    .btn.primary { background: #45739e; border-color: #345a80; color: #ffffff; font-weight: 600; }
+    .shell { display: flex; height: 588px; }
+    .sidebar { flex: 0 0 300px; background: #ffffff; border-right: 1px solid #d8dee5; overflow: hidden; display: flex; flex-direction: column; }
+    .stagerow { border-bottom: 1px solid #d8dee5; padding: 12px 16px; }
+    .stagerow h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: #64748b; margin: 0; font-weight: 600; }
+    .summary { color: #64748b; font-size: 12.5px; margin-top: 6px; }
+    .summary strong { color: #1f2933; font-weight: 600; }
+    .viewport { flex: 1 1 auto; position: relative; overflow: hidden; }
+    .chip { position: absolute; left: 14px; bottom: 14px; background: rgba(255,255,255,0.85); border: 1px solid #d8dee5; border-radius: 6px; padding: 5px 10px; font-size: 11.5px; color: #64748b; }
+    .fidelitybar { padding: 16px 20px; background: #ffffff; border-top: 1px solid #d8dee5; display: flex; flex-direction: column; gap: 12px; height: 172px; box-sizing: border-box; }
+    .fcards { display: flex; gap: 14px; flex: 1 1 auto; }
+    .fcard { flex: 1 1 33.3%; border: 1.5px solid #d8dee5; border-radius: 10px; padding: 12px 14px; position: relative; display: flex; flex-direction: column; gap: 6px; }
+    .fcard.active { border-color: #45739e; background: #f2f7fd; box-shadow: 0 0 0 3px rgba(69,115,158,0.12); }
+    .fname { font-size: 13.5px; font-weight: 650; }
+    .fname .radio { display: inline-block; width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid #9db3c4; margin-right: 8px; vertical-align: -1px; }
+    .fcard.active .fname .radio { border-color: #45739e; background: #45739e; box-shadow: inset 0 0 0 2px #ffffff; }
+    .fsub { font-size: 12px; color: #64748b; line-height: 1.4; }
+    .ffoot { font-size: 10.5px; color: #8a4d12; background: #fdf3e7; border: 1px solid #e4c96b; border-radius: 5px; padding: 5px 7px; margin-top: auto; line-height: 1.4; }
+    .runrow { display: flex; align-items: center; gap: 14px; }
+    .glosstip { position: absolute; bottom: calc(100% + 12px); right: 0; width: 300px; background: #ffffff; border: 1px solid #d8dee5; border-radius: 8px; box-shadow: 0 8px 22px rgba(31,41,51,0.16); padding: 11px 13px; font-size: 11.5px; color: #334455; line-height: 1.5; z-index: 5; }
+    .glosstip strong { display: block; font-size: 12px; color: #1f2933; margin-bottom: 4px; }
+    .glosstip::after { content: ""; position: absolute; top: 100%; right: 28px; border: 7px solid transparent; border-top-color: #ffffff; }
+    .glosstip::before { content: ""; position: absolute; top: 100%; right: 27px; border: 8px solid transparent; border-top-color: #d8dee5; }
+  </style><div style="width: 1440px; height: 900px; display: flex; flex-direction: column; background: #f7f8fa; overflow: hidden">
+
+  <div class="topbar">
+    <div style="width: 26px; height: 26px; border: 1.5px dashed #45739e; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: #45739e; font-size: 11px; font-weight: 700">C</div>
+    <h1>Coddington</h1>
+    <span class="tag">Manuscript baseline — axicon</span>
+    <div class="apptabs"><div class="tab active">Workspace</div><div class="tab">Heliostat Shape</div><div class="tab">Analysis</div></div>
+    <div class="right"><div class="btn">Library</div><span class="tag">Saved</span></div>
+  </div>
+
+  <div class="shell">
+    <div class="sidebar">
+      <div class="stagerow"><h2>Heliostat</h2><div class="summary"><strong>Manuscript 5 × 3 m</strong> — rectangle, twisting figure</div></div>
+      <div class="stagerow"><h2>Field</h2><div class="summary"><strong>Radial staggered · 643</strong> — 30 m to 90 m</div></div>
+      <div class="stagerow"><h2>Receiver &amp; Tower</h2><div class="summary"><strong>Axicon 27 m / 20° / 14 m</strong> — receiver at 7 m</div></div>
+      <div class="stagerow"><h2>Sun</h2><div class="summary"><strong>Az 165.2° · El 61.4°</strong> — Mar 21 12:30</div></div>
+    </div>
+    <div class="viewport">
+      <svg viewBox="0 0 1140 588" width="100%" height="100%" preserveAspectRatio="xMidYMid slice">
+        <defs><linearGradient id="skyv11" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f4f7fb"></stop><stop offset="1" stop-color="#dbe4ee"></stop></linearGradient></defs>
+        <rect width="1140" height="588" fill="url(#skyv11)"></rect>
+        <line x1="570" y1="500" x2="570" y2="200" stroke="#7b8794" stroke-width="5"></line>
+        <path d="M570 202 L468 100 L672 100 Z" fill="rgba(126,158,196,0.28)" stroke="rgba(52,90,128,0.5)" stroke-width="1.5"></path>
+      </svg>
+      <div class="chip">Corner chief rays — viewing aid, no shading · 643 heliostats</div>
+    </div>
+  </div>
+
+  <div class="fidelitybar">
+    <div class="fcards">
+      <div class="fcard">
+        <div class="fname"><span class="radio"></span>Ultra fast</div>
+        <div class="fsub">Field design optimization — explore layouts and geometry quickly.</div>
+        <div class="ffoot">Day sweeps: shadowing/blocking interpolated between exact anchors (~1–2 % low-sun budget).</div>
+      </div>
+      <div class="fcard">
+        <div class="fname"><span class="radio"></span>Fast accurate</div>
+        <div class="fsub">Compare a selected few options with confidence.</div>
+      </div>
+      <div class="fcard active" style="position: relative">
+        <div class="fname"><span class="radio"></span>Monte Carlo</div>
+        <div class="fsub">Model the final design with precision, including all error sources.</div>
+        <div class="glosstip">
+          <strong>Monte Carlo</strong>
+          Noise falls as 1/√rays — run more rays for a cleaner number. The only mode that applies measured error maps (§E) and per-ray pointing error (§F); cone modes fold both into broadening terms instead.
+        </div>
+      </div>
+    </div>
+    <div class="runrow">
+      <div class="btn primary">Run trace</div>
+      <span style="color: #64748b; font-size: 12px">Fast accurate: deterministic, noise-free, ~2× Ultra fast cost.</span>
+    </div>
+  </div>
+
+</div></template></div></div>
+  <div class="checknote">Subtitles describe intent, not algorithm — a designer picks a mode by what they're trying to do, not by what the engine does internally. Full tooltip wording per mode is in spec §A.</div>
+  <div class="checknote">Ultra fast's day-sweep header already discloses when shadowing/blocking was interpolated ("estimated occlusion between N anchors") so a published number is never silently approximate — see M9/M7's sweep panel.</div>
+
+  <h2><span class="num">12</span>North field &amp; vertical receiver <span class="tagpill">research complete</span></h2>
+  <p class="screennote">A <strong>Field span</strong> control restricts the shipped radial-staggered generator to a sector (Full surround / Sector), and the flat receiver window generalizes to an oriented plane (<strong>Window facing</strong>: Down (surround) / Field, with a <strong>Tilt from vertical</strong> the designer sets — PS10 precedent ≈ 12.5°, never a fixed constant). Plan and elevation are drawn side by side here purely for this review; the app shows one at a time, exactly as in mockups 3–4.</p>
+  <div class="stage"><div class="mock"><template shadowrootmode="open"><style>
+    :host { display: block; margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 14px; color: #1f2933; background: #f7f8fa; }
+    a { color: #45739e; }
+    .topbar { display: flex; align-items: center; gap: 10px; padding: 0 20px; height: 52px; background: #ffffff; border-bottom: 1px solid #d8dee5; }
+    .topbar h1 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: 0.02em; }
+    .tag { color: #64748b; font-size: 12px; }
+    .apptabs { display: flex; gap: 6px; margin-left: 28px; }
+    .apptabs .tab { padding: 7px 14px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; }
+    .apptabs .tab.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .topbar .right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+    .btn { padding: 7px 12px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; }
+    .shell { display: flex; height: 848px; }
+    .sidebar { flex: 0 0 300px; background: #ffffff; border-right: 1px solid #d8dee5; overflow: hidden; display: flex; flex-direction: column; }
+    .stage2 { border-bottom: 1px solid #d8dee5; padding: 12px 16px; }
+    .stage2.sel { background: #f2f7fd; box-shadow: inset 3px 0 0 #0b5fd0; }
+    .stage2 h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: #64748b; margin: 0 0 8px 0; font-weight: 600; }
+    .modechip { font-size: 10px; color: #0b5fd0; font-weight: 700; margin-left: 6px; }
+    .subhead { color: #64748b; font-size: 11.5px; margin: 10px 0 6px 0; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+    .seg { display: flex; gap: 6px; margin-bottom: 8px; }
+    .seg button { flex: 1 1 auto; padding: 6px 8px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 11.5px; }
+    .seg button.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .frow { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
+    .frow label { flex: 0 0 118px; color: #64748b; font-size: 12px; }
+    .frow .val { flex: 1 1 auto; padding: 4px 7px; border: 1px solid #d8dee5; border-radius: 5px; background: #ffffff; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+    .hint { color: #64748b; font-size: 11px; margin: 2px 0 8px 0; line-height: 1.4; }
+    .viewport { flex: 1 1 auto; position: relative; overflow: hidden; background: #fdfdfe; }
+    .splitview { display: flex; height: 100%; }
+    .pane { flex: 1 1 50%; position: relative; }
+    .pane:first-child { border-right: 1px solid #d8dee5; }
+    .panelabel { position: absolute; left: 12px; top: 12px; background: rgba(255,255,255,0.92); border: 1px solid #d8dee5; border-radius: 6px; padding: 4px 9px; font-size: 11px; color: #1f2933; font-weight: 600; }
+    .posinspector { position: absolute; background: rgba(255,255,255,0.98); border: 1px solid #d8dee5; border-radius: 8px; box-shadow: 0 6px 18px rgba(31,41,51,0.14); padding: 8px 11px; font-size: 11.5px; }
+    .posinspector .pihead { font-weight: 650; margin-bottom: 3px; }
+    .posinspector .pisub { color: #0b5fd0; font-weight: 600; font-size: 9.5px; margin-left: 6px; text-transform: uppercase; }
+    .posinspector .pirow { color: #64748b; font-variant-numeric: tabular-nums; }
+    .posinspector .pirow strong { color: #1f2933; }
+  </style><div style="width: 1440px; height: 900px; display: flex; flex-direction: column; background: #f7f8fa; overflow: hidden">
+
+  <div class="topbar">
+    <div style="width: 26px; height: 26px; border: 1.5px dashed #45739e; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: #45739e; font-size: 11px; font-weight: 700">C</div>
+    <h1>Coddington</h1>
+    <span class="tag">North field study — axicon</span>
+    <div class="apptabs"><div class="tab active">Workspace</div><div class="tab">Heliostat Shape</div><div class="tab">Analysis</div></div>
+    <div class="right"><div class="btn">Library</div><span class="tag">Unsaved changes</span></div>
+  </div>
+
+  <div class="shell">
+    <div class="sidebar">
+      <div class="stage2"><h2>Heliostat</h2><div style="color: #64748b; font-size: 12px"><strong style="color: #1f2933">Manuscript 5 × 3 m</strong> — twisting figure</div></div>
+
+      <div class="stage2 sel">
+        <h2>Field<span class="modechip">SECTOR</span></h2>
+        <div class="frow"><label>Layout</label><div class="val">Radial staggered ▾</div></div>
+        <div class="subhead">Field span</div>
+        <div class="seg"><button>Full surround</button><button class="active">Sector</button></div>
+        <div class="frow"><label>Center azimuth</label><div class="val">0° (N)</div></div>
+        <div class="frow"><label>Half-span</label><div class="val">±60°</div></div>
+        <div class="hint">Compass convention (0° = N, clockwise). Radial-staggered only — the Fermat spiral doesn't truncate cleanly to a wedge.</div>
+        <div class="frow"><label>Heliostats in sector</label><div class="val">214</div></div>
+      </div>
+
+      <div class="stage2">
+        <h2>Receiver &amp; Tower</h2>
+        <div class="frow"><label>Apex height (m)</label><div class="val">27.00</div></div>
+        <div class="subhead">Window facing</div>
+        <div class="seg"><button>Down (surround)</button><button class="active">Field</button></div>
+        <div class="frow"><label>Facing azimuth</label><div class="val">0° (N)</div></div>
+        <div class="frow"><label>Tilt from vertical (°)</label><div class="val">12.5</div></div>
+        <div class="hint">PS10 precedent ≈ 12.5° down from vertical — tilt is a user parameter; the literature ties the optimum to latitude and tower height.</div>
+      </div>
+
+      <div class="stage2"><h2>Sun</h2><div style="color: #64748b; font-size: 12px"><strong style="color: #1f2933">Az 165.2° · El 61.4°</strong></div></div>
+    </div>
+
+    <div class="viewport">
+      <div class="splitview">
+
+        <div class="pane">
+          <div class="panelabel">Plan view — top-down</div>
+          <svg viewBox="0 0 620 620" width="100%" height="100%" preserveAspectRatio="xMidYMid meet">
+            <rect width="620" height="620" fill="#fdfdfe"></rect>
+            <circle cx="310" cy="380" r="330" fill="none" stroke="rgba(110,130,150,0.22)" stroke-width="1" stroke-dasharray="3 5"></circle>
+            <text x="310" y="40" text-anchor="middle" font-size="12" fill="#64748b" font-weight="600">N ↑</text>
+
+            <path d="M310 380 L11 207.5 A345 345 0 0 1 608.8 207.5 Z" fill="rgba(11,95,208,0.06)"></path>
+            <line x1="310" y1="380" x2="11" y2="207.5" stroke="rgba(11,95,208,0.4)" stroke-width="1.3" stroke-dasharray="8 5"></line>
+            <line x1="310" y1="380" x2="608.8" y2="207.5" stroke="rgba(11,95,208,0.4)" stroke-width="1.3" stroke-dasharray="8 5"></line>
+            <text x="410" y="240" font-size="10.5" fill="#345a80">±60° half-span</text>
+
+            <g fill="rgba(196,218,238,0.96)" stroke="#33455c" stroke-width="1">
+              <circle cx="214.7" cy="325" r="3.2"></circle><circle cx="239.3" cy="295.7" r="3.2"></circle><circle cx="272.4" cy="276.6" r="3.2"></circle><circle cx="310" cy="270" r="3.2"></circle><circle cx="347.6" cy="276.6" r="3.2"></circle><circle cx="380.7" cy="295.7" r="3.2"></circle><circle cx="405.3" cy="325" r="3.2"></circle>
+              <circle cx="198.9" cy="286.8" r="3.2"></circle><circle cx="237.5" cy="254.4" r="3.2"></circle><circle cx="284.8" cy="237.2" r="3.2"></circle><circle cx="335.2" cy="237.2" r="3.2"></circle><circle cx="382.5" cy="254.4" r="3.2"></circle><circle cx="421.1" cy="286.8" r="3.2"></circle>
+              <circle cx="154.1" cy="290" r="3.2"></circle><circle cx="194.3" cy="242.1" r="3.2"></circle><circle cx="248.4" cy="210.8" r="3.2"></circle><circle cx="310" cy="200" r="3.2"></circle><circle cx="371.6" cy="210.8" r="3.2"></circle><circle cx="425.7" cy="242.1" r="3.2"></circle><circle cx="465.9" cy="290" r="3.2"></circle>
+              <circle cx="145.3" cy="241.8" r="3.2"></circle><circle cx="202.5" cy="193.8" r="3.2"></circle><circle cx="272.6" cy="168.2" r="3.2"></circle><circle cx="347.4" cy="168.2" r="3.2"></circle><circle cx="417.5" cy="193.8" r="3.2"></circle><circle cx="474.7" cy="241.8" r="3.2"></circle>
+              <circle cx="93.5" cy="255" r="3.2"></circle><circle cx="149.2" cy="188.5" r="3.2"></circle><circle cx="224.5" cy="145" r="3.2"></circle><circle cx="310" cy="130" r="3.2"></circle><circle cx="395.5" cy="145" r="3.2"></circle><circle cx="470.8" cy="188.5" r="3.2"></circle><circle cx="526.5" cy="255" r="3.2"></circle>
+              <circle cx="91.7" cy="196.7" r="3.2"></circle><circle cx="167.5" cy="133.2" r="3.2"></circle><circle cx="260.4" cy="99.3" r="3.2"></circle><circle cx="359.6" cy="99.3" r="3.2"></circle><circle cx="452.5" cy="133.2" r="3.2"></circle><circle cx="528.3" cy="196.7" r="3.2"></circle>
+              <circle cx="32.9" cy="220" r="3.2"></circle><circle cx="104.2" cy="134.9" r="3.2"></circle><circle cx="200.6" cy="79.2" r="3.2"></circle><circle cx="310" cy="60" r="3.2"></circle><circle cx="419.4" cy="79.2" r="3.2"></circle><circle cx="515.8" cy="134.9" r="3.2"></circle><circle cx="587.1" cy="220" r="3.2"></circle>
+            </g>
+
+            <circle cx="310" cy="380" r="7" fill="#7b8794" stroke="#33455c" stroke-width="1.3"></circle>
+            <text x="322" y="398" font-size="10.5" fill="#64748b">tower (origin)</text>
+          </svg>
+          <div class="posinspector" style="left: 356px; top: 128px">
+            <div class="pihead">H-482 <span class="pisub">selected</span></div>
+            <div class="pirow">x <strong>42.61 m</strong></div>
+            <div class="pirow">y <strong>7.30 m</strong></div>
+          </div>
+        </div>
+
+        <div class="pane">
+          <div class="panelabel">Elevation — E–W section, field to the north</div>
+          <svg viewBox="0 0 620 620" width="100%" height="100%" preserveAspectRatio="xMidYMid meet">
+            <rect width="620" height="620" fill="#fdfdfe"></rect>
+            <line x1="20" y1="560" x2="600" y2="560" stroke="#7b8794" stroke-width="2"></line>
+            <text x="560" y="580" font-size="10.5" fill="#64748b">N →</text>
+
+            <line x1="230" y1="560" x2="230" y2="175" stroke="#7b8794" stroke-width="5"></line>
+            <line x1="250" y1="238" x2="250" y2="118" stroke="rgba(110,130,150,0.5)" stroke-width="1" stroke-dasharray="8 4 2 4"></line>
+
+            <g stroke="rgba(255,146,54,0.4)" stroke-width="1.4" fill="none">
+              <path d="M397 548 L250 190"></path>
+              <path d="M457 546 L250 190"></path>
+              <path d="M517 550 L250 190"></path>
+            </g>
+            <g fill="rgba(196,218,238,0.96)" stroke="#33455c" stroke-width="1">
+              <path d="M370 546 L420 536 L424 546 L374 556 Z"></path><line x1="397" y1="548" x2="397" y2="560" stroke="#33455c" stroke-width="2.2"></line>
+              <path d="M430 544 L480 534 L484 544 L434 554 Z"></path><line x1="457" y1="546" x2="457" y2="560" stroke="#33455c" stroke-width="2.2"></line>
+              <path d="M490 548 L540 538 L544 548 L494 558 Z"></path><line x1="517" y1="550" x2="517" y2="560" stroke="#33455c" stroke-width="2.2"></line>
+            </g>
+
+            <rect x="242" y="142" width="16" height="96" rx="2" fill="rgba(126,158,196,0.4)" stroke="#0b5fd0" stroke-width="2" transform="rotate(12.5 250 190)"></rect>
+
+            <g fill="none" stroke="#64748b" stroke-width="1">
+              <path d="M250 138 A50 50 0 0 1 262 145"></path>
+            </g>
+            <g transform="translate(266, 122)">
+              <rect x="0" y="0" width="48" height="22" rx="5" fill="#ffffff" stroke="#d8dee5"></rect>
+              <text x="24" y="15" font-size="11.5" fill="#1f2933" text-anchor="middle" font-weight="600">12.5°</text>
+            </g>
+            <text x="212" y="128" font-size="9.5" fill="#64748b" text-anchor="end">vertical ref.</text>
+
+            <g stroke="#64748b" stroke-width="1" fill="none">
+              <line x1="280" y1="142" x2="300" y2="142"></line>
+              <line x1="280" y1="238" x2="300" y2="238"></line>
+              <line x1="292" y1="142" x2="292" y2="238"></line>
+              <path d="M292 152 L288 164 L296 164 Z" fill="#64748b"></path>
+              <path d="M292 228 L288 216 L296 216 Z" fill="#64748b"></path>
+            </g>
+            <g transform="translate(298, 178)">
+              <rect x="0" y="0" width="60" height="24" rx="5" fill="#ffffff" stroke="#d8dee5"></rect>
+              <text x="30" y="16" font-size="11.5" fill="#1f2933" text-anchor="middle" font-weight="600">8 000</text>
+            </g>
+            <text x="328" y="216" font-size="9.5" fill="#64748b">window height, mm</text>
+
+            <text x="230" y="600" text-anchor="middle" font-size="10.5" fill="#64748b">tower</text>
+          </svg>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div></template></div></div>
+  <div class="checknote">Field span and Window facing both generalize the shipped radial-staggered generator and existing flat-window aiming/deposit — the published parameterization (Lipps &amp; Vant-Hull 1978; Collado &amp; Guallar 2012; SolarPILOT's angular field bound), not a new layout engine.</div>
+  <div class="checknote">Tilt from vertical is a user parameter — PS10 precedent ≈ 12.5°, never hard-coded, since the literature ties the optimum to latitude and tower height.</div>
+  <div class="checknote">All positions (plan view, inspector) now display and edit in meters at 0.01 m; dimensions — window size, tower height — stay in mm. Acceptance test: a sector field with a flat, tilted window traced end to end — historically the exact combination that failed silently in SolarPILOT for flat receivers.</div>
+
+  <h2><span class="num">13</span>Secondary perturbations</h2>
+  <p class="screennote">The Receiver &amp; Tower stage's secondary controls (axicon shown) gain a <strong>Perturbations</strong> group: rigid-body decenter and tip/tilt about the vertex, a parametric warp for quick what-ifs, and a measured surface-deformation map — so alignment and figure error of the secondary can be studied, not just its design geometry. The 3D scene shows the perturbed secondary live, and a secondary sag map — the same idiom as the heliostat sag map — makes perturb → view sag → retrace → absorbed-heat one loop.</p>
+  <div class="stage"><div class="mock"><template shadowrootmode="open"><style>
+    :host { display: block; margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 14px; color: #1f2933; background: #f7f8fa; }
+    a { color: #45739e; }
+    .topbar { display: flex; align-items: center; gap: 10px; padding: 0 20px; height: 52px; background: #ffffff; border-bottom: 1px solid #d8dee5; }
+    .topbar h1 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: 0.02em; }
+    .tag { color: #64748b; font-size: 12px; }
+    .apptabs { display: flex; gap: 6px; margin-left: 28px; }
+    .apptabs .tab { padding: 7px 14px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; }
+    .apptabs .tab.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .topbar .right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+    .btn { padding: 7px 12px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; }
+    .btn.primary { background: #45739e; border-color: #345a80; color: #ffffff; font-weight: 600; }
+    .shell { display: flex; height: 848px; }
+    .sidebar { flex: 0 0 320px; background: #ffffff; border-right: 1px solid #d8dee5; overflow-y: auto; display: flex; flex-direction: column; }
+    .stage2 { border-bottom: 1px solid #d8dee5; padding: 12px 16px; }
+    .stage2.sel { background: #f2f7fd; box-shadow: inset 3px 0 0 #0b5fd0; }
+    .stage2 h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: #64748b; margin: 0 0 8px 0; font-weight: 600; }
+    .newtag { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.05em; color: #0b5fd0; font-weight: 700; }
+    .subhead { color: #64748b; font-size: 11.5px; margin: 12px 0 6px 0; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; display: flex; align-items: center; gap: 7px; }
+    .seg { display: flex; gap: 6px; margin-bottom: 10px; }
+    .seg button { flex: 1 1 auto; padding: 6px 8px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12px; }
+    .seg button.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .frow { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
+    .frow label { flex: 0 0 138px; color: #64748b; font-size: 12.5px; }
+    .frow .val { flex: 1 1 auto; padding: 5px 8px; border: 1px solid #d8dee5; border-radius: 5px; background: #ffffff; font-size: 13px; font-variant-numeric: tabular-nums; }
+    .hint { color: #64748b; font-size: 11px; margin: 2px 0 10px 0; line-height: 1.45; }
+    .measrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+    .loadedchip { display: flex; align-items: center; gap: 8px; background: #f2f7fd; border: 1px solid #bcd6f2; color: #1f2933; border-radius: 6px; padding: 6px 10px; font-size: 11px; flex-wrap: wrap; }
+    .mcbadge { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.04em; color: #0b5fd0; font-weight: 700; border: 1px solid #bcd6f2; border-radius: 4px; padding: 1px 5px; }
+    .removex { color: #8a2c22; cursor: pointer; font-size: 13px; margin-left: 2px; }
+    .mainarea { flex: 1 1 auto; display: flex; min-width: 0; }
+    .viewport { flex: 1 1 auto; position: relative; overflow: hidden; min-width: 0; }
+    .chip { position: absolute; left: 14px; bottom: 14px; background: rgba(255,255,255,0.85); border: 1px solid #d8dee5; border-radius: 6px; padding: 5px 10px; font-size: 11.5px; color: #64748b; }
+    .livebadge { position: absolute; right: 14px; top: 14px; background: rgba(11,95,208,0.92); color: #ffffff; border-radius: 6px; padding: 5px 10px; font-size: 11px; font-weight: 700; letter-spacing: 0.03em; }
+    .sagpanel { flex: 0 0 400px; border-left: 1px solid #d8dee5; background: #ffffff; padding: 16px 18px; display: flex; flex-direction: column; }
+    .sagpanel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: #64748b; margin: 0 0 4px 0; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+    .sagpanel .frame { flex: 1 1 auto; border: 1px solid #d8dee5; border-radius: 8px; background: #ffffff; position: relative; overflow: hidden; margin-top: 8px; }
+    .sagpanel .caption { color: #64748b; font-size: 11.5px; margin-top: 8px; line-height: 1.4; }
+    .cornerbtn { position: absolute; right: 10px; bottom: 10px; background: #ffffff; border: 1px solid #d8dee5; border-radius: 6px; padding: 6px 11px; font-size: 11.5px; box-shadow: 0 2px 8px rgba(15,23,42,0.12); font-weight: 600; color: #1f2933; }
+  </style><div style="width: 1440px; height: 900px; display: flex; flex-direction: column; background: #f7f8fa; overflow: hidden">
+
+  <div class="topbar">
+    <div style="width: 26px; height: 26px; border: 1.5px dashed #45739e; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: #45739e; font-size: 11px; font-weight: 700">C</div>
+    <h1>Coddington</h1>
+    <span class="tag">Manuscript baseline — axicon</span>
+    <div class="apptabs"><div class="tab active">Workspace</div><div class="tab">Heliostat Shape</div><div class="tab">Analysis</div></div>
+    <div class="right"><div class="btn">Library</div><span class="tag">Unsaved changes</span></div>
+  </div>
+
+  <div class="shell">
+    <div class="sidebar">
+      <div class="stage2"><h2>Heliostat</h2><div style="color: #64748b; font-size: 12px"><strong style="color: #1f2933">Manuscript 5 × 3 m</strong> — twisting figure</div></div>
+      <div class="stage2"><h2>Field</h2><div style="color: #64748b; font-size: 12px"><strong style="color: #1f2933">Radial staggered · 643</strong> — 30 m to 90 m</div></div>
+
+      <div class="stage2 sel">
+        <h2>Receiver &amp; Tower <span style="color:#0b5fd0;font-weight:700;font-size:10px;text-transform:uppercase;margin-left:4px">selected in scene</span></h2>
+        <div class="seg"><button>Prime focus</button><button class="active">Axicon</button><button>Cassegrain</button></div>
+        <div class="frow"><label>Apex height (mm)</label><div class="val">27 000</div></div>
+        <div class="frow"><label>Half angle (°)</label><div class="val">20.0</div></div>
+        <div class="frow"><label>Aperture radius (mm)</label><div class="val">14 000</div></div>
+
+        <div class="subhead">Perturbations <span class="newtag">new</span></div>
+        <div class="frow"><label>Decenter Δx (mm)</label><div class="val">0</div></div>
+        <div class="frow"><label>Decenter Δy (mm)</label><div class="val">0</div></div>
+        <div class="frow"><label>Decenter Δz (mm)</label><div class="val">0</div></div>
+        <div class="frow"><label>Tip (mrad)</label><div class="val">0.0</div></div>
+        <div class="frow"><label>Tilt (mrad)</label><div class="val">0.0</div></div>
+        <div class="hint">Rigid-body misalignment about the secondary's vertex/apex. Exact geometry — traced by all three fidelities, not just Monte Carlo — and shown live in the 3D scene like any other geometry edit. Defaults all zero, saved with the receiver config.</div>
+
+        <div class="subhead">Parametric warp <span class="newtag">new</span></div>
+        <div class="frow"><label>Defocus (µm P–V)</label><div class="val">0</div></div>
+        <div class="frow"><label>Astigmatism</label><div class="val">0 µm P–V @ 0°</div></div>
+        <div class="hint">Quick what-ifs without an FEA file — low-order terms over the secondary's aperture, summed with the imported map below. Monte Carlo only; defaults zero.</div>
+
+        <div class="subhead">Surface deformation map</div>
+        <div class="measrow">
+          <div class="btn">Import CSV…</div>
+        </div>
+        <div class="loadedchip">
+          <span>secondary_thermal_warp.csv · 61 × 61 grid · implied slope 0.42 mrad RMS</span>
+          <span class="mcbadge">Monte Carlo only</span>
+          <span class="removex">×</span>
+        </div>
+        <div class="hint">Same gridded Δ-sag convention and import flow as the heliostat measured map (§E) — pre-processed once at import, applies in Monte Carlo only, and sums with the parametric warp above. Cone modes trace the undeformed design surface.</div>
+      </div>
+
+      <div class="stage2"><h2>Sun</h2><div style="color: #64748b; font-size: 12px"><strong style="color: #1f2933">Az 165.2° · El 61.4°</strong></div></div>
+    </div>
+
+    <div class="mainarea">
+    <div class="viewport">
+      <svg viewBox="0 0 1120 848" width="100%" height="100%" preserveAspectRatio="xMidYMid slice">
+        <defs><linearGradient id="skyv13" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f4f7fb"></stop><stop offset="1" stop-color="#dbe4ee"></stop></linearGradient></defs>
+        <rect width="1120" height="848" fill="url(#skyv13)"></rect>
+
+        <g stroke="rgba(255,146,54,0.3)" stroke-width="1.5" fill="none">
+          <path d="M260 760 L505 300 L588 470"></path>
+          <path d="M860 758 L640 310 L594 470"></path>
+          <path d="M420 620 L520 320 L590 470"></path>
+        </g>
+
+        <line x1="580" y1="470" x2="580" y2="270" stroke="#7b8794" stroke-width="5"></line>
+        <path d="M580 268 L470 148 L695 148 Z" fill="rgba(126,158,196,0.16)" stroke="rgba(52,90,128,0.3)" stroke-width="1.2" stroke-dasharray="4 4"></path>
+        <path d="M604 282 L500 156 L722 168 Z" fill="rgba(11,95,208,0.28)" stroke="#0b5fd0" stroke-width="2" transform="rotate(6 604 215)"></path>
+        <text x="740" y="180" font-size="10.5" fill="#0b5fd0" font-weight="600">perturbed secondary — decenter + tilt (exaggerated for clarity)</text>
+        <path d="M580 268 L470 148 L695 148 Z" fill="none" stroke="rgba(123,135,148,0.5)" stroke-width="1" stroke-dasharray="3 4"></path>
+        <text x="470" y="140" font-size="9.5" fill="#94a3b8">nominal (dashed)</text>
+
+        <path d="M544 466 L616 466 L636 486 L564 486 Z" fill="rgba(217,123,41,0.55)" stroke="#a8551a" stroke-width="1.5"></path>
+
+        <g fill="rgba(196,218,238,0.96)" stroke="#33455c" stroke-width="1.1">
+          <path d="M220 730 L280 720 L286 736 L226 746 Z"></path>
+          <path d="M800 726 L862 736 L856 752 L794 742 Z"></path>
+          <path d="M390 600 L440 592 L444 606 L394 614 Z"></path>
+        </g>
+      </svg>
+      <div class="chip">Corner chief rays — viewing aid, no shading · dashed cone shows the nominal, undecentered geometry</div>
+      <div class="livebadge">live — updates with every edit</div>
+    </div>
+
+    <div class="sagpanel">
+      <h2>Secondary sag map <span class="newtag">new</span></h2>
+      <div class="frame">
+        <svg viewBox="0 0 340 300" width="100%" height="100%">
+          <defs>
+            <radialGradient id="sag13" cx="0.5" cy="0.46" r="0.75">
+              <stop offset="0" stop-color="#00007f"></stop>
+              <stop offset="0.2" stop-color="#0020ff"></stop>
+              <stop offset="0.4" stop-color="#00d4ff"></stop>
+              <stop offset="0.55" stop-color="#66ff8c"></stop>
+              <stop offset="0.7" stop-color="#ffe32e"></stop>
+              <stop offset="0.85" stop-color="#ff5c00"></stop>
+              <stop offset="1" stop-color="#a00000"></stop>
+            </radialGradient>
+          </defs>
+          <rect x="20" y="18" width="270" height="234" fill="url(#sag13)" stroke="#33455c" stroke-width="1"></rect>
+          <g stroke="rgba(255,255,255,0.45)" stroke-width="1" fill="none">
+            <ellipse cx="155" cy="135" rx="42" ry="30"></ellipse>
+            <ellipse cx="155" cy="135" rx="84" ry="60"></ellipse>
+            <ellipse cx="155" cy="135" rx="122" ry="88"></ellipse>
+          </g>
+          <rect x="298" y="18" width="12" height="234" fill="url(#sag13)" stroke="#33455c" stroke-width="0.8"></rect>
+          <text x="316" y="26" font-size="9" fill="#64748b">0</text>
+          <text x="316" y="256" font-size="9" fill="#64748b">−2.6</text>
+          <text x="155" y="270" text-anchor="middle" font-size="9.5" fill="#64748b">secondary sag (mm) · contours every 0.5 mm</text>
+        </svg>
+        <div class="cornerbtn">Export CSV for FEA</div>
+      </div>
+      <div class="caption">Nominal figure + parametric warp + imported map, summed — same "View sag" idiom as the heliostat sag map (Heliostat Shape tab). Lives with the secondary's controls, so perturb → view sag → retrace → watch the absorbed-heat view (§C) is one loop.</div>
+    </div>
+    </div>
+  </div>
+
+</div></template></div></div>
+  <div class="checknote">Rigid-body misalignment (decenter + tip/tilt) is exact geometry, not a statistical error term — it applies at <strong>every fidelity</strong>, and the 3D scene and corner rays show the perturbed secondary live, exactly like editing apex height or half angle.</div>
+  <div class="checknote">The surface-deformation map behaves exactly like the heliostat measured map (M10/§E): Monte Carlo only, pre-processed once at import so trace cost is unaffected, same MC-only badge, same implied-RMS-slope report on the loaded chip.</div>
+  <div class="checknote"><strong>Resolved 2026-08-25 (§K.6):</strong> parametric warp is in — defocus and astigmatism terms for quick what-ifs without an FEA file, summed with the imported map, Monte Carlo only.</div>
+  <div class="checknote">The secondary sag map mirrors the heliostat sag map's visual idiom exactly (jet colormap, stated contour interval) and shows nominal + warp + imported map summed, with its own FEA export — so perturb → view sag → retrace → watch absorbed heat (§C) is one loop, not a round trip through a different screen.</div>
+
+  <section class="text">
+    <h2>Decisions these mockups encode</h2>
+    <ul>
+      <li><strong>Fidelity in plain language</strong> — the picker states intent (§A), not algorithm; each mode's tooltip discloses its honest trade-off.</li>
+      <li><strong>Ultra fast day sweeps interpolate</strong> shading/blocking between exact anchor timesteps (~1–2 % budget at low sun); single-instant traces stay exact (§B).</li>
+      <li><strong>Secondary-mirror layouts</strong> (axicon, Cassegrain) get a Receiver/Secondary map selector and an absorbed-heat readout — absorbed = (1 − R) × incident, R a visible Receiver &amp; Tower input (§C).</li>
+      <li><strong>One CSV convention everywhere a map exists</strong> — sag, receiver, secondary — ANSYS External Data–oriented, units always stated in the header (§D).</li>
+      <li><strong>Measured (FEA) sag-deviation maps</strong> import in Monte Carlo only, pre-processed once so trace cost is unchanged; the implied RMS slope is reported so it's never double-counted against the analytic figure (§E).</li>
+      <li><strong>Pointing error</strong> joins slope error, specularity, and reflectance as a fourth optical input — quasi-static per instant in Monte Carlo, a broadening term in cone modes, default 0 mrad (§F).</li>
+      <li><strong>Tooltips app-wide</strong> — the optical-error glossary wording (M10) is part of this sign-off (§G).</li>
+      <li><strong>Positions in meters</strong> at 0.01 m everywhere they're shown or edited; dimensions stay in mm (§H).</li>
+      <li><strong>Polar (sector) fields</strong> generalize the shipped radial-staggered generator with a Field span control; the receiver window gains an oriented-plane facing + tilt-from-vertical, PS10-precedented but user-set (§I).</li>
+      <li><strong>Secondary-mirror perturbations</strong> — rigid-body decenter/tip/tilt trace at every fidelity as exact geometry, live in the 3D scene; a measured deformation map layers on top in Monte Carlo only, same convention as the heliostat map (§E2).</li>
+      <li><strong>Parametric warp + secondary sag map</strong> (confirmed 2026-08-25) — defocus and astigmatism terms give quick what-ifs without an FEA file, summed with the imported map; a "View sag" for the secondary mirrors the heliostat sag map exactly, with its own FEA export, closing the perturb → view sag → retrace → absorbed-heat loop on one screen (§E2).</li>
+    </ul>
+    <h2>Open questions for you</h2>
+    <ul class="qs">
+      <li><strong>Pointing-error convention</strong> — mirror-normal tilt vs. reflected-beam RMS (§F/§K.1).</li>
+      <li><strong>Dimension units</strong> — mirror/receiver dimensions stay in mm while positions move to meters (§H/§K.2); confirm that split reads right.</li>
+      <li><strong>Secondary reflectance default</strong> — surface today's assumed throughput value, or set a fresh default (§C/§K.3)?</li>
+      <li><strong>Ultra-fast anchor spacing</strong> — fixed (e.g. every 3rd timestep) or auto-chosen to the error budget (§B/§K.4)?</li>
+      <li><strong>Polar-field defaults</strong> — half-span default (±60°?) and whether the receiver tilt default is vertical (0°) or PS10-like (~12.5°) (§I/§K.5).</li>
+    </ul>
+    <p style="color: var(--muted); font-size: 13px; margin-top: -4px">§K.6 (secondary parametric warp) is resolved — see M13 above — and no longer listed here.</p>
+    <h2>Sign-off checklist</h2>
+    <ul class="checklist">
+      <li>Trace status bar placement and behavior (M8) match how you'd expect it on every tab</li>
+      <li>Secondary map, absorbed-heat readout, and FEA export convention (M9) match what your FEA colleagues expect</li>
+      <li>Glossary tooltip wording and the measured-error-map workflow (M10) are right, including the open pointing-error question</li>
+      <li>Fidelity subtitles (M11) read the way you'd explain each mode to a plant engineer</li>
+      <li>North/sector field, window facing, tilt-from-vertical default, and the meters display (M12) are right</li>
+      <li>Secondary perturbations — decenter/tip/tilt fields, parametric warp, the deformation-map workflow, and the secondary sag map/export (M13) are right</li>
+      <li>Spec <code>docs/ui-spec-v0.2.md</code> read and approved</li>
+    </ul>
+  </section>
+
+  <footer>v0.2 draft · Coddington is made by Ryker Optics LLC · Mockups are static drawings in the app's own tokens (slate accent #45739e, system type, white panels), matching the M1–M7 Workspace mockups. Numbers shown are the manuscript baseline (643 heliostats, 27 m axicon apex, 90 % reflectance) unless a v0.2 field states otherwise.</footer>
+</div>
+<script>
+  (function () {
+    function fit() {
+      document.querySelectorAll(".stage").forEach(function (stage) {
+        var mock = stage.querySelector(".mock");
+        if (!mock) return;
+        var s = stage.clientWidth / 1440;
+        mock.style.transform = "scale(" + s + ")";
+        stage.style.height = Math.round(900 * s) + "px";
+      });
+    }
+    window.addEventListener("resize", fit);
+    fit();
+  })();
+</script>
