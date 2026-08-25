@@ -17,7 +17,7 @@ authors:
     given-names: Ryker
 license: MIT
 repository-code: "https://github.com/wilryk/coddington"
-version: 0.1.0.dev0
+version: 0.1.0
 keywords:
   - heliostat
   - concentrating solar power

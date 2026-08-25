@@ -15,7 +15,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "coddington"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "Coddington, a twisting heliostat software package — installs the heliostat package"
 readme = "README.md"
 license = "MIT"

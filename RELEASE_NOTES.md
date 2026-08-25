@@ -27,7 +27,7 @@ installation of anything else required.
 
 ## Installing
 
-Download `Coddington-Setup-0.1.0.dev0.exe` from this release and run it. It
+Download `Coddington-Setup-0.1.0.exe` from this release and run it. It
 installs Coddington with a Start Menu shortcut, an optional desktop
 shortcut, and an uninstaller — no other software required. Prefer not to
 install anything? The `.zip` build works the same way: unzip it and
