@@ -995,7 +995,7 @@ def search_radius_for(
     solar_elevation_deg: float,
     mirror_height_mm: float,
     mirror_width_mm: float,
-    cap_mm: float = 60000.0,
+    cap_mm: float | None = None,
     *,
     beam_elevation_deg: float | None = None,
 ) -> float:
@@ -1022,13 +1022,26 @@ def search_radius_for(
     caller knows the sun is low enough to dominate — which is true of a
     whole-day run sized once from its lowest step, the original use, and
     false for any single high-sun instant.
+
+    ``cap_mm`` is uncapped by default. A 60 m default cap shipped in
+    v0.1.0 and silently truncated the shading reach once
+    ``mirror_height / tan(elevation)`` exceeded it — below ~3° sun for a
+    3 m mirror — overstating delivered power by up to ~5 points of
+    aperture on ~2.6 % of the manuscript field's heliostats at 1°
+    (measured against an uncapped reference, 2026-08-25). The 1°
+    elevation clamp below already bounds the reach (~57× mirror height),
+    so no cap is needed for correctness; pass one only to deliberately
+    trade accuracy for speed.
     """
     el = max(float(solar_elevation_deg), 1.0)
     reach = mirror_height_mm / np.tan(np.deg2rad(el))
     if beam_elevation_deg is not None:
         beam_el = min(max(float(beam_elevation_deg), 1.0), 90.0)
         reach = max(reach, mirror_height_mm / np.tan(np.deg2rad(beam_el)))
-    return float(min(cap_mm, reach + mirror_width_mm))
+    radius = reach + mirror_width_mm
+    if cap_mm is not None:
+        radius = min(float(cap_mm), radius)
+    return float(radius)
 
 
 def build_geometries(

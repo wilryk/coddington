@@ -384,7 +384,7 @@ def _etas_with_radius(field, solar_el_deg, radius_mm, tower_z_mm=35335.0):
     return polygon_occlusion(geometries, aims, 180.0, solar_el_deg, neighbours), geometries, aims
 
 
-@pytest.mark.parametrize("solar_el_deg", [75.0, 60.0, 40.0, 20.0, 8.0])
+@pytest.mark.parametrize("solar_el_deg", [75.0, 60.0, 40.0, 20.0, 8.0, 2.0])
 def test_per_step_radius_reproduces_a_whole_field_neighbour_list(solar_el_deg):
     """Sizing the neighbour query per timestep must not move any eta.
 
@@ -438,3 +438,23 @@ def test_radius_without_the_beam_term_loses_blockers_at_high_sun():
         "expected the sun-only radius to lose blocking; if this now passes, the "
         "test field no longer exercises the case and needs rebuilding"
     )
+
+
+def test_grazing_sun_radius_is_not_silently_capped():
+    """Regression pin for a real defect, not a style preference.
+
+    v0.1.0 shipped a 60 m default ``cap_mm`` that silently truncated the
+    shading reach once ``mirror_height / tan(elevation)`` exceeded it —
+    below ~3° sun for a 3 m mirror — so distant shadowers vanished from
+    the neighbour query and shading came out too favorable at sunrise and
+    sunset (measured: up to ~5 points of aperture on the manuscript field
+    at 1°). The default must be uncapped; the 1° elevation clamp already
+    bounds the reach.
+    """
+    mirror_h, mirror_w = 3000.0, 5000.0
+    grazing = search_radius_for(1.0, mirror_h, mirror_w)
+    expected = mirror_h / np.tan(np.deg2rad(1.0)) + mirror_w
+    assert grazing == pytest.approx(expected), "grazing reach must not be truncated"
+    assert grazing > 60000.0, "the old 60 m default cap is back"
+    # An explicit cap remains an opt-in speed/accuracy trade for callers.
+    assert search_radius_for(1.0, mirror_h, mirror_w, cap_mm=60000.0) == 60000.0
