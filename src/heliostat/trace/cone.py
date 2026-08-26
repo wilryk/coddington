@@ -36,7 +36,16 @@ from __future__ import annotations
 import numpy as np
 
 from ..geometry.receiver import Receiver
-from ..geometry.secondary import AxiconSecondary, CassegrainSecondary, NoSecondary, Secondary
+from ..geometry.secondary import (
+    AxiconSecondary,
+    CassegrainSecondary,
+    NoSecondary,
+    Secondary,
+    secondary_bin_areas_m2,
+    secondary_has_flux_map,
+    secondary_uv,
+    secondary_uv_extent,
+)
 from ..geometry.shading import _blocked_mask
 from .kernels import RadialKernel, deposit
 from .mc import (
@@ -241,6 +250,8 @@ def trace_heliostat_cone(
     shadow_body=None,
     mask_nodes: int = 16,
     design=None,
+    return_secondary_flux: bool = False,
+    secondary_flux_grid: tuple[int, int] = (128, 128),
 ) -> dict:
     """Cone-optics trace of one heliostat at one instant.
 
@@ -279,6 +290,26 @@ def trace_heliostat_cone(
     it ``None`` for store-bound sweeps, where the store contract applies
     occlusion as read-time scalars instead. Counter invariant:
     ``valid + masked + blocked + node_fallback + unresolved == samples``.
+
+    ``return_secondary_flux`` (default ``False``, so a caller who never asks
+    for it gets bit-identical receiver-path results) additionally computes
+    an incident-flux map on the secondary's own surface, when ``secondary``
+    has one (:func:`~heliostat.geometry.secondary.secondary_has_flux_map` --
+    axicon/Cassegrain only; silently omitted for :class:`NoSecondary` or a
+    :class:`~heliostat.geometry.secondary.PyramidSecondary`). Unlike the
+    receiver deposit, this is deliberately COARSE: each sample deposits its
+    full weight at its CHIEF ray's secondary hit point (no footprint/
+    Jacobian spread onto the secondary's own surface -- a second Jacobian in
+    the secondary's ``(u, v)`` is a real refinement left for later), with
+    samples whose chief ray misses the secondary rim falling back to
+    depositing at each surviving node's own hit point, mirroring the
+    receiver deposit's ``node_fallback`` path. Exact per-ray accounting is
+    what :func:`heliostat.trace.mc.trace_heliostat`'s
+    ``return_secondary_hits=True`` gives instead -- "coarse in cone modes,
+    exact in Monte Carlo" is the fidelity disclosure the UI must carry
+    wherever this map is shown. Adds ``secondary_flux``, ``secondary_u_edges``,
+    ``secondary_v_edges``, ``secondary_power_w`` and ``secondary_fidelity``
+    to the returned dict when computed.
     """
     if order not in (1, 2):
         raise ValueError(f"order must be 1 or 2, got {order!r}")
@@ -419,6 +450,19 @@ def trace_heliostat_cone(
     alive = alive.reshape(legs, m)
     uv = uv.reshape(2, legs, m)
 
+    want_sec = return_secondary_flux and secondary_has_flux_map(secondary)
+    if want_sec:
+        # Chief leg's own secondary hit point, recovered the same way `uv`
+        # is above: `pre` is already the (3, on_sec.sum()) world hit points
+        # `secondary.redirect` computed unconditionally -- no new ray
+        # tracing -- scattered back to (3, legs*m) via `survivors`, then
+        # sliced to leg 0 (stencil-major layout: leg k occupies indices
+        # [k*m, (k+1)*m)).
+        sec_pts_flat = np.full((3, legs * m), np.nan)
+        sec_pts_flat[:, survivors] = pre
+        chief_sec_pts = sec_pts_flat.reshape(3, legs, m)[:, 0, :]
+        chief_on_sec = on_sec.reshape(legs, m)[0]
+
     chief_ok = alive[0]
     full_stencil = alive.all(axis=0)
 
@@ -526,6 +570,12 @@ def trace_heliostat_cone(
     frac = np.ones(m)
     node_ok = np.ones((m, kk), dtype=bool)
     uv_nodes = np.full((2, m, kk), np.nan)
+    if want_sec:
+        # Default 1.0 matches the skip branch's own guarantee: `can_skip`
+        # only fires with no occluders and no shadow body (see above), so a
+        # skipped sample has nothing shading/blocking it on the way to the
+        # secondary either.
+        frac_secondary = np.ones(m)
 
     if np.any(need):
         idxn = np.flatnonzero(need)
@@ -553,7 +603,25 @@ def trace_heliostat_cone(
         if occluders:
             blocked_out = _blocked_mask(p_nodes.T, d_out_flat.T, occluders).reshape(mn, kk)
             node_ok_n &= ~blocked_out
+        if want_sec:
+            # Shading+blocking-only mask, BEFORE the receiver-window/
+            # secondary-aperture filters below are ANDed in -- a free
+            # byproduct captured one step earlier than the receiver deposit,
+            # used as the secondary deposit's own transmitted fraction (see
+            # `frac_secondary` below). A plain `.copy()`: nothing past this
+            # point mutates `node_ok_n` in place other than `&=`, which
+            # rebinds rather than mutating the array this aliases.
+            sec_mask_n = node_ok_n.copy()
         pre_n, d_n, on_n = secondary.redirect(p_nodes, d_out_flat.copy(), {})
+        if want_sec:
+            # Every node ray's own secondary hit point (mm, world), scattered
+            # back to sample-major (3, mn, k²) the same way `pre` was above --
+            # needed for the node-fallback deposit when a sample's CHIEF ray
+            # misses the secondary rim but some of its nodes still land on it.
+            sec_pos_flat = np.full((3, mn * kk), np.nan)
+            sec_pos_flat[:, np.flatnonzero(on_n)] = pre_n
+            sec_pos_nodes_n = sec_pos_flat.reshape(3, mn, kk)
+            sec_ok_n = sec_mask_n & on_n.reshape(mn, kk)
         hit_n, uv_n = receiver.intersect(pre_n, d_n)
         pass_out = np.zeros(mn * kk, dtype=bool)
         uv_nodes_n = np.full((2, mn * kk), np.nan)
@@ -573,6 +641,8 @@ def trace_heliostat_cone(
         frac[idxn] = (node_ok_n @ w_nodes) / w_sum  # kernel-weighted transmitted fraction
         node_ok[idxn] = node_ok_n
         uv_nodes[:, idxn] = uv_nodes_n
+        if want_sec:
+            frac_secondary[idxn] = (sec_mask_n @ w_nodes) / w_sum
 
     # --- classify and deposit --------------------------------------------
     cos_aoi = np.abs(normal.T @ s)  # incoming is -s; |normal . s| is cos(aoi)
@@ -634,6 +704,71 @@ def trace_heliostat_cone(
     counters["node_fallback"] = n_node_fallback
     counters["unresolved"] = 0  # retained for counter-invariant compatibility
 
+    secondary_extra: dict = {}
+    if want_sec:
+        (su0, su1), (sv0, sv1) = secondary_uv_extent(secondary)
+        sn_u, sn_v = secondary_flux_grid
+        su_edges = np.linspace(su0, su1, sn_u + 1)
+        sv_edges = np.linspace(sv0, sv1, sn_v + 1)
+        su_step = su_edges[1] - su_edges[0]
+        sv_step = sv_edges[1] - sv_edges[0]
+        sec_bin_area_mm2 = su_step * sv_step
+        sec_out = np.zeros((sn_v, sn_u))
+
+        # Chief-point deposit: every sample whose CHIEF ray reached the
+        # secondary deposits its full (shading/blocking-discounted) weight
+        # at that one point -- the coarse fidelity this backend documents.
+        chief_idx = np.flatnonzero(chief_on_sec)
+        if chief_idx.size:
+            uv_c = secondary_uv(secondary, chief_sec_pts[:, chief_idx])
+            w_c = weights[chief_idx] * frac_secondary[chief_idx]
+            iu = np.clip((uv_c[0] - su0) // su_step, 0, sn_u - 1).astype(np.intp)
+            iv = np.clip((uv_c[1] - sv0) // sv_step, 0, sn_v - 1).astype(np.intp)
+            np.add.at(sec_out, (iv, iu), w_c / sec_bin_area_mm2)
+
+        # Node fallback: a sample whose chief ray missed the secondary rim
+        # (chief_on_sec False) can still have part of its kernel land on it
+        # -- deposit that surviving mass at each such node's own hit point,
+        # mirroring the receiver deposit's node_fallback branch above. By
+        # the same invariant `_secondary_ring_clears`'s skip test relies on
+        # (a skipped sample's chief ray always reaches the secondary), every
+        # chief-miss sample was in `need`, so `sec_ok_n`/`sec_pos_nodes_n`
+        # exist whenever this loop has work to do.
+        fallback_idx = np.flatnonzero(~chief_on_sec)
+        if fallback_idx.size:
+            pos_in_idxn = -np.ones(m, dtype=np.intp)
+            pos_in_idxn[idxn] = np.arange(idxn.size)
+            for idx in fallback_idx:
+                li = pos_in_idxn[idx]
+                if li < 0:
+                    continue  # pragma: no cover - see invariant note above
+                ok_j = sec_ok_n[li]
+                if not np.any(ok_j):
+                    continue
+                uv_j = secondary_uv(secondary, sec_pos_nodes_n[:, li, ok_j])
+                share = weights[idx] * w_nodes[ok_j] / w_sum / sec_bin_area_mm2
+                iu = np.clip((uv_j[0] - su0) // su_step, 0, sn_u - 1).astype(np.intp)
+                iv = np.clip((uv_j[1] - sv0) // sv_step, 0, sn_v - 1).astype(np.intp)
+                np.add.at(sec_out, (iv.astype(np.intp), iu.astype(np.intp)), share)
+
+        secondary_power_w = float(sec_out.sum() * sec_bin_area_mm2)
+        secondary_flux = sec_out * 1.0e6  # W/mm^2 -> W/m^2
+        sec_true_area_m2 = secondary_bin_areas_m2(secondary, (sn_u, sn_v))
+        sec_uniform_area_m2 = sec_bin_area_mm2 * 1.0e-6
+        if not np.allclose(sec_true_area_m2, sec_uniform_area_m2):
+            secondary_flux = secondary_flux * (sec_uniform_area_m2 / sec_true_area_m2)
+        secondary_extra = {
+            "secondary_flux": secondary_flux,
+            "secondary_u_edges": su_edges,
+            "secondary_v_edges": sv_edges,
+            "secondary_power_w": secondary_power_w,
+            # UI disclosure (spec §C): this backend's secondary deposit is a
+            # chief-ray-point approximation, not a full footprint/Jacobian
+            # spread -- exact accounting is Monte Carlo's
+            # (`return_secondary_hits=True`).
+            "secondary_fidelity": "coarse",
+        }
+
     bin_area_mm2 = (u_edges[1] - u_edges[0]) * (v_edges[1] - v_edges[0])
     power_w = float(out.sum() * bin_area_mm2)
     flux = out * 1.0e6  # W/mm^2 -> W/m^2
@@ -655,4 +790,5 @@ def trace_heliostat_cone(
         "counters": counters,
         "chief_uv": uv[:, 0],
         "jacobians": jac_all,
+        **secondary_extra,
     }

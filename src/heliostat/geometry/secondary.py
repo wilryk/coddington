@@ -286,6 +286,149 @@ class CassegrainSecondary(Secondary):
         return sec_hit, d, on_sec
 
 
+def secondary_has_flux_map(secondary: Secondary) -> bool:
+    """Whether ``secondary`` has the single-valued radial ``(u, v)``
+    parameterization :func:`secondary_uv` needs for a flux map.
+
+    True only for :class:`AxiconSecondary` and :class:`CassegrainSecondary`
+    -- both are surfaces of revolution about the tower axis, so "horizontal
+    distance from the axis" is a well-defined single radial coordinate.
+    :class:`NoSecondary` has no surface to map at all, and
+    :class:`PyramidSecondary` has four flat facets with no single radial
+    coordinate (a point's "distance from the axis" does not determine which
+    facet it is on, nor its height on that facet) -- spec §C scopes the
+    secondary-irradiance feature to axicon/Cassegrain for exactly this
+    reason.
+    """
+    return isinstance(secondary, (AxiconSecondary, CassegrainSecondary))
+
+
+def secondary_uv(secondary: Secondary, p: np.ndarray) -> np.ndarray:
+    """``(2, K)`` surface ``(u, v)`` mm for world points ``p`` (``(3, K)``,
+    mm) already known to lie on ``secondary``'s surface -- a hit point from
+    :meth:`Secondary.redirect`, exactly as :meth:`Receiver.intersect`'s
+    callers hand it their own already-clipped world hits.
+
+    ``u`` is azimuthal arc length measured at the APERTURE RIM: ``u =
+    aperture_radius_mm * atan2(x, -y)``, the same ``-y``/north-seam
+    convention :mod:`heliostat.geometry.receiver` uses for its cylinder and
+    frustum (azimuth zero at south, seam at north/+y where a heliostat can
+    legitimately be aimed dead centre). Because ``u`` is scaled by the
+    aperture radius rather than each point's own local radius, ``du``
+    converts to a true angular increment via a single division by
+    ``aperture_radius_mm`` everywhere on the surface -- see
+    :func:`secondary_bin_areas_m2`.
+
+    ``v`` is radial distance from the axis in horizontal projection,
+    ``hypot(x, y)`` -- not true slant distance along the surface. Horizontal
+    distance needs no ``z`` and is trivially invertible; a Cassegrain's true
+    slant arc-length has no closed form (it would need ODE integration), so
+    radial distance is what keeps both shapes on one code path.
+
+    Unlike :mod:`heliostat.geometry.receiver`'s azimuth, no seam-continuity
+    unwrapping is needed here: this function reports one ``(u, v)`` per
+    already-known 3-D point rather than finite-differencing a bundle of
+    same-origin rays, so plain ``arctan2`` -- always principal-valued in
+    ``(-pi*R, pi*R]``, i.e. already inside :func:`secondary_uv_extent` -- is
+    exact.
+    """
+    if not secondary_has_flux_map(secondary):
+        raise ValueError(
+            f"{type(secondary).__name__} has no single-valued (u, v) flux-map "
+            "parameterization -- secondary_has_flux_map() is False for it"
+        )
+    x, y = p[0], p[1]
+    u = secondary.aperture_radius_mm * np.arctan2(x, -y)
+    v = np.hypot(x, y)
+    return np.vstack([u, v])
+
+
+def secondary_uv_extent(secondary: Secondary) -> tuple[tuple[float, float], tuple[float, float]]:
+    """``((u_min, u_max), (v_min, v_max))`` of ``secondary``'s ``(u, v)``
+    parameterization, mm -- mirrors :meth:`Receiver.uv_extent`.
+
+    ``u`` spans one full turn, ``aperture_radius_mm * (-pi, pi]`` (the
+    surface closes on itself, like a receiver cylinder/frustum); ``v`` spans
+    ``0`` (the axis) to ``aperture_radius_mm`` (the rim). Both shapes are
+    circular in plan, clipped at ``aperture_radius_mm``, so this needs no
+    per-shape branch.
+    """
+    if not secondary_has_flux_map(secondary):
+        raise ValueError(
+            f"{type(secondary).__name__} has no single-valued (u, v) flux-map "
+            "parameterization -- secondary_has_flux_map() is False for it"
+        )
+    r = secondary.aperture_radius_mm
+    return (-np.pi * r, np.pi * r), (0.0, r)
+
+
+def _secondary_sec_local_slope(secondary: Secondary, h_mm: np.ndarray) -> np.ndarray:
+    """``sec(local_slope(h))`` -- ``sqrt(1 + (dz/dh)^2)`` at horizontal
+    radius ``h_mm`` -- for :func:`secondary_bin_areas_m2`'s area element.
+
+    Axicon: the flank is ``z = apex_height_mm + h * tan(half_angle_deg)``, a
+    constant slope, so this is the constant ``sqrt(1 + tan(half_angle)^2) =
+    1 / cos(half_angle_deg)`` everywhere.
+
+    Cassegrain: the flank is the implicit hyperboloid ``h^2 = 2 R zeta - (1
+    + k) zeta^2`` (``R = vertex_radius_mm``, ``k = conic``, ``zeta = z -
+    vertex_z_mm``) that :class:`CassegrainSecondary.redirect` itself solves.
+    Implicit differentiation gives ``zeta(h) = (R - sqrt(R^2 - (1+k)h^2)) /
+    (1+k)`` (the near-vertex branch, matching ``zeta=0`` at ``h=0``) and
+    ``dzeta/dh = h / (R - (1+k)*zeta)`` -- the same ``zeta``/``kk``
+    convention :class:`CassegrainSecondary.redirect` already uses.
+    """
+    h = np.asarray(h_mm, dtype=float)
+    if isinstance(secondary, AxiconSecondary):
+        k = np.tan(np.deg2rad(secondary.half_angle_deg))
+        return np.full(h.shape, np.sqrt(1.0 + k * k))
+    if isinstance(secondary, CassegrainSecondary):
+        r = secondary.vertex_radius_mm
+        kk = 1.0 + secondary.conic
+        disc = np.clip(r * r - kk * h * h, 0.0, None)
+        zeta = (r - np.sqrt(disc)) / kk
+        slope = h / (r - kk * zeta)
+        return np.sqrt(1.0 + slope * slope)
+    raise ValueError(
+        f"{type(secondary).__name__} has no single-valued (u, v) flux-map "
+        "parameterization -- secondary_has_flux_map() is False for it"
+    )
+
+
+def secondary_bin_areas_m2(secondary: Secondary, grid: tuple[int, int]) -> np.ndarray:
+    """True surface area of each ``(u, v)`` flux bin, ``(n_v, n_u)`` in m² --
+    mirrors :meth:`Receiver.bin_areas_m2`/``FrustumReceiver``'s own override.
+
+    Per bin: ``dA = h * sec(local_slope(h)) * dh * du / aperture_radius_mm``,
+    evaluated at each ``v``-bin's midpoint radius ``h`` (a row is constant
+    across ``u`` by rotational symmetry, exactly like
+    ``FrustumReceiver.bin_areas_m2``'s row-by-row scaling). ``du /
+    aperture_radius_mm`` is the true angular width ``d(phi)`` of a bin,
+    because :func:`secondary_uv`'s ``u`` is arc length AT THE RIM -- fixed
+    radius ``aperture_radius_mm`` -- not at the bin's own (smaller) radius
+    ``h``, so this one division converts it correctly everywhere.
+
+    The midpoint rule integrates a LINEAR integrand exactly for any bin
+    count: for the axicon (constant ``sec(slope)``, so ``h * sec(slope)`` is
+    linear in ``h``) the bin-area sum equals the closed-form cone lateral
+    area ``pi * aperture_radius_mm^2 / cos(half_angle_deg)`` to machine
+    precision. The Cassegrain's integrand is not linear, so its bin-area sum
+    only converges to the (numerically integrated) true area as ``n_v``
+    grows -- the same approximation ``FrustumReceiver.bin_areas_m2`` makes
+    for its own (also nonlinear in general, but there linear because a
+    frustum's radius is linear in slant position) row scaling.
+    """
+    (u0, u1), (v0, v1) = secondary_uv_extent(secondary)
+    n_u, n_v = grid
+    v_edges = np.linspace(v0, v1, n_v + 1)
+    v_mid = 0.5 * (v_edges[:-1] + v_edges[1:])
+    du_mm = (u1 - u0) / n_u
+    dv_mm = v_edges[1] - v_edges[0]
+    sec_slope = _secondary_sec_local_slope(secondary, v_mid)
+    row_m2 = (v_mid * sec_slope * dv_mm * du_mm / secondary.aperture_radius_mm) / 1.0e6
+    return np.repeat(row_m2[:, None], n_u, axis=1)
+
+
 # Outward plan unit vectors of the pyramid's four faces, east/north/west/south.
 _PYRAMID_FACE_U = np.array([[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0], [0.0, -1.0]])
 

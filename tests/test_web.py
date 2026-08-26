@@ -568,6 +568,9 @@ def test_default_rect_matches_the_pinned_legacy_path(client):
                 "receiver_z_mm": AXICON_RECEIVER_Z_MM,
                 "window_half_u_mm": WINDOW_MM,
                 "window_half_v_mm": WINDOW_MM,
+                # spec §C: explicit secondary reflectance, default 0.90 --
+                # see docs/secondary-irradiance-plan.md.
+                "secondary_reflectance": 0.90,
             },
         ),
         (
@@ -580,6 +583,7 @@ def test_default_rect_matches_the_pinned_legacy_path(client):
                 "aperture_radius_mm": CASSEGRAIN_APERTURE_RADIUS_MM,
                 "window_half_u_mm": WINDOW_MM,
                 "window_half_v_mm": WINDOW_MM,
+                "secondary_reflectance": 0.90,
             },
         ),
     ],
@@ -623,6 +627,8 @@ def test_optics_resolved_echoes_the_defaults(client, optics):
             "aperture_radius_mm",
             "window_half_u_mm",
             "window_half_v_mm",
+            # spec §C: explicit secondary reflectance, default 0.90.
+            "secondary_reflectance",
         }
         assert resolved["vertex_z_mm"] == CASSEGRAIN_VERTEX_Z_MM
         assert resolved["focus_height_mm"] == CASSEGRAIN_FOCUS_HEIGHT_MM
@@ -860,6 +866,110 @@ def test_reflectance_scales_power_and_flux_not_incident_power(client):
     assert dimmed["power_w"] == pytest.approx(0.9 * default["power_w"], rel=1e-9)
     assert dimmed["peak_flux_kw_m2"] == pytest.approx(0.9 * default["peak_flux_kw_m2"], rel=1e-9)
     assert dimmed["incident_power_w"] == pytest.approx(default["incident_power_w"], rel=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# spec §C: secondary-mirror irradiance and absorbed heat
+# (docs/secondary-irradiance-plan.md)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("optics", ["axicon", "cassegrain"])
+@pytest.mark.parametrize("mode", ["ultra_fast", "monte_carlo"])
+def test_include_secondary_flux_reports_absorbed_heat(client, optics, mode):
+    """The opt-in secondary map reports a fidelity tag (coarse for cone
+    modes, exact for Monte Carlo -- spec §C's own disclosure) and an
+    absorbed-heat readout consistent with the default secondary_reflectance
+    (0.90): absorbed = 0.1 * incident, both as total power and peak flux."""
+    payload = _trace_payload(RECT_DESIGN, optics=optics, mode=mode)
+    payload["include_secondary_flux"] = True
+    if mode == "monte_carlo":
+        payload["n_rays"] = 4000
+    data = client.post("/api/trace", json=payload).json()
+    sec = data["secondary"]
+    assert sec is not None
+    assert sec["fidelity"] == ("exact" if mode == "monte_carlo" else "coarse")
+    assert sec["secondary_reflectance"] == 0.90
+    assert sec["power_w"] > 0.0
+    assert sec["absorbed_power_w"] == pytest.approx(0.1 * sec["power_w"], rel=1e-9)
+    assert sec["peak_absorbed_kw_m2"] == pytest.approx(0.1 * sec["peak_flux_kw_m2"], rel=1e-9)
+
+
+def test_include_secondary_flux_is_absent_for_prime_focus(client):
+    """Prime focus has no secondary -- the opt-in flag is a no-op rather
+    than an error, so a caller can pass it unconditionally regardless of
+    which optics the request ends up naming."""
+    payload = _trace_payload(RECT_DESIGN, optics="prime_focus")
+    payload["include_secondary_flux"] = True
+    data = client.post("/api/trace", json=payload).json()
+    assert data["secondary"] is None
+
+
+def test_include_secondary_flux_does_not_change_the_receiver_result(client):
+    """Opting into the secondary map must not perturb the existing receiver
+    map/power -- it is purely additive. ``flux_png`` is deliberately NOT
+    compared here: it embeds a wall-clock "traced in Xms" caption (see
+    ``_VOLATILE_TRACE_KEYS`` below), which legitimately differs because the
+    secondary map costs extra time to compute -- the underlying numeric
+    receiver-path bit-identity is proven at the trace_heliostat_cone level
+    instead (tests/test_secondary_flux.py::
+    test_return_secondary_flux_does_not_change_receiver_result)."""
+    payload = _trace_payload(RECT_DESIGN, optics="axicon")
+    without = client.post("/api/trace", json=payload).json()
+    with_secondary = client.post(
+        "/api/trace", json={**payload, "include_secondary_flux": True}
+    ).json()
+    assert without["power_w"] == with_secondary["power_w"]
+    assert without["peak_flux_kw_m2"] == with_secondary["peak_flux_kw_m2"]
+    assert without["mean_flux_kw_m2"] == with_secondary["mean_flux_kw_m2"]
+    assert without["rms_radius_mm"] == with_secondary["rms_radius_mm"]
+    assert without["centroid_mm"] == with_secondary["centroid_mm"]
+    assert without.get("secondary") is None
+
+
+def test_secondary_reflectance_scales_only_the_absorbed_readout(client):
+    """secondary_reflectance changes the absorbed-heat split without moving
+    the incident secondary map or the receiver's own power -- it is a NEW
+    readout, not a new loss in the existing trace physics (see
+    AxiconOptics.secondary_reflectance's own docstring)."""
+    payload = _trace_payload(RECT_DESIGN, optics="axicon")
+    payload["include_secondary_flux"] = True
+    default = client.post("/api/trace", json=payload).json()
+    lossy = client.post(
+        "/api/trace",
+        json={**payload, "optics_params": {"secondary_reflectance": 0.5}},
+    ).json()
+    assert default["power_w"] == lossy["power_w"]
+    assert default["secondary"]["power_w"] == pytest.approx(lossy["secondary"]["power_w"], rel=1e-9)
+    assert lossy["secondary"]["secondary_reflectance"] == 0.5
+    assert lossy["secondary"]["absorbed_power_w"] == pytest.approx(
+        0.5 * lossy["secondary"]["power_w"], rel=1e-9
+    )
+
+
+def test_field_include_secondary_flux_matches_single_trace_summed(client):
+    """A one-heliostat field's secondary payload is a single trace with
+    extra bookkeeping, same invariant test_field_of_one_equals_the_single_trace
+    already proves for the receiver map -- traced at the field's own
+    (randomly-placed) heliostat position, not the single endpoint's own
+    default, exactly as that test does."""
+    field_payload = _field_payload(
+        RECT_DESIGN, optics="cassegrain", layout={"type": "fermat", "n": 1}
+    )
+    field_payload["include_secondary_flux"] = True
+    field = client.post("/api/field/trace", json=field_payload).json()
+    row = field["heliostats"][0]
+
+    single_payload = {
+        **_trace_payload(RECT_DESIGN, optics="cassegrain"),
+        "heliostat_x_mm": row["x_mm"],
+        "heliostat_y_mm": row["y_mm"],
+        "include_secondary_flux": True,
+    }
+    single = client.post("/api/trace", json=single_payload).json()
+
+    assert field["secondary"]["power_w"] == pytest.approx(single["secondary"]["power_w"], rel=1e-9)
+    assert field["secondary"]["fidelity"] == single["secondary"]["fidelity"]
 
 
 def test_mc_slope_error_grows_the_spot(client):
@@ -2423,6 +2533,37 @@ def test_flux_fea_csv_notes_curved_receiver_unrolling(client):
     assert cyl_resp.status_code == 200
     cyl_comments, _ = _parse_fea_csv(cyl_resp.text)
     assert any("arc length" in c for c in cyl_comments)
+
+
+@pytest.mark.parametrize("optics", ["axicon", "cassegrain"])
+def test_secondary_flux_fea_csv_is_a_meters_and_w_m2_point_grid_with_absorbed(client, optics):
+    """Spec §C/§D: the secondary's own irradiance map export carries a
+    fourth ``absorbed`` column -- ``(1 - secondary_reflectance) * flux`` --
+    on top of the receiver export's ``x, y, flux`` (docs/
+    secondary-irradiance-plan.md build step 6)."""
+    payload = _trace_payload(RECT_DESIGN, optics=optics)
+    resp = client.post("/api/trace/secondary_flux_fea.csv", json=payload)
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/csv")
+    comments, rows = _parse_fea_csv(resp.text)
+    assert rows
+    assert all(len(r) == 4 for r in rows)  # x, y, flux, absorbed
+
+    units_line = next(c for c in comments if c.startswith("# units:"))
+    assert "meters" in units_line and "secondary_reflectance=0.9" in units_line
+    assert any("aperture rim" in c for c in comments)  # secondary u/v note
+
+    assert all(r[2] >= 0 for r in rows)
+    for _x, _y, flux_w_m2, absorbed_w_m2 in rows:
+        assert absorbed_w_m2 == pytest.approx(flux_w_m2 * 0.1, rel=1e-9, abs=1e-9)
+
+
+def test_secondary_flux_fea_csv_404s_when_there_is_no_secondary(client):
+    """Prime focus has no secondary at all -- the export 404s rather than
+    silently returning an empty/meaningless file."""
+    payload = _trace_payload(RECT_DESIGN, optics="prime_focus")
+    resp = client.post("/api/trace/secondary_flux_fea.csv", json=payload)
+    assert resp.status_code == 404
 
 
 def test_day_flux_fea_csv_matches_the_stored_pngs_peak(client):

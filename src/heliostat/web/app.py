@@ -120,6 +120,10 @@ from heliostat.geometry.secondary import (
     AxiconSecondary,
     CassegrainSecondary,
     NoSecondary,
+    secondary_bin_areas_m2,
+    secondary_has_flux_map,
+    secondary_uv,
+    secondary_uv_extent,
     solve_cassegrain_relay,
 )
 from heliostat.geometry.shading import (
@@ -208,6 +212,124 @@ def _flux_edges(receiver) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     u_edges = np.linspace(u0, u1, n_u + 1)
     v_edges = np.linspace(v0, v1, n_v + 1)
     return u_edges, v_edges, receiver.bin_areas_m2((n_u, n_v))
+
+
+def _secondary_flux_grid(secondary) -> tuple[int, int]:
+    """``(n_u, n_v)`` for a secondary's own flux map.
+
+    A secondary's ``(u, v)`` (see :mod:`heliostat.geometry.secondary`) is
+    the same kind of unrolled parameterization a curved RECEIVER uses --
+    full circumference in ``u``, a bounded span in ``v`` -- so this is the
+    identical "square bins on the unrolled surface" rule
+    :func:`_receiver_flux_grid` applies to a cylinder/frustum, deliberately
+    NOT reusing that function's own edges: a secondary's aperture is its own
+    surface with its own extent, unrelated to whatever the receiver's
+    adaptive grid resolved to (a fresh change noted in this module's own
+    history -- receiver flux edges now come from an adaptive grid for curved
+    receivers, and a secondary must not silently inherit or collide with
+    that unless its own geometry happens to agree).
+    """
+    (u0, u1), (v0, v1) = secondary_uv_extent(secondary)
+    ratio = (u1 - u0) / (v1 - v0)
+    n_u = int(np.ceil(FLUX_GRID * ratio / FLUX_GRID_TEXTURE_DIM)) * FLUX_GRID_TEXTURE_DIM
+    return (int(np.clip(n_u, FLUX_GRID, FLUX_GRID_MAX_U)), FLUX_GRID)
+
+
+def _secondary_flux_edges(secondary) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The secondary-map analogue of :func:`_flux_edges`: the one shared
+    ``(u_edges, v_edges, bin_area_m2)`` every secondary-flux producer (single
+    trace, field trace, MC vs cone) bins against."""
+    (u0, u1), (v0, v1) = secondary_uv_extent(secondary)
+    n_u, n_v = _secondary_flux_grid(secondary)
+    u_edges = np.linspace(u0, u1, n_u + 1)
+    v_edges = np.linspace(v0, v1, n_v + 1)
+    return u_edges, v_edges, secondary_bin_areas_m2(secondary, (n_u, n_v))
+
+
+def _mc_secondary_flux(
+    secondary_xy: np.ndarray, watts_per_ray: float, secondary
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``(flux, u_edges, v_edges)`` W/m² on the secondary's own surface, from
+    raw Monte Carlo secondary hits (``trace_heliostat(...,
+    return_secondary_hits=True)``'s ``secondary_xy``) -- the secondary-map
+    analogue of :func:`_mc_flux_and_metrics`. Exact accounting (every
+    ray that struck the secondary lands in exactly one bin), unlike the cone
+    backend's chief-point deposit -- see ``secondary_fidelity`` on the cone
+    result."""
+    u_edges, v_edges, bin_area_m2 = _secondary_flux_edges(secondary)
+    p3 = np.vstack([secondary_xy[0], secondary_xy[1], np.zeros(secondary_xy.shape[1])])
+    uv = secondary_uv(secondary, p3)
+    counts, _, _ = np.histogram2d(uv[1], uv[0], bins=[v_edges, u_edges])
+    flux = counts * watts_per_ray / bin_area_m2
+    return flux, u_edges, v_edges
+
+
+def _secondary_maps_from_result(
+    result: dict, secondary
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, str] | None:
+    """``(flux, u_edges, v_edges, power_w, fidelity)`` on the secondary's own
+    surface from one :func:`_trace_core` result, or ``None`` when there is
+    nothing to report -- the caller did not pass ``return_secondary_flux``,
+    or ``secondary`` has no flux map (see
+    :func:`~heliostat.geometry.secondary.secondary_has_flux_map`).
+
+    ``fidelity`` is ``"exact"`` for Monte Carlo (every ray that struck the
+    secondary is individually histogrammed, same as the receiver map) and
+    ``"coarse"`` for the cone backends (chief-ray-point deposit -- spec §C's
+    "coarse in cone modes, exact in Monte Carlo" disclosure, carried through
+    verbatim from :func:`~heliostat.trace.cone.trace_heliostat_cone`).
+    """
+    if result["backend"] == "mc":
+        if "secondary_xy" not in result:
+            return None
+        secondary_xy = result["secondary_xy"]
+        watts_per_ray = result["watts_per_ray"]
+        flux, u_edges, v_edges = _mc_secondary_flux(secondary_xy, watts_per_ray, secondary)
+        power_w = float(secondary_xy.shape[1]) * watts_per_ray
+        return flux, u_edges, v_edges, power_w, "exact"
+    if "secondary_flux" not in result:
+        return None
+    return (
+        result["secondary_flux"],
+        result["secondary_u_edges"],
+        result["secondary_v_edges"],
+        result["secondary_power_w"],
+        result["secondary_fidelity"],
+    )
+
+
+def _secondary_payload(
+    flux: np.ndarray,
+    u_edges: np.ndarray,
+    v_edges: np.ndarray,
+    power_w: float,
+    fidelity: str,
+    secondary_reflectance: float,
+    include_flux_grid: bool,
+) -> dict:
+    """Spec §C response block: the secondary's own irradiance map plus the
+    absorbed-heat readout -- ``(1 - secondary_reflectance) * incident``,
+    both as a total power and as a peak flux density, mirroring the
+    receiver's own ``power_w``/``peak_flux_kw_m2`` pair so the client reads
+    the two maps the same way. ``flux_grid`` (opt-in, same downsampling as
+    :func:`_flux_grid_payload`) is what a future 3-D secondary drape would
+    consume; this endpoint carries the numbers, the UI phase decides whether
+    to draw them (mockup M9: a Receiver / Secondary map selector).
+    """
+    absorbed_fraction = 1.0 - secondary_reflectance
+    peak_kw_m2 = float(np.max(flux)) / 1000.0 if flux.size else 0.0
+    return {
+        "power_w": _clean(power_w),
+        "peak_flux_kw_m2": _clean(peak_kw_m2),
+        "absorbed_power_w": _clean(power_w * absorbed_fraction),
+        "peak_absorbed_kw_m2": _clean(peak_kw_m2 * absorbed_fraction),
+        "secondary_reflectance": secondary_reflectance,
+        # UI disclosure (spec §C / docs/secondary-irradiance-plan.md): the
+        # cone backends' secondary deposit is a chief-ray-point
+        # approximation ("coarse"), Monte Carlo's is per-ray exact.
+        "fidelity": fidelity,
+        "flux_grid": _flux_grid_payload(flux, u_edges, v_edges) if include_flux_grid else None,
+    }
 
 # ---------------------------------------------------------------------------
 # the manuscript field: the paper's real 643-heliostat layout
@@ -523,6 +645,18 @@ class AxiconOptics(_StrictModel):
     receiver_z_mm: float = Field(default=AXICON_RECEIVER_Z_MM, gt=0)
     window_half_u_mm: float = Field(default=WINDOW_MM, gt=0)
     window_half_v_mm: float = Field(default=WINDOW_MM, gt=0)
+    #: Spec §C: fraction of secondary-incident power that leaves the
+    #: secondary again (the rest is absorbed heat -- the §C readout is
+    #: ``(1 - secondary_reflectance) * incident``). Default 0.90 is the
+    #: value already baked into this package's combined 0.81 = 0.9 (mirror)
+    #: x 0.9 (secondary) day-sweep throughput (heliostat.sweep.standard_optics)
+    #: -- surfaced here as its own knob rather than staying buried in that
+    #: product. Purely a NEW readout: it does not scale this endpoint's own
+    #: receiver flux/power, which has never applied a secondary loss by
+    #: default (this module's only existing loss knob is the mirror's own
+    #: ``design.reflectance``, itself defaulting to 1.0) -- so introducing
+    #: this field changes no existing response.
+    secondary_reflectance: float = Field(default=0.90, gt=0, le=1)
 
     @model_validator(mode="after")
     def _receiver_below_the_cone(self) -> "AxiconOptics":
@@ -565,6 +699,9 @@ class CassegrainOptics(_StrictModel):
     aperture_radius_mm: float = Field(default=CASSEGRAIN_APERTURE_RADIUS_MM, gt=0)
     window_half_u_mm: float = Field(default=WINDOW_MM, gt=0)
     window_half_v_mm: float = Field(default=WINDOW_MM, gt=0)
+    #: See :attr:`AxiconOptics.secondary_reflectance` -- identical field,
+    #: identical default, same reasoning.
+    secondary_reflectance: float = Field(default=0.90, gt=0, le=1)
 
     @model_validator(mode="after")
     def _relay_must_be_solvable(self) -> "CassegrainOptics":
@@ -881,6 +1018,15 @@ class _TraceRequestBase(_StrictModel):
     #: existing test suite) pays nothing extra for it. See
     #: :func:`_flux_grid_payload` for the downsampling/size tradeoff.
     include_flux_grid: bool = False
+    #: Opt-in (spec §C): incident flux on the secondary's own surface,
+    #: alongside the receiver map -- the "Receiver / Secondary" map selector
+    #: mockup M9 anticipates. ``False`` by default so an existing caller
+    #: (scripts, the flux CSV endpoints, the test suite) traces exactly as
+    #: before. Silently ignored -- no error, no payload -- for
+    #: ``optics="prime_focus"`` and for any other secondary with no
+    #: single-valued flux-map parameterization (see
+    #: :func:`~heliostat.geometry.secondary.secondary_has_flux_map`).
+    include_secondary_flux: bool = False
 
     def trace_mode(self) -> TraceMode:
         """The fidelity mode this request asks for, ray budget applied."""
@@ -1968,6 +2114,7 @@ def _trace_core(
     slope_error_mrad: float = 0.0,
     specularity_mrad: float = 0.0,
     reflectance: float = 1.0,
+    return_secondary_flux: bool = False,
 ) -> dict:
     """Trace ONE heliostat -- the exact call both endpoints make.
 
@@ -1991,7 +2138,25 @@ def _trace_core(
     scalar on the REFLECTED result (power and flux), after the backend has
     already reported ``incident_power_w`` -- see the module's
     ``_DesignBase`` docstring for why that field never carries it.
+
+    ``return_secondary_flux`` (spec §C, default ``False`` so an existing
+    caller is unaffected) additionally traces the secondary's own incident
+    flux, when ``secondary`` has one
+    (:func:`~heliostat.geometry.secondary.secondary_has_flux_map` --
+    axicon/Cassegrain only). Monte Carlo returns the raw hits
+    (``secondary_xy``) for the caller to histogram with
+    :func:`_mc_secondary_flux` -- exact accounting, same as every other MC
+    receiver-side quantity here, which is always histogrammed outside
+    ``_trace_core`` rather than inside it. The cone backend histograms its
+    own chief-point deposit internally (``secondary_flux`` etc., see
+    :func:`~heliostat.trace.cone.trace_heliostat_cone`) at
+    :func:`_secondary_flux_grid`'s resolution, and ``reflectance`` (the
+    mirror's own bounce loss, which the beam already carries by the time it
+    reaches the secondary) is applied to it the same way it is applied to
+    the receiver flux/power below -- a mirror that reflects less sends less
+    to the secondary too. Silently a no-op for a secondary with no flux map.
     """
+    want_secondary = return_secondary_flux and secondary_has_flux_map(secondary)
     if mode.backend == "mc":
         result = {
             "backend": "mc",
@@ -2011,6 +2176,7 @@ def _trace_core(
                 np.random.default_rng(mc_seed),
                 source_disk_radius_mm="auto",
                 return_paths=mc_return_paths,
+                return_secondary_hits=want_secondary,
                 design=design,
                 slope_error_mrad=slope_error_mrad,
                 specularity_mrad=specularity_mrad,
@@ -2020,7 +2186,10 @@ def _trace_core(
             # watts_per_ray is what every downstream reader (power_w, the
             # flux histogram, peak flux) scales from -- one multiply here
             # reaches all of them without touching incident power, which
-            # this backend never reports in the first place.
+            # this backend never reports in the first place. Also the
+            # SECONDARY histogram's scale, since a caller always builds it
+            # from this same watts_per_ray via _mc_secondary_flux -- no
+            # separate scaling needed there.
             result["watts_per_ray"] = result["watts_per_ray"] * reflectance
         return result
 
@@ -2031,6 +2200,9 @@ def _trace_core(
     # Same rule every flux-map consumer bins against (_flux_edges) -- a
     # worker's cone trace and the parent's accumulator grid must agree.
     cone_kwargs["flux_grid"] = _receiver_flux_grid(receiver)
+    if want_secondary:
+        cone_kwargs["return_secondary_flux"] = True
+        cone_kwargs["secondary_flux_grid"] = _secondary_flux_grid(secondary)
     if _design_is_flat(design, sol.c3, sol.c4, sol.c5):
         # A deliberately flat mirror (explicit cant_focal_mm=0 on a
         # grid/flower design -- see _design_is_flat) has no focusing figure
@@ -2065,6 +2237,9 @@ def _trace_core(
         # before the bounce, and this scalar models loss AT the bounce.
         result["flux"] = result["flux"] * reflectance
         result["power_w"] = result["power_w"] * reflectance
+        if "secondary_flux" in result:
+            result["secondary_flux"] = result["secondary_flux"] * reflectance
+            result["secondary_power_w"] = result["secondary_power_w"] * reflectance
     return result
 
 
@@ -2185,6 +2360,7 @@ def _field_trace_task(task: tuple) -> tuple[int, dict]:
         slope_error_mrad,
         specularity_mrad,
         reflectance,
+        return_secondary_flux,
     ) = task
     result = _trace_core(
         design,
@@ -2201,6 +2377,7 @@ def _field_trace_task(task: tuple) -> tuple[int, dict]:
         slope_error_mrad=slope_error_mrad,
         specularity_mrad=specularity_mrad,
         reflectance=reflectance,
+        return_secondary_flux=return_secondary_flux,
     )
     return index, result
 
@@ -2247,6 +2424,7 @@ def _trace_field_heliostats(
     workers: int = 1,
     should_cancel: Callable[[], bool] | None = None,
     on_progress: Callable[[int, float], None] | None = None,
+    return_secondary_flux: bool = False,
 ) -> dict:
     """One trace per heliostat, summed onto the receiver grid -- the whole
     field endpoint's "phase 3", shared by the synchronous endpoint and the
@@ -2269,6 +2447,15 @@ def _trace_field_heliostats(
     across every mirror, and half of one summed with the other half missing
     is not a smaller-but-valid answer the way a day sweep's finished
     timesteps are.
+
+    ``return_secondary_flux`` (spec §C) additionally sums the secondary's
+    own incident-flux map across the field -- mirrors the receiver
+    ``histogram2d``/sum pattern above exactly, at
+    :func:`_secondary_flux_edges`'s own resolution (fixed by ``secondary``
+    alone, so every heliostat's per-trace map already shares one grid; no
+    per-heliostat edges to reconcile). Silently contributes nothing when
+    ``secondary`` has no flux map (:func:`secondary_has_flux_map` -- prime
+    focus, pyramid).
     """
     n = xy_mm.shape[0]
     # Cost-weighted companion to the plain per-heliostat count, passed to
@@ -2281,6 +2468,14 @@ def _trace_field_heliostats(
     incident_power_w = 0.0 if mode.backend == "cone" else None
     counters: dict[str, float] = {}
     rows: list[dict | None] = [None] * n
+
+    want_field_secondary = return_secondary_flux and secondary_has_flux_map(secondary)
+    secondary_flux = secondary_power_w = secondary_u_edges = secondary_v_edges = None
+    secondary_fidelity = None
+    if want_field_secondary:
+        secondary_u_edges, secondary_v_edges, _sec_bin_area_m2 = _secondary_flux_edges(secondary)
+        secondary_flux = np.zeros((len(secondary_v_edges) - 1, len(secondary_u_edges) - 1))
+        secondary_power_w = 0.0
     #: One entry per heliostat whose own trace raised -- occlusion already
     #: succeeded for it (that runs once, jointly, for the whole field before
     #: this loop), so its eta numbers are real even though it contributed no
@@ -2304,7 +2499,7 @@ def _trace_field_heliostats(
         }
 
     def consume(i: int, result: dict) -> None:
-        nonlocal power_w, incident_power_w, flux
+        nonlocal power_w, incident_power_w, flux, secondary_flux, secondary_power_w, secondary_fidelity
         eta = float(eta_union[i])
         # Incident power is measured before the bounce (see _trace_core's
         # reflectance note), so it takes shading only: shading removes sun
@@ -2326,6 +2521,13 @@ def _trace_field_heliostats(
             incident_power_w += result["incident_power_w"] * eta_incident
             flux += result["flux"] * eta
         power_w += own_power * eta
+        if want_field_secondary:
+            sec_maps = _secondary_maps_from_result(result, secondary)
+            if sec_maps is not None:
+                s_flux, _s_u, _s_v, s_power_w, s_fidelity = sec_maps
+                secondary_flux = secondary_flux + s_flux * eta
+                secondary_power_w += s_power_w * eta
+                secondary_fidelity = s_fidelity
         for k, v in result["counters"].items():
             counters[k] = counters.get(k, 0) + v
         rows[i] = {
@@ -2336,6 +2538,21 @@ def _trace_field_heliostats(
             "eta_block": float(eta_block[i]),
             "eta": eta,
             "power_w": _clean(own_power * eta),
+        }
+
+    def secondary_field_result() -> dict:
+        if not want_field_secondary:
+            return {}
+        return {
+            "secondary_flux": secondary_flux,
+            "secondary_u_edges": secondary_u_edges,
+            "secondary_v_edges": secondary_v_edges,
+            "secondary_power_w": secondary_power_w,
+            # None only if the field traced zero heliostats; every
+            # contributing heliostat reports the same fidelity (fixed by
+            # `mode`/backend, not by heliostat), so the last one written
+            # (consume() above) speaks for the whole sum.
+            "secondary_fidelity": secondary_fidelity,
         }
 
     if workers <= 1 or n <= 1:
@@ -2358,6 +2575,7 @@ def _trace_field_heliostats(
                     slope_error_mrad=slope_error_mrad,
                     specularity_mrad=specularity_mrad,
                     reflectance=reflectance,
+                    return_secondary_flux=return_secondary_flux,
                 )
             except Exception as exc:  # noqa: BLE001 - isolated per heliostat, see record_failure
                 record_failure(i, exc)
@@ -2372,6 +2590,7 @@ def _trace_field_heliostats(
             "counters": counters,
             "rows": rows,
             "failed": failed,
+            **secondary_field_result(),
         }
 
     pool = _acquire_field_pool(min(workers, n))
@@ -2404,6 +2623,7 @@ def _trace_field_heliostats(
                     slope_error_mrad,
                     specularity_mrad,
                     reflectance,
+                    return_secondary_flux,
                 ),
             )
             future_index[future] = i
@@ -2458,6 +2678,7 @@ def _trace_field_heliostats(
         "counters": counters,
         "rows": rows,
         "failed": failed,
+        **secondary_field_result(),
     }
 
 
@@ -2744,6 +2965,59 @@ def _flux_grid_for(
     return result["flux"], result["u_edges"], result["v_edges"], receiver
 
 
+def _secondary_flux_grid_for(
+    body: "TraceRequest",
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float] | None:
+    """``(flux_w_m2, u_edges, v_edges, secondary_reflectance)`` on the
+    secondary's own surface for one single-heliostat request, or ``None``
+    when there is nothing to export (``optics="prime_focus"``, or any other
+    secondary with no single-valued flux-map parameterization -- see
+    :func:`~heliostat.geometry.secondary.secondary_has_flux_map`).
+
+    The secondary-map analogue of :func:`_flux_grid_for`, sharing its own
+    solve/design/trace path via :func:`_trace_core` so the export can never
+    show a different secondary map than ``/api/trace``'s own ``secondary``
+    payload block for identical inputs.
+    """
+    optics_params = resolve_optics_params(body.optics, body.optics_params)
+    secondary, receiver = _geometry_for(body.optics, optics_params)
+    if not secondary_has_flux_map(secondary):
+        return None
+    sol = _solve_for(
+        body.optics,
+        body.heliostat_x_mm,
+        body.heliostat_y_mm,
+        body.solar_az_deg,
+        body.solar_el_deg,
+        optics_params,
+    )
+    design = _build_trace_design(
+        body.design, sol, _slant_range_mm(sol, body.heliostat_x_mm, body.heliostat_y_mm)
+    )
+    result = _trace_core(
+        design,
+        body.heliostat_x_mm,
+        body.heliostat_y_mm,
+        sol,
+        body.solar_az_deg,
+        body.solar_el_deg,
+        secondary,
+        receiver,
+        body.trace_mode(),
+        mc_return_paths=False,
+        slope_error_mrad=body.design.slope_error_mrad,
+        specularity_mrad=body.design.specularity_mrad,
+        reflectance=body.design.reflectance,
+        return_secondary_flux=True,
+    )
+    secondary_maps = _secondary_maps_from_result(result, secondary)
+    if secondary_maps is None:
+        return None
+    flux, u_edges, v_edges, _power_w, _fidelity = secondary_maps
+    secondary_reflectance = getattr(optics_params, "secondary_reflectance", 0.90)
+    return flux, u_edges, v_edges, secondary_reflectance
+
+
 # ---------------------------------------------------------------------------
 # §D map exports: ANSYS-oriented FEA CSV grids (docs/ui-spec-v0.2.md §D).
 #
@@ -2870,6 +3144,54 @@ def _flux_fea_csv(
     ys_m = gv.ravel() / 1000.0
     flux_flat = flux_w_m2.ravel()
     return _fea_csv_bytes(header, zip(xs_m, ys_m, flux_flat))
+
+
+#: docs/secondary-irradiance-plan.md's u/v convention, the secondary-map
+#: analogue of _RECEIVER_UNROLL_NOTE above -- both AxiconSecondary and
+#: CassegrainSecondary share one parameterization (geometry.secondary), so
+#: unlike the receiver note this needs no per-kind branch.
+_SECONDARY_UNROLL_NOTE = (
+    "secondary surface: u = azimuthal arc length at the aperture rim, seam "
+    "at north (+y); v = horizontal radial distance from the tower axis "
+    "(not true slant distance along the surface)"
+)
+
+
+def _secondary_flux_fea_csv(
+    flux_w_m2: np.ndarray,
+    u_edges_mm: np.ndarray,
+    v_edges_mm: np.ndarray,
+    secondary_reflectance: float,
+    subject_line: str,
+) -> bytes:
+    """Spec §C / §D irradiance-map export for the SECONDARY's own surface:
+    ``x_m, y_m, flux_w_m2, absorbed_w_m2`` -- one row per bin centre, same
+    commented-header convention as :func:`_flux_fea_csv`
+    and :func:`_sag_fea_csv`, plus the fourth ``absorbed`` column §D calls
+    for on this map specifically (``(1 - secondary_reflectance) *
+    flux_w_m2``, the same formula the live absorbed-heat readout uses).
+
+    ``x, y`` are the secondary's unrolled ``(u, v)`` converted straight to
+    meters, exactly as a curved receiver's export already does -- see
+    :data:`_SECONDARY_UNROLL_NOTE`.
+    """
+    u_mid = 0.5 * (u_edges_mm[:-1] + u_edges_mm[1:])
+    v_mid = 0.5 * (v_edges_mm[:-1] + v_edges_mm[1:])
+    gu, gv = np.meshgrid(u_mid, v_mid)  # (n_v, n_u), matches flux's own shape
+    header = _fea_csv_header(
+        units_line=(
+            "x_m, y_m in meters; flux_w_m2, absorbed_w_m2 in W/m² "
+            f"(absorbed = (1 - secondary_reflectance) * flux, secondary_reflectance={secondary_reflectance:g})"
+        ),
+        subject_line=subject_line,
+        grid_line=f"{gu.shape[1]} x {gu.shape[0]} bins",
+        extra_lines=(_SECONDARY_UNROLL_NOTE,),
+    )
+    xs_m = gu.ravel() / 1000.0
+    ys_m = gv.ravel() / 1000.0
+    flux_flat = flux_w_m2.ravel()
+    absorbed_flat = flux_flat * (1.0 - secondary_reflectance)
+    return _fea_csv_bytes(header, zip(xs_m, ys_m, flux_flat, absorbed_flat))
 
 
 def _render_day_png(steps: list[dict]) -> bytes:
@@ -4273,6 +4595,40 @@ def create_app():
             headers={"Content-Disposition": 'attachment; filename="heliostat-flux-fea.csv"'},
         )
 
+    @app.post("/api/trace/secondary_flux_fea.csv")
+    def trace_secondary_flux_fea_csv(body: TraceRequest) -> Response:
+        """Spec §C/§D: the secondary's own incident-flux map as an FEA CSV
+        grid -- ``x, y, flux, absorbed`` (:func:`_secondary_flux_fea_csv`),
+        the same commented-header convention as
+        ``/api/trace/flux_fea.csv``/the sag export. 404s for a layout with
+        no secondary flux map (prime focus; any secondary with no
+        single-valued (u, v) parameterization) rather than returning an
+        empty file.
+        """
+        grid = _secondary_flux_grid_for(body)
+        if grid is None:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"optics={body.optics!r} has no secondary irradiance map "
+                    "(prime focus has no secondary; only axicon/Cassegrain do)"
+                ),
+            )
+        flux, u_edges, v_edges, secondary_reflectance = grid
+        subject = _fea_subject_line(
+            f"single heliostat at x={body.heliostat_x_mm / 1000.0:.3f} m, "
+            f"y={body.heliostat_y_mm / 1000.0:.3f} m",
+            body.solar_az_deg,
+            body.solar_el_deg,
+            body.mode,
+        )
+        csv_bytes = _secondary_flux_fea_csv(flux, u_edges, v_edges, secondary_reflectance, subject)
+        return Response(
+            content=csv_bytes,
+            media_type="text/csv",
+            headers={"Content-Disposition": 'attachment; filename="heliostat-secondary-flux-fea.csv"'},
+        )
+
     @app.post("/api/sun")
     def sun(body: SunRequest) -> JSONResponse:
         """Sun azimuth/elevation for a site and moment, plus that day's
@@ -4479,6 +4835,7 @@ def create_app():
             slope_error_mrad=body.design.slope_error_mrad,
             specularity_mrad=body.design.specularity_mrad,
             reflectance=body.design.reflectance,
+            return_secondary_flux=body.include_secondary_flux,
         )
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
 
@@ -4506,6 +4863,21 @@ def create_app():
             rms_mm, centroid = _cone_metrics(flux, u_edges, v_edges)
 
         png_bytes = _render_flux_png(flux, u_edges, v_edges, body.mode, elapsed_ms)
+
+        # Spec §C: incident flux on the secondary's own surface, alongside
+        # the receiver map -- only when requested and only for a secondary
+        # with a single-valued (u, v) parameterization (axicon/Cassegrain;
+        # silently absent for prime_focus/pyramid, see
+        # _secondary_maps_from_result).
+        secondary_payload = None
+        if body.include_secondary_flux:
+            secondary_maps = _secondary_maps_from_result(result, secondary)
+            if secondary_maps is not None:
+                secondary_payload = _secondary_payload(
+                    *secondary_maps,
+                    secondary_reflectance=getattr(optics_params, "secondary_reflectance", 0.90),
+                    include_flux_grid=body.include_flux_grid,
+                )
 
         # The 3-D view's geometry, built from exactly the values the trace
         # above was given (see heliostat.web.scene). Strictly additive: it
@@ -4543,6 +4915,7 @@ def create_app():
                 "mode": body.mode,
                 "flux_png": base64.b64encode(png_bytes).decode("ascii"),
                 "flux_grid": _flux_grid_payload(flux, u_edges, v_edges) if body.include_flux_grid else None,
+                "secondary": secondary_payload,
                 "aim_point_mm": [aim_x_mm, aim_y_mm, aim_z_mm],
                 "slant_range_m": slant_range_mm / 1000.0,
                 # What the tower geometry actually resolved to, so the
@@ -4658,6 +5031,7 @@ def create_app():
             v_edges,
             bin_area_m2,
             workers=body.workers or 1,
+            return_secondary_flux=body.include_secondary_flux,
         )
         flux = traced["flux"]
         power_w = traced["power_w"]
@@ -4666,6 +5040,18 @@ def create_app():
         rows = traced["rows"]
         failed = traced["failed"]
         t_trace = time.perf_counter()
+
+        secondary_payload = None
+        if body.include_secondary_flux and "secondary_flux" in traced:
+            secondary_payload = _secondary_payload(
+                traced["secondary_flux"],
+                traced["secondary_u_edges"],
+                traced["secondary_v_edges"],
+                traced["secondary_power_w"],
+                traced["secondary_fidelity"] or "coarse",
+                secondary_reflectance=getattr(optics_params, "secondary_reflectance", 0.90),
+                include_flux_grid=body.include_flux_grid,
+            )
 
         rms_mm, centroid = _cone_metrics(flux, u_edges, v_edges)
         elapsed_ms = (t_trace - t0) * 1000.0
@@ -4715,6 +5101,7 @@ def create_app():
                 "mode": body.mode,
                 "flux_png": base64.b64encode(png_bytes).decode("ascii"),
                 "flux_grid": _flux_grid_payload(flux, u_edges, v_edges) if body.include_flux_grid else None,
+                "secondary": secondary_payload,
                 "n_heliostats": n,
                 "eta_min": _clean(float(np.min(eta_union))),
                 "eta_median": _clean(float(np.median(eta_union))),
@@ -4815,6 +5202,7 @@ def create_app():
                     workers=workers,
                     should_cancel=job.cancelled,
                     on_progress=on_progress,
+                    return_secondary_flux=body.include_secondary_flux,
                 )
             except _TraceCancelled:
                 return None
@@ -4826,6 +5214,18 @@ def create_app():
             counters = traced["counters"]
             rows = traced["rows"]
             failed = traced["failed"]
+
+            secondary_payload = None
+            if body.include_secondary_flux and "secondary_flux" in traced:
+                secondary_payload = _secondary_payload(
+                    traced["secondary_flux"],
+                    traced["secondary_u_edges"],
+                    traced["secondary_v_edges"],
+                    traced["secondary_power_w"],
+                    traced["secondary_fidelity"] or "coarse",
+                    secondary_reflectance=getattr(optics_params, "secondary_reflectance", 0.90),
+                    include_flux_grid=body.include_flux_grid,
+                )
 
             rms_mm, centroid = _cone_metrics(flux, u_edges, v_edges)
             elapsed_ms = (t_trace - t0) * 1000.0
@@ -4875,6 +5275,7 @@ def create_app():
                 "mode": body.mode,
                 "flux_png": base64.b64encode(png_bytes).decode("ascii"),
                 "flux_grid": _flux_grid_payload(flux, u_edges, v_edges) if body.include_flux_grid else None,
+                "secondary": secondary_payload,
                 "n_heliostats": n,
                 "eta_min": _clean(float(np.min(eta_union))),
                 "eta_median": _clean(float(np.median(eta_union))),
