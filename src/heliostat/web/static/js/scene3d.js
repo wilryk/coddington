@@ -73,17 +73,19 @@ function disposeObject(obj) {
   });
 }
 
-// North indicator (v0.2 fix wave item 3): a quiet ground-plane compass mark
-// at the grid's own +y edge -- true north, per this module's own world-frame
-// docstring above (x east, y north, z up) -- so it reads as the 3D twin of
-// the plan view's north arrow (js/views/plan.js's chromeSvg) rather than a
-// second, disagreeing convention. Kept as faint as the grid it sits on
-// (docs/ui-spec.md 2.1's "quiet" chrome): same GRID_COLOR, low opacity, no
-// outline. The "N" label is a camera-facing sprite (a canvas texture) so it
-// stays legible from any orbit angle without needing real 3D text geometry.
-let northLabelTexture = null;
-function northLabelSprite() {
-  if (!northLabelTexture) {
+// Compass indicators (v0.2 fix wave item 3, extended per user request): quiet
+// ground-plane marks at the grid's own edges -- +y is true north per this
+// module's world-frame docstring above (x east, y north, z up) -- so they
+// read as the 3D twin of the plan view's north arrow (js/views/plan.js's
+// chromeSvg) rather than a second, disagreeing convention. Kept as faint as
+// the grid they sit on (docs/ui-spec.md 2.1's "quiet" chrome): same
+// GRID_COLOR, low opacity, no outline. Labels are camera-facing sprites
+// (canvas textures) so they stay legible from any orbit angle without real
+// 3D text geometry. North alone keeps the arrowhead -- one primary direction,
+// three supporting letters, not four shouting arrows.
+const compassLabelTextures = {};
+function compassLabelSprite(letter) {
+  if (!compassLabelTextures[letter]) {
     const canvas = document.createElement("canvas");
     canvas.width = 64;
     canvas.height = 64;
@@ -92,23 +94,27 @@ function northLabelSprite() {
     ctx.fillStyle = "rgba(110, 130, 150, 0.8)"; // GRID_COLOR (0x6e8296), same family as plan.js's #64748b
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText("N", 32, 34);
-    northLabelTexture = new THREE.CanvasTexture(canvas);
+    ctx.fillText(letter, 32, 34);
+    compassLabelTextures[letter] = new THREE.CanvasTexture(canvas);
   }
   // A fresh material per call (disposeObject below reclaims it on rebuild),
-  // but the canvas texture itself is cached module-wide -- disposing a
+  // but the canvas textures themselves are cached module-wide -- disposing a
   // material never disposes the texture it points at, so this is safe.
-  const material = new THREE.SpriteMaterial({ map: northLabelTexture, transparent: true, depthWrite: false });
+  const material = new THREE.SpriteMaterial({
+    map: compassLabelTextures[letter],
+    transparent: true,
+    depthWrite: false,
+  });
   return new THREE.Sprite(material);
 }
 
-function buildNorthMarker(extentM) {
+function buildCompassMarkers(extentM) {
   const group = new THREE.Group();
   const z = -GROUND_OFFSET_MM * MM + 0.01; // a hair above the ground grid, avoids z-fighting
-  const y = extentM; // the grid's own north edge
+  const labelSize = Math.max(1.2, extentM * 0.045);
 
   // A small, flat, faint arrowhead pointing north (+y), lying on the ground
-  // the same way the grid itself does.
+  // the same way the grid itself does. North only -- see the note above.
   const len = Math.max(1.5, extentM * 0.035);
   const shape = new THREE.Shape();
   shape.moveTo(0, len);
@@ -122,14 +128,23 @@ function buildNorthMarker(extentM) {
     side: THREE.DoubleSide,
   });
   const arrow = new THREE.Mesh(new THREE.ShapeGeometry(shape), arrowMat);
-  arrow.position.set(0, y - len, z);
+  arrow.position.set(0, extentM - len, z);
   group.add(arrow);
 
-  const label = northLabelSprite();
-  const labelSize = Math.max(1.2, extentM * 0.045);
-  label.scale.set(labelSize, labelSize, 1);
-  label.position.set(0, y + labelSize * 0.6, z);
-  group.add(label);
+  // Compass convention: +y north, +x east (screen-truth for this scene), so
+  // E sits at +x, S at -y, W at -x, each just past its own grid edge.
+  const edges = [
+    { letter: "N", x: 0, y: extentM + labelSize * 0.6 },
+    { letter: "E", x: extentM + labelSize * 0.6, y: 0 },
+    { letter: "S", x: 0, y: -extentM - labelSize * 0.6 },
+    { letter: "W", x: -extentM - labelSize * 0.6, y: 0 },
+  ];
+  for (const { letter, x, y } of edges) {
+    const label = compassLabelSprite(letter);
+    label.scale.set(labelSize, labelSize, 1);
+    label.position.set(x, y, z);
+    group.add(label);
+  }
 
   return group;
 }
@@ -297,7 +312,7 @@ export function createScene(container, callbacks) {
     grid.material.transparent = true;
     grid.material.opacity = 0.12;
     groundGroup.add(grid);
-    groundGroup.add(buildNorthMarker(extent));
+    groundGroup.add(buildCompassMarkers(extent));
   }
 
   // Per-instance color for one heliostat id: selection wins over the miss
