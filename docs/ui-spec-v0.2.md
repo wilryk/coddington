@@ -114,7 +114,9 @@ The desktop build stops presenting as a webpage. Requested by Ryker after evalua
 - The backend still binds localhost (unchanged architecture); a second launch focuses the existing window rather than starting a second server. Browser access to the localhost port keeps working for anyone who wants it — the shell is presentation, not a lockout.
 - Dev mode (`uvicorn` + a browser tab) is unchanged — this section is about the shipped build.
 
-## M. Post-sign-off additions (DRAFT — from Ryker's 2026-08-26 feedback, awaiting approval)
+## M. Post-sign-off additions (APPROVED 2026-08-26 with riders — M14 confirmed; M15 approved but its home is pending §N; M16 approved + compass rider; M17 approved)
+
+Riders from the approval: **(a)** irradiance maps gain **N/E/S/W compass markings** (flat window: compass directions on the map edges; unwrapped cylinder/frustum: the azimuth axis labeled in compass terms) — consistent with the 3D scene's new compass markers; **(b)** the plan-view power coloring (M.1) may belong in the Ray Trace tab rather than the Workspace plan view — decided by §N below.
 
 1. **Power per heliostat in the plan view.** After a field trace, the plan view can color each heliostat by its delivered power (or efficiency), with a small legend — answering "which heliostats are actually doing the work?" at a glance. Toggle on the plan view; colors update per trace and dim when stale, like other results.
 2. **Sweep drill-down to one heliostat.** From any day-sweep or year-estimate timestep, in addition to the field irradiance map: pick a heliostat (click in a mini plan or by id) and see *that heliostat's own* flux footprint at that timestep. Computed on demand as a single-heliostat trace at the stored sun position — same mechanism the per-timestep field maps already use, so nothing new is stored.
@@ -123,6 +125,14 @@ The desktop build stops presenting as a webpage. Requested by Ryker after evalua
 5. Not new items, recorded as confirmations: Ultra-fast ray-count reduction is covered by §B's coarser-stencil lever (Ryker's field-summed-error argument is exactly the §B validation gate); flat-window tip/tilt is §I's oriented plane and applies to any prime-focus flat window, not only polar fields; "easier radial staggered" and the North/South sector field land with the rev-5 layout picker + §I sector control.
 
 Mockups: M14 (desktop shell, §L), M15 (plan-view power coloring + drill-down), M16 (3D receiver drape), M17 (analysis aperture + encircled-power curve) to be added to the mockup page for approval.
+
+## N. Tab restructure: Ray Trace vs. Analysis (decisions 2026-08-26; declutter proposal pending mockup M18)
+
+Ryker raised splitting the Analysis tab and decluttering the Workspace. Decided 2026-08-26:
+
+- **Workspace** — the four design stages, live 3D/plan/elevation, corner rays. **Run + fidelity stay here too** (one shared state seen twice, like fidelity today): tracing what you're designing is core to the 3D-first vision. What else leaves the Workspace is proposed in **mockup M18** for Ryker's reaction, not decided in prose.
+- **Ray Trace** (new tab) — everything about one instant's trace: fidelity + run + progress (the second home), irradiance maps (receiver/secondary selector, compass markings per §M rider), the 3D drape toggle (M.3), per-heliostat power coloring (M.1 — its home, per the M15 rider), single-heliostat footprint inspection (M.2's richer viewer), the analysis aperture (M.4), FEA exports. "What does the light do right now."
+- **Analysis** — time-integrated studies: day sweep, year estimate, energy plots, timestep table, saved runs. **Timestep irradiance maps stay inline** beside the table for fast scrubbing (decided), with an "Open in Ray Trace" link for the richer viewers one click deeper.
 
 ## J. Acceptance checklist (v0.2 additions)
 
