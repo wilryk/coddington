@@ -30,6 +30,7 @@ from heliostat.dni import ClearSkyDNI  # noqa: E402
 from heliostat.geometry.design import _petal_at_angle, flower, grid_facets  # noqa: E402
 from heliostat.geometry.heliostat import zernike_sag_and_slopes  # noqa: E402
 from heliostat.geometry.secondary import solve_cassegrain_relay  # noqa: E402
+from heliostat.solar import build_time_grid  # noqa: E402
 from heliostat.trace.mc import MIRROR_HALF_X_MM, MIRROR_HALF_Y_MM  # noqa: E402
 from heliostat.web import app as app_module  # noqa: E402
 from heliostat.web.app import (  # noqa: E402
@@ -62,6 +63,7 @@ from heliostat.web.app import (  # noqa: E402
     FermatLayout,
     FlowerParams,
     RadialStaggeredLayout,
+    YearTraceRequest,
     _build_trace_design,
     _day_flux_step_indices,
     _day_timesteps,
@@ -69,6 +71,8 @@ from heliostat.web.app import (  # noqa: E402
     _geometry_for,
     _slant_range_mm,
     _solve_for,
+    _year_energy_cfg,
+    _year_trace_dates,
     create_app,
     resolve_optics_params,
 )
@@ -2554,6 +2558,37 @@ def _run_year(client, **overrides):
         time.sleep(0.05)
     assert status["state"] == "done", status
     return job_id, client.get(f"/api/year/result/{job_id}").json()
+
+
+def test_year_hour_step_scales_the_time_grid_like_the_day_sweep_does():
+    """The Analysis tab's "Timestep (h)" field drives the day sweep and,
+    since bug fix, the year estimate too -- YearTraceRequest.hour_step
+    (default 1.0, same field/semantics as DayTraceRequest's) must actually
+    coarsen or refine the traced time grid, not just be accepted and
+    ignored (which is what shipped: the year estimate always traced at a
+    hardcoded ~1 h regardless of what the day sweep's own field said).
+
+    Pinned through heliostat.web.app's own _year_energy_cfg/
+    _year_trace_dates/build_time_grid -- the exact three calls
+    /api/year/start makes before it ever starts tracing -- rather than
+    running a real (background-job) year estimate, so this is cheap and
+    needs no polling loop.
+    """
+
+    def n_steps(hour_step):
+        req = YearTraceRequest.model_validate(_year_payload(hour_step=hour_step, fast_mode=True))
+        cfg = _year_energy_cfg(req)
+        trace_dates = _year_trace_dates(cfg, req.site.year, req.fast_mode)
+        cfg.sweep.dates = trace_dates
+        return len(build_time_grid(cfg, trace_dates))
+
+    n_fine = n_steps(0.5)
+    n_coarse = n_steps(3.0)
+    assert n_fine > n_coarse
+    # Not just "more" -- roughly the 6x the hour_step ratio implies, which
+    # is what pins the field as actually wired through rather than merely
+    # nudging the count by some unrelated side effect.
+    assert n_fine / n_coarse == pytest.approx(6.0, rel=0.35)
 
 
 def test_year_start_reports_a_plausible_finite_annual_total(client):

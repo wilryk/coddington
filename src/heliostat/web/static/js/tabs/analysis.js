@@ -64,10 +64,13 @@ let lastContainer = null;
 
 // -- day-sweep run state (module-local -- see header) ----------------------
 let formDate = DEFAULT_DATE;
+// Shared by the day sweep and the year estimate -- both YearTraceRequest and
+// DayTraceRequest take the same hour_step (max spacing between samples), so
+// one control covers both rather than duplicating it per panel. See
+// startYear()'s buildYearRequest call and estimateYearTimesteps.
 let formHourStep = DEFAULT_HOUR_STEP;
-// Shared by the day sweep and the year estimate -- both skip timesteps below
-// this sun elevation (heliostat.solar.build_time_grid's min_elevation_deg),
-// so one control covers both rather than duplicating it per panel.
+// Shared the same way -- both skip timesteps below this sun elevation
+// (heliostat.solar.build_time_grid's min_elevation_deg).
 let formMinElevationDeg = DEFAULT_MIN_ELEVATION_DEG;
 
 let jobId = null;
@@ -248,9 +251,9 @@ function estimateDayTimesteps(hourStep, minElevationDeg) {
   return Math.max(2, Math.ceil(daylightH / Math.max(0.05, hourStep)) + 1);
 }
 
-function estimateYearTimesteps(fastMode, minElevationDeg) {
+function estimateYearTimesteps(fastMode, hourStep, minElevationDeg) {
   const nDates = fastMode ? 7 : 12;
-  return nDates * estimateDayTimesteps(1.0, minElevationDeg);
+  return nDates * estimateDayTimesteps(hourStep, minElevationDeg);
 }
 
 function currentHeliostatCount(ctx) {
@@ -691,6 +694,7 @@ function startYear() {
   const body = buildYearRequest(doc, ui, {
     site: {},
     fastMode: yearFastMode,
+    hour_step: formHourStep,
     min_elevation_deg: formMinElevationDeg,
   });
   yearSweepRequest = body;
@@ -1241,6 +1245,11 @@ function build(container) {
   stepInput.addEventListener("input", () => {
     const v = parseFloat(stepInput.value);
     if (Number.isFinite(v) && v > 0) formHourStep = v;
+    // The rough duration estimate (both the day sweep's own line and the
+    // year estimate's, which shares this same control) reads formHourStep
+    // live -- without a repaint here it would only catch up the next time
+    // something else happens to touch paint(), same bug as elevInput below.
+    paintIfVisible();
   });
   stepField.appendChild(stepLabel);
   stepField.appendChild(stepInput);
@@ -1260,6 +1269,8 @@ function build(container) {
   elevInput.addEventListener("input", () => {
     const v = parseFloat(elevInput.value);
     if (Number.isFinite(v) && v >= 0) formMinElevationDeg = v;
+    // See stepInput's own listener above -- same reason.
+    paintIfVisible();
   });
   elevField.appendChild(elevLabel);
   elevField.appendChild(elevInput);
@@ -1961,7 +1972,7 @@ function paintYearControls() {
   if (!busy) {
     const fidelity = store.get("ui.fidelity");
     const nHeliostats = currentHeliostatCount(lastCtx);
-    const nTimesteps = estimateYearTimesteps(yearFastMode, formMinElevationDeg);
+    const nTimesteps = estimateYearTimesteps(yearFastMode, formHourStep, formMinElevationDeg);
     const estimateS = estimateDurationS(fidelity, nHeliostats, nTimesteps);
     const text = durationWarningText(estimateS, nHeliostats, nTimesteps);
     els.yearDurationHint.hidden = !text;

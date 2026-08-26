@@ -208,6 +208,11 @@ export function buildYearRequest(doc, ui, opts) {
   const body = buildTraceRequest(doc, ui);
   body.site = opts.site;
   body.fast_mode = opts.fastMode !== false;
+  // Same "Timestep (h)" control the day sweep uses -- YearTraceRequest takes
+  // hour_step itself (default 1.0, same as DayTraceRequest's), so without
+  // this the year job silently traced at 1 h regardless of what the day
+  // sweep's own field said.
+  if (opts.hour_step != null) body.hour_step = opts.hour_step;
   if (opts.min_elevation_deg != null) body.min_elevation_deg = opts.min_elevation_deg;
   return body;
 }
