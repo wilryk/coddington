@@ -22,24 +22,26 @@ function fmt(x, digits) {
   return x.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
 }
 
-// The response carries peak_flux_kw_m2, power_w, incident_power_w and
-// per-stage ray counters (heliostat.web.app's /api/trace and
-// /api/field/trace) but no literal "mean flux" or "intercept efficiency"
-// field. Mean flux is derived from power over the receiver window's own
-// area (optics_resolved's window_half_u/v_mm, echoed by both endpoints);
-// intercept is power/incident for the cone backends, or in_window/
-// hit_secondary from the counters for Monte Carlo, which carries no
-// incident_power_w. Both are judgment calls, noted in the build report.
+// The response carries peak_flux_kw_m2, mean_flux_kw_m2, power_w,
+// incident_power_w and per-stage ray counters (heliostat.web.app's
+// /api/trace and /api/field/trace) but no literal "intercept efficiency"
+// field. mean_flux_kw_m2 is the backend's own area-weighted mean over the
+// receiver's full modeled surface (see app.py's _mean_flux_kw_m2) -- this
+// used to be derived here from power_w over a box built from
+// optics_resolved's window_half_u/v_mm, but those describe the ENTRANCE
+// APERTURE (see PrimeFocusOptics), not the absorbing surface behind it;
+// for a curved receiver (cylinder/frustum) that box has nothing to do with
+// the receiver's true area, so the derived "mean" could land above the
+// correctly-normalised peak (observed: peak 1007.1 kW/m^2, mean
+// 1393.1 kW/m^2). Reading the backend's own field keeps both numbers drawn
+// from the same flux grid, so peak >= mean always. Intercept is
+// power/incident for the cone backends, or in_window/hit_secondary from
+// the counters for Monte Carlo, which carries no incident_power_w -- a
+// judgment call, noted in the build report.
 function deriveMetrics(data) {
   const out = { peak: null, mean: null, intercept: null };
   if (data.peak_flux_kw_m2 != null) out.peak = data.peak_flux_kw_m2;
-  const resolved = data.optics_resolved || {};
-  const halfU = resolved.window_half_u_mm;
-  const halfV = resolved.window_half_v_mm;
-  if (halfU && halfV && data.power_w != null) {
-    const areaM2 = ((halfU * 2) / 1000) * ((halfV * 2) / 1000);
-    if (areaM2 > 0) out.mean = data.power_w / areaM2 / 1000;
-  }
+  if (data.mean_flux_kw_m2 != null) out.mean = data.mean_flux_kw_m2;
   if (data.incident_power_w != null && data.incident_power_w > 0) {
     // The kernel integration can land a fraction of a percent above the
     // analytic incident power, and "100.1 %" reads as a bug rather than

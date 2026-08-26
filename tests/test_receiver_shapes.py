@@ -591,3 +591,90 @@ def test_frustum_uv_to_world_pins_bottom_and_top_rim_to_the_dataclass_fields():
     assert math.hypot(x0, y0) == pytest.approx(receiver.r_bot_mm, abs=1e-6)
     assert z1 == pytest.approx(receiver.z_top_mm, abs=1e-6)
     assert math.hypot(x1, y1) == pytest.approx(receiver.r_top_mm, abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# peak vs mean flux (user-reported bug: a FRUSTUM trace once reported peak
+# 1007.1 kW/m^2 but mean 1393.1 kW/m^2 -- mean > peak is impossible for two
+# numbers drawn from one consistently-normalised flux field. Root cause: the
+# results-strip's mean flux (run.js's old deriveMetrics) divided power_w by a
+# box built from optics_resolved's window_half_u/v_mm -- the entrance
+# APERTURE's own half-extents (PrimeFocusOptics), unrelated to the actual
+# absorbing surface's size for a curved receiver. peak_flux_kw_m2, by
+# contrast, has always come from the true per-bin curved-surface areas
+# (Receiver.bin_areas_m2). The fix: the backend now reports its own
+# mean_flux_kw_m2 (app.py's _mean_flux_kw_m2), the area-weighted mean of the
+# SAME flux grid peak_flux_kw_m2 takes its max from, which is <= that max by
+# construction; the frontend just reads it instead of re-deriving it.
+
+
+def test_frustum_bin_areas_sum_to_the_analytic_lateral_area():
+    """`FrustumReceiver.bin_areas_m2` varies row by row (bins shrink toward
+    the narrow end), but summed over the whole grid it must reproduce the
+    textbook lateral-surface-area formula for a truncated cone, regardless of
+    grid resolution or which end is wider."""
+    for r_bot, r_top, z_bot, z_top in [
+        (2500.0, 4000.0, 30000.0, 36000.0),  # flares outward (upright)
+        (4000.0, 2500.0, 30000.0, 36000.0),  # tapers inward (inverted)
+    ]:
+        receiver = FrustumReceiver(z_bot_mm=z_bot, r_bot_mm=r_bot, z_top_mm=z_top, r_top_mm=r_top)
+        slant_m = receiver.slant_length_mm / 1000.0
+        analytic_area_m2 = math.pi * (r_bot + r_top) / 1000.0 * slant_m
+        for grid in [(64, 32), (128, 128), (16, 200)]:
+            total = float(np.sum(receiver.bin_areas_m2(grid)))
+            assert total == pytest.approx(analytic_area_m2, rel=1e-9)
+
+
+@pytest.mark.parametrize(
+    "optics_params",
+    [
+        {},
+        {"receiver_type": "cylinder", "cylinder_radius_mm": 3000.0, "cylinder_height_mm": 6000.0},
+        {"receiver_type": "frustum"},
+        # A frustum much bigger than the (unrelated) entrance aperture --
+        # the configuration that used to invert peak and mean once enough
+        # power landed relative to the aperture's own tiny box area.
+        {
+            "receiver_type": "frustum",
+            "frustum_bottom_radius_mm": 6000.0,
+            "frustum_top_radius_mm": 8000.0,
+            "frustum_height_mm": 10000.0,
+            "focus_height_mm": 40000.0,
+        },
+    ],
+    ids=["flat", "cylinder", "frustum", "frustum-oversized"],
+)
+def test_single_trace_peak_flux_is_never_below_mean_flux(client, optics_params):
+    data = client.post("/api/trace", json=_payload(optics_params, mode="fast_accurate")).json()
+    assert data["power_w"] > 0
+    assert data["peak_flux_kw_m2"] >= data["mean_flux_kw_m2"]
+
+
+@pytest.mark.parametrize(
+    "optics_params",
+    [
+        {"receiver_type": "cylinder", "cylinder_radius_mm": 3000.0, "cylinder_height_mm": 6000.0},
+        {
+            "receiver_type": "frustum",
+            "frustum_bottom_radius_mm": 6000.0,
+            "frustum_top_radius_mm": 8000.0,
+            "frustum_height_mm": 10000.0,
+            "focus_height_mm": 40000.0,
+        },
+    ],
+    ids=["cylinder", "frustum-oversized"],
+)
+def test_field_trace_peak_flux_is_never_below_mean_flux(optics_params):
+    """Same claim with several heliostats landing across more of the
+    surface -- the buggy aperture-box divisor only diverged far enough from
+    the true surface area to invert peak/mean once a field (not just one
+    mirror) was summed onto it."""
+    client = TestClient(create_app())
+    resp = client.post(
+        "/api/field/trace",
+        json=_field_payload(optics_params, n=40, mode="ultra_fast"),
+    )
+    data = resp.json()
+    assert resp.status_code == 200
+    assert data["power_w"] > 0
+    assert data["peak_flux_kw_m2"] >= data["mean_flux_kw_m2"]

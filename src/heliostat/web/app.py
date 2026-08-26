@@ -1840,6 +1840,43 @@ def _mc_flux_and_metrics(xy: np.ndarray, watts_per_ray: float, receiver: Receive
     return flux, u_edges, v_edges, rms, (float(cen[0]), float(cen[1]))
 
 
+def _mean_flux_kw_m2(flux: np.ndarray, bin_area_m2: np.ndarray | float) -> float:
+    """Mean flux over the receiver's WHOLE modeled surface, kW/m^2.
+
+    "Mean" here is the area-weighted average of the same per-bin flux grid
+    ``peak_flux_kw_m2`` takes its max from -- ``sum(flux * bin_area) /
+    sum(bin_area)`` -- over every bin the flux map covers (the full
+    ``uv_extent``, dark bins included), not just the illuminated footprint.
+    That is a deliberate choice: it is the definition under which
+    ``mean <= max`` holds unconditionally, because a weighted average of a
+    set of values can never exceed the largest one. Restricting the average
+    to only the illuminated bins would still respect that bound, but "mean
+    over the illuminated window" and "peak over the illuminated window" are
+    both defensible; this file picks whole-surface for both so a caller
+    comparing the two numbers is always comparing apples to apples.
+
+    ``bin_area_m2`` may be a per-bin ``(n_v, n_u)`` array (a frustum's bins
+    shrink toward its narrow end -- see ``Receiver.bin_areas_m2``) or a
+    scalar (uniform bins, e.g. a flat window). Either broadcasts correctly
+    against ``flux``.
+
+    This replaced a frontend computation (``deriveMetrics`` in
+    ``run.js``) that divided ``power_w`` by a box built from
+    ``window_half_u_mm``/``window_half_v_mm`` -- the entrance APERTURE's own
+    half-extents (see ``PrimeFocusOptics``), sized independently of the
+    actual absorbing surface behind it. For a curved receiver (cylinder,
+    frustum) that box has nothing to do with the receiver's true area, so
+    the resulting "mean" could land on either side of the correctly
+    per-bin-normalised peak -- observed in the field as peak 1007.1 kW/m^2
+    but mean 1393.1 kW/m^2, which is impossible for two numbers drawn from
+    one consistently-normalised flux field.
+    """
+    total_area = float(np.sum(bin_area_m2 * np.ones_like(flux)))
+    if total_area <= 0.0:
+        return 0.0
+    return float(np.sum(flux * bin_area_m2)) / total_area / 1000.0
+
+
 def _cone_metrics(flux: np.ndarray, u_edges: np.ndarray, v_edges: np.ndarray):
     """Spot centroid/RMS from a cone-backend flux grid (same recipe as the
     flower cross-backend test in ``tests/test_design_tracing.py``)."""
@@ -2547,6 +2584,7 @@ def _trace_instant_metrics(
     out = {
         "power_w": float(power_w),
         "peak_flux_kw_m2": float(np.max(flux)) / 1000.0,
+        "mean_flux_kw_m2": _mean_flux_kw_m2(flux, bin_area_m2),
         "rms_radius_mm": rms_mm,
         "centroid_mm": list(centroid),
         "eta_shade_mean": float(np.mean(eta_shade)),
@@ -3970,6 +4008,7 @@ def create_app():
                 "incident_power_w": _clean(incident_power_w),
                 "note": _zero_power_note(counters, _clean(power_w)),
                 "peak_flux_kw_m2": _clean(float(np.max(flux)) / 1000.0),
+                "mean_flux_kw_m2": _clean(_mean_flux_kw_m2(flux, receiver.bin_areas_m2((FLUX_GRID, FLUX_GRID)))),
                 "rms_radius_mm": _clean(rms_mm),
                 "centroid_mm": [_clean(centroid[0]), _clean(centroid[1])],
                 "counters": {k: int(v) for k, v in counters.items()},
@@ -4137,6 +4176,7 @@ def create_app():
                 "incident_power_w": _clean(incident_power_w),
                 "note": _zero_power_note(counters, _clean(power_w)),
                 "peak_flux_kw_m2": _clean(float(np.max(flux)) / 1000.0),
+                "mean_flux_kw_m2": _clean(_mean_flux_kw_m2(flux, bin_area_m2)),
                 "rms_radius_mm": _clean(rms_mm),
                 "centroid_mm": [_clean(centroid[0]), _clean(centroid[1])],
                 "counters": {k: int(v) for k, v in counters.items()},
@@ -4298,6 +4338,7 @@ def create_app():
                 "incident_power_w": _clean(incident_power_w),
                 "note": _zero_power_note(counters, _clean(power_w)),
                 "peak_flux_kw_m2": _clean(float(np.max(flux)) / 1000.0),
+                "mean_flux_kw_m2": _clean(_mean_flux_kw_m2(flux, bin_area_m2)),
                 "rms_radius_mm": _clean(rms_mm),
                 "centroid_mm": [_clean(centroid[0]), _clean(centroid[1])],
                 "counters": {k: int(v) for k, v in counters.items()},
