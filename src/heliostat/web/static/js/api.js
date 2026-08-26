@@ -191,6 +191,19 @@ export function dayFluxFeaCsvUrl(jobId, stepIndex) {
   return `${API_BASE}/day/flux/${encodeURIComponent(jobId)}/${stepIndex}.csv`;
 }
 
+// docs/ui-spec-v0.2.md §M.4: that same stored timestep's flux map as a
+// compact JSON grid -- built once alongside the PNG/CSV during the sweep
+// itself, never a re-trace (see heliostat.web.app's _day_flux_grid_blob_key).
+// The Analysis tab's aperture reads this and does its own arithmetic
+// against it client-side (power within a radius, avg flux, avg
+// concentration, the encircled-power curve) -- a real fetch wrapper, unlike
+// dayFluxUrl/dayFluxFeaCsvUrl above, because the caller needs the parsed
+// numbers, not just a URL to hand to an <img>/<a>. Same has_flux_map/404
+// rules as those two siblings.
+export function getDayFluxGrid(jobId, stepIndex, signal) {
+  return getJSON(`/day/flux/${encodeURIComponent(jobId)}/${stepIndex}.grid.json`, signal);
+}
+
 // `hour_step` is a MAXIMUM spacing: the server divides sunrise-to-sunset into
 // equal intervals no larger than it, so both ends are always sampled. The
 // request's own sun angles are ignored -- the sweep computes its own per step.
@@ -474,6 +487,11 @@ export function buildTraceRequest(doc, ui) {
     solar_az_deg: doc.sun.az,
     solar_el_deg: doc.sun.el,
     optics_params: currentOpticsParams(doc),
+    // §M.3: the 3D receiver drape's raw texture data (see app.py's
+    // _flux_grid_payload) -- opt-in on the request so callers that only
+    // want the rendered PNG (buildFluxCsvRequest below builds its own,
+    // separate body and does not set this) never pay for it.
+    include_flux_grid: true,
   };
   if (ui.fidelity === "monte_carlo" && ui.mcRays) body.n_rays = ui.mcRays;
   if (doc.field.mode === "field") {

@@ -149,6 +149,136 @@ function buildCompassMarkers(extentM) {
   return group;
 }
 
+// -- irradiance drape (v0.2 spec §M.3, mockup M16) --------------------------
+//
+// After a trace, the flux map textures the receiver mesh in place of its
+// plain material, until results go stale (same lifecycle as showTraceRays/
+// clearTraceRays below -- main.js calls showFluxDrape/clearFluxDrape at
+// exactly the same points it calls those). The texture itself is a
+// THREE.CanvasTexture built client-side from the raw (downsampled) flux
+// grid app.py's `/api/trace` and `/api/field/trace*` now return under
+// `flux_grid` when a request opts in (see api.js's buildTraceRequest) --
+// this module never touches flux_png, the rendered PNG the 2D quantitative
+// panel uses instead (docs mockup M16: "3D view is orientation, panel is
+// quantitative").
+//
+// Orientation is the whole point of this feature, so the receiver mesh's UV
+// attribute is NOT left at whatever THREE's primitive geometries default to
+// -- it is recomputed per vertex here, straight from
+// heliostat.geometry.receiver's own contract (module docstring + each
+// class's intersect()/uv_extent()):
+//   * flat window: uv IS local (x, y) (FlatWindowReceiver.intersect) -- a
+//     planar UV, u along local x, v along local y.
+//   * cylinder/frustum: u is unrolled arc length `radius(_mean) * az`, az =
+//     atan2(x, -y) (continuous-azimuth's base case; see _continuous_azimuth
+//     in receiver.py) -- measured from -y (south), seam at +y (north). v is
+//     height above centre (cylinder) or slant distance from the bottom rim,
+//     which is just a linear remap of local z (frustum). Baking UV this way
+//     -- rather than trusting THREE.CylinderGeometry's own theta-based UVs
+//     -- is what makes the hot-spot orientation test below meaningful: it
+//     verifies THIS mapping, not a coincidence of THREE's defaults.
+function bakePlanarUV(geometry, halfUM, halfVM) {
+  const pos = geometry.attributes.position;
+  const uv = new Float32Array(pos.count * 2);
+  for (let i = 0; i < pos.count; i++) {
+    uv[i * 2] = (pos.getX(i) + halfUM) / (2 * halfUM);
+    uv[i * 2 + 1] = (pos.getY(i) + halfVM) / (2 * halfVM);
+  }
+  geometry.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+}
+
+function bakeCylindricalUV(geometry, vMinM, vMaxM) {
+  const pos = geometry.attributes.position;
+  const uv = new Float32Array(pos.count * 2);
+  const span = vMaxM - vMinM || 1;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const z = pos.getZ(i);
+    // atan2(x, -y): az=0 at -y (south), az=+-pi at +y (north) -- the exact
+    // convention _continuous_azimuth documents. u_extent is (-piR, piR)
+    // (CylinderReceiver.uv_extent), i.e. az in [-pi, pi], so normalizing
+    // (az+pi)/(2*pi) lands u=0/1 (the seam, duplicated at both texture
+    // edges by CylinderGeometry's own closed wrap) at north and u=0.5 at
+    // south -- see the module-level comment above for the compass sequence
+    // this produces (N . W . S . E . N left to right).
+    const az = Math.atan2(x, -y);
+    uv[i * 2] = (az + Math.PI) / (2 * Math.PI);
+    uv[i * 2 + 1] = (z - vMinM) / span;
+  }
+  geometry.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+}
+
+// Compact approximation of matplotlib's "magma" colormap (the same one
+// _render_flux_png uses for the 2D map) -- a handful of anchor stops, linearly
+// interpolated, rather than the full 256-entry LUT: close enough that the 3D
+// drape and the 2D panel read as the same palette (docs mockup M16's own
+// gradient stops are this same approximation), without shipping matplotlib's
+// table to the browser.
+const MAGMA_STOPS = [
+  [0.0, [0, 0, 4]],
+  [0.2, [43, 17, 84]],
+  [0.4, [120, 28, 109]],
+  [0.6, [196, 60, 79]],
+  [0.8, [251, 135, 97]],
+  [1.0, [252, 253, 191]],
+];
+function magmaColor(t) {
+  const x = Math.min(1, Math.max(0, t));
+  for (let i = 1; i < MAGMA_STOPS.length; i++) {
+    const [t0, c0] = MAGMA_STOPS[i - 1];
+    const [t1, c1] = MAGMA_STOPS[i];
+    if (x <= t1 || i === MAGMA_STOPS.length - 1) {
+      const f = t1 > t0 ? (x - t0) / (t1 - t0) : 0;
+      return [
+        Math.round(c0[0] + (c1[0] - c0[0]) * f),
+        Math.round(c0[1] + (c1[1] - c0[1]) * f),
+        Math.round(c0[2] + (c1[2] - c0[2]) * f),
+      ];
+    }
+  }
+  return MAGMA_STOPS[MAGMA_STOPS.length - 1][1];
+}
+
+// Builds a THREE.CanvasTexture from a `flux_grid` payload (app.py's
+// _flux_grid_payload): `values` is row-major, n_v rows of n_u columns, row 0
+// at v_min -- exactly the UV's own v=0 (bakeCylindricalUV/bakePlanarUV above
+// both put v=0 at the local-position minimum). THREE.Texture defaults to
+// flipY=true (so a canvas drawn top-down displays right-side-up under
+// standard bottom-left-origin UVs), which means canvas row 0 (its top, as
+// putImageData addresses it) samples at V=1 and the canvas's LAST row
+// samples at V=0. Since V=0 must be v_min, row 0 of `values` (v_min) is
+// drawn into the canvas's last row here -- getting this backwards is
+// exactly the kind of orientation bug the hot-spot test below exists to
+// catch.
+function fluxGridTexture(grid) {
+  const { n_u, n_v, values } = grid;
+  let max = 0;
+  for (const v of values) if (v != null && v > max) max = v;
+  const canvas = document.createElement("canvas");
+  canvas.width = n_u;
+  canvas.height = n_v;
+  const ctx = canvas.getContext("2d");
+  const img = ctx.createImageData(n_u, n_v);
+  for (let row = 0; row < n_v; row++) {
+    const canvasRow = n_v - 1 - row; // flip: values[0] is v_min, canvas y=0 is the top
+    for (let col = 0; col < n_u; col++) {
+      const val = values[row * n_u + col] || 0;
+      const [r, g, b] = magmaColor(max > 0 ? val / max : 0);
+      const idx = (canvasRow * n_u + col) * 4;
+      img.data[idx] = r;
+      img.data[idx + 1] = g;
+      img.data[idx + 2] = b;
+      img.data[idx + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.needsUpdate = true;
+  return texture;
+}
+
 function mirrorFrame(rotAzDeg, rotElDeg) {
   const az = THREE.MathUtils.degToRad(rotAzDeg);
   const el = THREE.MathUtils.degToRad(rotElDeg);
@@ -268,6 +398,8 @@ export function createScene(container, callbacks) {
     receiverMat: null,
     receiverEdgeLines: null,
     receiverEdgeMat: null,
+    receiverDraped: false, // true while a flux texture replaces the plain material (§M.3)
+    receiverDrapeTexture: null,
     sunMesh: null,
     sunMat: null,
   };
@@ -431,6 +563,16 @@ export function createScene(container, callbacks) {
     state.receiverMat = null;
     state.receiverEdgeLines = null;
     state.receiverEdgeMat = null;
+    // A geometry rebuild always means a fresh, plain material (the drape, if
+    // any, belonged to the material instance just disposed above) -- see
+    // showFluxDrape/clearFluxDrape's own comment for why main.js also clears
+    // the drape explicitly on the same doc-edit/fidelity-change events that
+    // get here.
+    state.receiverDraped = false;
+    if (state.receiverDrapeTexture) {
+      state.receiverDrapeTexture.dispose();
+      state.receiverDrapeTexture = null;
+    }
     if (!receiver) return;
 
     const kind = receiver.kind || "flat";
@@ -448,6 +590,7 @@ export function createScene(container, callbacks) {
       if (!(receiver.radius_mm > 0) || !(receiver.height_mm > 0)) return;
       geometry = new THREE.CylinderGeometry(receiver.radius_mm * MM, receiver.radius_mm * MM, receiver.height_mm * MM, 32, 1, true);
       geometry.rotateX(Math.PI / 2);
+      bakeCylindricalUV(geometry, -receiver.height_mm * MM * 0.5, receiver.height_mm * MM * 0.5);
       posX = receiver.center_x_mm;
       posY = receiver.center_y_mm;
       posZ = receiver.center_z_mm;
@@ -458,6 +601,12 @@ export function createScene(container, callbacks) {
       if (!(receiver.r_top_mm > 0) || !(receiver.r_bot_mm > 0) || !(heightMm > 0)) return;
       geometry = new THREE.CylinderGeometry(receiver.r_top_mm * MM, receiver.r_bot_mm * MM, heightMm * MM, 32, 1, true);
       geometry.rotateX(Math.PI / 2);
+      // CylinderGeometry's local z (post-rotateX) runs -height/2..+height/2,
+      // which IS a linear proxy for FrustumReceiver's own v (slant distance
+      // from the bottom rim, receiver.py's uv_to_world docstring: `frac =
+      // v/slant_length` interpolates height exactly the same way) -- so the
+      // same bake used for the cylinder's v works here unchanged.
+      bakeCylindricalUV(geometry, -heightMm * MM * 0.5, heightMm * MM * 0.5);
       posX = receiver.center_x_mm;
       posY = receiver.center_y_mm;
       posZ = 0.5 * (receiver.z_top_mm + receiver.z_bot_mm);
@@ -467,10 +616,13 @@ export function createScene(container, callbacks) {
       // intersect() tests against p[2], uv_extent() returns the half-widths
       // directly as x/y bounds). THREE.PlaneGeometry is already authored in
       // the XY plane, so no rotation is needed in this Z-up scene.
-      const w = receiver.half_u_mm * 2 * MM;
-      const h = receiver.half_v_mm * 2 * MM;
+      const halfUM = receiver.half_u_mm * MM;
+      const halfVM = receiver.half_v_mm * MM;
+      const w = halfUM * 2;
+      const h = halfVM * 2;
       if (!(w > 0) || !(h > 0)) return;
       geometry = new THREE.PlaneGeometry(w, h);
+      bakePlanarUV(geometry, halfUM, halfVM);
       posX = receiver.center_x_mm || 0;
       posY = receiver.center_y_mm || 0;
       posZ = receiver.z_mm;
@@ -595,7 +747,10 @@ export function createScene(container, callbacks) {
 
     if (state.receiverMat && state.receiverEdgeLines) {
       const isSel = !!sel && sel.kind === "receiver";
-      state.receiverMat.opacity = isSel ? 0.8 : 0.55;
+      // Draped (§M.3): the texture needs to read clearly, so it sits
+      // noticeably more opaque than the translucent plain material -- still
+      // nudged up a touch further on selection, same as the plain case.
+      state.receiverMat.opacity = state.receiverDraped ? (isSel ? 0.98 : 0.92) : isSel ? 0.8 : 0.55;
       state.receiverEdgeLines.visible = isSel;
     }
 
@@ -721,6 +876,47 @@ export function createScene(container, callbacks) {
       renderRays();
     },
 
+    // §M.3: textures the receiver mesh with a trace's flux map (`flux_grid`
+    // on the trace response, opt-in via api.js's buildTraceRequest -- see
+    // app.py's _flux_grid_payload), replacing the plain material. No-op if
+    // the current geometry has no receiver mesh (e.g. an aperture-clipped
+    // shape rebuildReceiver declined to build one) -- there is nothing to
+    // drape onto, same as a trace with no receiver at all.
+    showFluxDrape(fluxGrid) {
+      const mat = state.receiverMat;
+      if (!mat || !fluxGrid || !fluxGrid.values || !fluxGrid.values.length) return;
+      if (state.receiverDrapeTexture) state.receiverDrapeTexture.dispose();
+      const texture = fluxGridTexture(fluxGrid);
+      state.receiverDrapeTexture = texture;
+      mat.map = texture;
+      mat.color.set(0xffffff); // let the texture's own colors show, untinted
+      mat.needsUpdate = true;
+      state.receiverDraped = true;
+      applySelectionVisuals(); // sets the draped opacity
+    },
+
+    // Reverts the receiver to its plain material -- called wherever
+    // clearTraceRays() is (main.js: doc edits, fidelity changes, a fresh
+    // trace superseding a stale one), matching this feature's own lifecycle
+    // rule (spec §M.3: "replacing the plain material until results go
+    // stale"). Also happens implicitly on the next rebuildReceiver (a new
+    // mesh/material always starts plain), so this covers the "stale but the
+    // mesh hasn't rebuilt yet" window explicitly.
+    clearFluxDrape() {
+      const mat = state.receiverMat;
+      if (state.receiverDrapeTexture) {
+        state.receiverDrapeTexture.dispose();
+        state.receiverDrapeTexture = null;
+      }
+      state.receiverDraped = false;
+      if (mat) {
+        mat.map = null;
+        mat.color.set(RECEIVER_FILL);
+        mat.needsUpdate = true;
+      }
+      applySelectionVisuals();
+    },
+
     // Sun below the horizon: rays disappear, everything else holds its
     // last pose (docs/ui-spec.md 2.1).
     clearAllRays() {
@@ -753,6 +949,7 @@ export function createScene(container, callbacks) {
       disposeObject(raysGroup);
       disposeObject(missRaysGroup);
       disposeObject(sunGroup);
+      if (state.receiverDrapeTexture) state.receiverDrapeTexture.dispose();
       renderer.dispose();
       if (renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement);
     },

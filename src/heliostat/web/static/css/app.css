@@ -668,6 +668,53 @@ input.val::-webkit-inner-spin-button {
   border: none;
 }
 
+/* v0.2 §M compass rider: N/E/S/W on a flat window's map, an axis caption in
+   compass terms for the unwrapped cylinder/frustum map -- deliberately as
+   quiet as .tabcontent .caption (muted color, ~11px), sitting in the
+   frame's own padding rather than over the flux data itself. */
+.flux-map-frame {
+  position: relative;
+  display: inline-block;
+  padding: 18px;
+}
+.compass-label {
+  position: absolute;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  pointer-events: none;
+}
+.compass-label.compass-n {
+  top: 2px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+.compass-label.compass-s {
+  bottom: 2px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+.compass-label.compass-e {
+  right: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+.compass-label.compass-w {
+  left: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+.compass-axis {
+  display: flex;
+  justify-content: space-between;
+  padding: 0 18px;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+}
+
 /* -- Library slide-over ---------------------------------------------------
    .dim and .drawer are fixed/full-app, so the sidebar dims along with the
    viewport while the drawer is open. */

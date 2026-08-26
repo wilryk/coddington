@@ -110,7 +110,22 @@
   <div id="flux-overlay" class="overlay" hidden>
     <div class="overlay-panel">
       <button type="button" class="overlay-close" id="flux-overlay-close" aria-label="Close">&times;</button>
-      <img id="flux-overlay-img" alt="Flux map" />
+      <!-- v0.2 §M compass rider: N/E/S/W on a flat window's edges, quiet
+           annotations matching .tabcontent .caption's style -- main.js's
+           openFluxOverlay() shows/hides these against the traced
+           receiver's kind. -->
+      <div class="flux-map-frame" id="flux-map-frame">
+        <img id="flux-overlay-img" alt="Flux map" />
+        <span class="compass-label compass-n" id="flux-compass-n" hidden>N</span>
+        <span class="compass-label compass-s" id="flux-compass-s" hidden>S</span>
+        <span class="compass-label compass-e" id="flux-compass-e" hidden>E</span>
+        <span class="compass-label compass-w" id="flux-compass-w" hidden>W</span>
+      </div>
+      <!-- Unwrapped cylinder/frustum maps instead: the u-axis labelled in
+           compass terms, seam to seam (main.js fills this with N . W . S .
+           E . N -- see its own comment for the az convention that order
+           comes from). -->
+      <div class="compass-axis" id="flux-compass-axis" hidden></div>
     </div>
   </div>
 

@@ -33,6 +33,7 @@ import {
   dayFluxUrl,
   dayFluxFeaCsvUrl,
   deleteLibraryEntry,
+  getDayFluxGrid,
   getDayResult,
   getDayStatus,
   getLibrary,
@@ -99,6 +100,49 @@ let fluxLoading = false;
 let fluxError = null;
 let fluxTimer = null;
 let fluxController = null;
+
+// -- analysis aperture (docs/ui-spec-v0.2.md §M.4) --------------------------
+// A draggable/resizable circle on the selected timestep's own flux grid,
+// read out live: radius, power within, % of collected, average flux,
+// average concentration (avg flux / DNI), plus an encircled-power curve.
+// EVERYTHING below (apertureMetrics/apertureCurve/paintApertureCanvas) is
+// pure post-processing on a grid already fetched from the server -- no
+// function here ever calls postTrace/postFieldTrace or touches
+// dayResult/jobSnapshot/sweepRequest; the trace, intercept and collected
+// totals a sweep already produced never change because an aperture moved.
+const apertureGridCache = new Map(); // `${resultJobId}:${stepIndex}` -> grid dict
+let apertureGrid = null; // the SELECTED step's raw grid, once fetched
+let apertureGridLoading = false;
+let apertureGridError = null;
+// User-set aperture, in the grid's own (u, v) mm frame -- null means "not
+// yet touched", i.e. use the default (grid/step centroid, a radius derived
+// from the step's own rms_radius_mm). Persists across a timestep switch
+// within the same run on purpose: the whole point of the encircled-power
+// curve is watching one FIXED physical region's catch change through the
+// day, not a spot that redefines itself every time you scrub.
+let apertureCenterUMm = null;
+let apertureCenterVMm = null;
+let apertureRadiusMm = null;
+let apertureDrag = null; // {mode: "move"|"resize"} while a pointer drag is live
+// A reopened saved run's frozen annotation (heliostat.web.app.SavedRunDocument
+// .aperture) -- shown verbatim, never recomputed (see openSavedRun/paintAperturePanel).
+let reopenedAperture = null;
+
+// -- sweep drill-down to one heliostat (docs/ui-spec-v0.2.md §M.2) ----------
+// Reuses the exact mechanism scheduleFluxFetch already uses for an
+// uncached field timestep map -- a single-heliostat trace at that step's
+// stored sun position -- except through /api/trace (never
+// /api/field/trace: this is one mirror's own footprint, not a field sum),
+// and with the chosen heliostat's own position rather than the field's.
+// Cached per (heliostat id, step index), same idiom as fluxCache.
+let drillHeliostatId = null;
+const heliostatFootprintCache = new Map(); // `${id}:${stepIndex}` -> {png, peak}
+let heliostatFootprintPngBase64 = null;
+let heliostatFootprintPeakKwM2 = null;
+let heliostatFootprintLoading = false;
+let heliostatFootprintError = null;
+let heliostatFootprintTimer = null;
+let heliostatFootprintController = null;
 
 // -- year-estimate run state (module-local -- see header) -------------------
 let yearFastMode = true;
@@ -345,6 +389,10 @@ function resetRunState() {
   sweepPhysicsKey = null;
   fluxCache.clear();
   clearFlux();
+  clearAperture();
+  clearHeliostatFootprint();
+  drillHeliostatId = null;
+  heliostatFootprintCache.clear();
   // A fresh sweep supersedes whatever was on screen before -- including a
   // reopened saved run, which has no live job to poll or discard through.
   dayRunSavedName = null;
@@ -477,6 +525,8 @@ function fetchResult(forJob) {
       if (dayResult.steps && dayResult.steps.length) {
         selectedStepIndex = pickDefaultStepIndex(dayResult.steps);
         scheduleFluxFetch();
+        scheduleApertureGridFetch();
+        scheduleHeliostatFootprintFetch();
       }
       // Feeds the NEXT run's rough duration estimate -- see recordTraceCost.
       // Uses done timesteps (not the requested total), so a cancelled run's
@@ -525,6 +575,32 @@ function clearFlux() {
   fluxPeakKwM2 = null;
   fluxLoading = false;
   fluxError = null;
+}
+
+function clearAperture() {
+  apertureGrid = null;
+  apertureGridLoading = false;
+  apertureGridError = null;
+  apertureCenterUMm = null;
+  apertureCenterVMm = null;
+  apertureRadiusMm = null;
+  apertureDrag = null;
+  reopenedAperture = null;
+}
+
+function clearHeliostatFootprint() {
+  if (heliostatFootprintTimer) {
+    clearTimeout(heliostatFootprintTimer);
+    heliostatFootprintTimer = null;
+  }
+  if (heliostatFootprintController) {
+    heliostatFootprintController.abort();
+    heliostatFootprintController = null;
+  }
+  heliostatFootprintPngBase64 = null;
+  heliostatFootprintPeakKwM2 = null;
+  heliostatFootprintLoading = false;
+  heliostatFootprintError = null;
 }
 
 // What a finished run measured: the mirror, the optics and where the
@@ -654,10 +730,172 @@ function scheduleFluxFetch() {
   }, 250);
 }
 
+// -- analysis aperture: fetching the raw grid (docs/ui-spec-v0.2.md §M.4) ---
+// The grid backing the aperture math only exists for a step the sweep
+// itself stored a map for, served from a still-alive job -- exactly
+// paintFluxPanel's own fluxSrcUrl/resultJobId condition for showing the §D
+// FEA CSV export link. A reopened saved run has no live job to fetch a
+// grid from; whatever aperture it carries is a frozen snapshot
+// (reopenedAperture), shown as-is rather than recomputed -- see
+// paintAperturePanel.
+function apertureGridCacheKey(stepIndex) {
+  return `${resultJobId}:${stepIndex}`;
+}
+
+function currentStepForAperture() {
+  const steps = dayResult && dayResult.steps;
+  return steps && selectedStepIndex != null ? steps[selectedStepIndex] : null;
+}
+
+function scheduleApertureGridFetch() {
+  apertureDrag = null;
+  const step = currentStepForAperture();
+  if (!step || !step.has_flux_map || resultJobId == null) {
+    apertureGrid = null;
+    apertureGridLoading = false;
+    apertureGridError = null;
+    paintIfVisible();
+    return;
+  }
+  const key = apertureGridCacheKey(selectedStepIndex);
+  const cached = apertureGridCache.get(key);
+  if (cached) {
+    apertureGrid = cached;
+    apertureGridLoading = false;
+    apertureGridError = null;
+    paintIfVisible();
+    return;
+  }
+  // Clear the PREVIOUS step's grid rather than leaving it in place while
+  // this one loads -- paintAperturePanel gates on apertureGrid being
+  // truthy, and a stale grid there would render the wrong timestep's
+  // picture/numbers for the gap between selecting a step and its own grid
+  // landing.
+  apertureGrid = null;
+  apertureGridLoading = true;
+  apertureGridError = null;
+  paintIfVisible();
+  getDayFluxGrid(resultJobId, selectedStepIndex)
+    .then((grid) => {
+      apertureGridCache.set(key, grid);
+      apertureGrid = grid;
+      apertureGridLoading = false;
+      paintIfVisible();
+    })
+    .catch((err) => {
+      apertureGrid = null;
+      apertureGridLoading = false;
+      apertureGridError = (err && err.message) || "Could not load the aperture grid.";
+      paintIfVisible();
+    });
+}
+
+// -- sweep drill-down: fetching one heliostat's own footprint (§M.2) --------
+
+function currentFieldHeliostats() {
+  // The live workspace's own resolved positions (ctx.geometry.heliostats,
+  // set by render()'s lastCtx) -- the same source currentHeliostatCount
+  // already reads, and subject to the identical caveat: if the field is
+  // edited after this sweep ran, ids/positions here describe the CURRENT
+  // field, not the one the sweep traced. resultIsStale() (physicsKey
+  // already compares `layout`) already flags exactly that case across the
+  // whole panel -- see paint()'s an-stale toggle on els.drillPanel below --
+  // so this reads the live geometry without a bespoke staleness check of
+  // its own.
+  const geo = lastCtx && lastCtx.geometry;
+  return (geo && geo.heliostats) || [];
+}
+
+function selectDrillHeliostat(id) {
+  if (drillHeliostatId === id) return;
+  drillHeliostatId = id;
+  scheduleHeliostatFootprintFetch();
+  paintIfVisible();
+}
+
+// Same body-shaping idiom as fluxRequestFor above, but for ONE named
+// heliostat rather than the field: drop layout/exclude_ids, set that
+// heliostat's own position, keep the timestep's own stored sun angles.
+function heliostatFootprintRequestFor(step, heliostat) {
+  const base = sweepRequest
+    ? Object.assign({}, sweepRequest)
+    : buildTraceRequest(store.get("doc"), store.get("ui"));
+  delete base.site;
+  delete base.hour_step;
+  delete base.layout;
+  delete base.exclude_ids;
+  return Object.assign(base, {
+    solar_az_deg: step.solar_az_deg,
+    solar_el_deg: step.solar_el_deg,
+    heliostat_x_mm: heliostat.x_mm,
+    heliostat_y_mm: heliostat.y_mm,
+  });
+}
+
+function scheduleHeliostatFootprintFetch() {
+  if (heliostatFootprintTimer) clearTimeout(heliostatFootprintTimer);
+  if (heliostatFootprintController) heliostatFootprintController.abort();
+  heliostatFootprintTimer = null;
+  heliostatFootprintController = null;
+
+  const step = currentStepForAperture();
+  const heliostat =
+    drillHeliostatId != null ? currentFieldHeliostats().find((h) => h.id === drillHeliostatId) : null;
+  if (!step || !heliostat) {
+    clearHeliostatFootprint();
+    paintIfVisible();
+    return;
+  }
+  const cacheKey = `${drillHeliostatId}:${selectedStepIndex}`;
+  const cached = heliostatFootprintCache.get(cacheKey);
+  if (cached) {
+    heliostatFootprintPngBase64 = cached.png;
+    heliostatFootprintPeakKwM2 = cached.peak;
+    heliostatFootprintError = null;
+    heliostatFootprintLoading = false;
+    paintIfVisible();
+    return;
+  }
+  heliostatFootprintLoading = true;
+  heliostatFootprintError = null;
+  paintIfVisible();
+  heliostatFootprintTimer = setTimeout(() => {
+    heliostatFootprintTimer = null;
+    const body = heliostatFootprintRequestFor(step, heliostat);
+    heliostatFootprintController = new AbortController();
+    postTrace(body, heliostatFootprintController.signal)
+      .then((data) => {
+        heliostatFootprintController = null;
+        heliostatFootprintLoading = false;
+        heliostatFootprintPngBase64 = data.flux_png || null;
+        heliostatFootprintPeakKwM2 = data.peak_flux_kw_m2 != null ? data.peak_flux_kw_m2 : null;
+        heliostatFootprintError = heliostatFootprintPngBase64
+          ? null
+          : "No footprint came back for this heliostat.";
+        if (heliostatFootprintPngBase64) {
+          heliostatFootprintCache.set(cacheKey, {
+            png: heliostatFootprintPngBase64,
+            peak: heliostatFootprintPeakKwM2,
+          });
+        }
+        paintIfVisible();
+      })
+      .catch((err) => {
+        heliostatFootprintController = null;
+        if (err && err.name === "AbortError") return;
+        heliostatFootprintLoading = false;
+        heliostatFootprintError = (err && err.message) || "Could not trace this heliostat's footprint.";
+        paintIfVisible();
+      });
+  }, 250);
+}
+
 function selectStep(i) {
   if (selectedStepIndex === i) return;
   selectedStepIndex = i;
   scheduleFluxFetch();
+  scheduleApertureGridFetch();
+  scheduleHeliostatFootprintFetch();
   paintIfVisible();
 }
 
@@ -907,6 +1145,9 @@ function saveDayRun() {
         request: sweepRequest,
         result: dayResult,
         flux_pngs,
+        // §M.4: the analysis aperture, frozen at save time -- see
+        // buildApertureSnapshotForSave and SavedRunDocument.aperture.
+        aperture: buildApertureSnapshotForSave(),
       };
       return saveLibraryEntry("runs", name, document).then(() => attachRunToProject(name).then(() => name));
     })
@@ -1013,10 +1254,24 @@ function openSavedRun(entry) {
         sweepRequest = document.request;
         sweepPhysicsKey = physicsKey(document.request);
         reopenedDayFluxPngs = document.flux_pngs || {};
+        // §M.4: a frozen aperture annotation, if the run was saved with one
+        // -- shown verbatim (paintAperturePanel), never recomputed. There is
+        // no live job here to fetch a grid from, so this is the only
+        // aperture state a reopened run can show.
+        reopenedAperture = document.aperture || null;
         dayRunSavedName = entry.name;
         if (dayResult && dayResult.steps && dayResult.steps.length) {
-          selectedStepIndex = pickDefaultStepIndex(dayResult.steps);
+          // Land on the aperture's own timestep when it has one, so the
+          // frozen circle reappears on the map it was actually drawn on.
+          selectedStepIndex =
+            reopenedAperture &&
+            Number.isInteger(reopenedAperture.step_index) &&
+            reopenedAperture.step_index >= 0 &&
+            reopenedAperture.step_index < dayResult.steps.length
+              ? reopenedAperture.step_index
+              : pickDefaultStepIndex(dayResult.steps);
           scheduleFluxFetch();
+          scheduleHeliostatFootprintFetch();
         }
       } else {
         if (yearPollTimer) {
@@ -1145,6 +1400,442 @@ function deleteManageEntry(name) {
       manageError = (err && err.message) || "Could not delete that run.";
       paintIfVisible();
     });
+}
+
+// -- analysis aperture math (docs/ui-spec-v0.2.md §M.4) ----------------------
+// Pure functions of (grid, center, radius, step): no store access, no
+// fetch, no DOM. Mirrors heliostat.web.app._aperture_metrics bin for bin
+// (kept in lockstep -- that Python twin is what tests/test_web.py's
+// synthetic-disk test checks, since this repo runs pytest only and has no
+// JS test runner to check this function directly). Post-processing ONLY:
+// nothing below ever calls postTrace/postFieldTrace or writes to
+// dayResult/sweepRequest/jobSnapshot -- the trace, intercept and collected
+// totals a sweep already produced can never change because a circle moved.
+
+// §M.4 explicitly scopes the aperture to flat receivers first ("curved
+// later if wanted") -- a frustum's bin area varies with position
+// (FrustumReceiver.bin_areas_m2 in geometry/receiver.py), which the
+// uniform-bin-area math below does not account for.
+function receiverKindFor(doc) {
+  if (doc.optics === "prime_focus") {
+    return (doc.opticsParams.prime_focus || {}).receiver_type || "flat";
+  }
+  return "flat"; // axicon/cassegrain always target a flat receiver window
+}
+
+function apertureReceiverIsFlat(doc) {
+  return receiverKindFor(doc) === "flat";
+}
+
+// Compass rider (§M): flat window u = world x (east), v = world y (north) --
+// FlatWindowReceiver.uv_extent (geometry/receiver.py) is plain (x, y), no
+// rotation. Unrolled cylinder/frustum: u = radius * az with az = atan2(x,
+// -y) (measured from -y/south, seam at +y/north -- CylinderReceiver's own
+// module docstring and _continuous_azimuth) -- so the unrolled map's CENTER
+// (u=0) is compass south and BOTH its edges (u = +/-half-circumference, the
+// same physical seam) are compass north: moving right from center goes
+// south -> east -> north; moving left goes south -> west -> north.
+function compassCaptionFor(doc) {
+  const kind = receiverKindFor(doc);
+  if (kind === "flat") return "Compass: N top · S bottom · E right · W left";
+  return "Compass (u-axis): S at center → E → N at the right edge · S at center → W → N at the left edge (seam)";
+}
+
+function apertureDefaultCenter(grid, step) {
+  if (step && Array.isArray(step.centroid_mm) && step.centroid_mm.length === 2) {
+    return { u: step.centroid_mm[0], v: step.centroid_mm[1] };
+  }
+  return { u: (grid.u_min_mm + grid.u_max_mm) / 2, v: (grid.v_min_mm + grid.v_max_mm) / 2 };
+}
+
+function apertureDefaultRadiusMm(grid, step) {
+  const halfU = Math.abs(grid.u_max_mm - grid.u_min_mm) / 2;
+  const halfV = Math.abs(grid.v_max_mm - grid.v_min_mm) / 2;
+  const cap = 0.9 * Math.min(halfU, halfV);
+  // A couple of RMS spot radii is a common, physically-motivated "captures
+  // most of a roughly Gaussian-like spot" default -- step.rms_radius_mm is
+  // already computed and stored (heliostat.web.app's _cone_metrics), so
+  // this reads it rather than guessing a bare fraction of the grid.
+  const rms = step && Number.isFinite(step.rms_radius_mm) ? step.rms_radius_mm : null;
+  const guess = rms != null ? 2.0 * rms : cap * 0.4;
+  return Math.max(1.0, Math.min(guess, cap));
+}
+
+function currentApertureCenterMm(grid, step) {
+  if (apertureCenterUMm != null && apertureCenterVMm != null) {
+    return { u: apertureCenterUMm, v: apertureCenterVMm };
+  }
+  return apertureDefaultCenter(grid, step);
+}
+
+function currentApertureRadiusMm(grid, step) {
+  if (apertureRadiusMm != null) return apertureRadiusMm;
+  return apertureDefaultRadiusMm(grid, step);
+}
+
+function clampToGridAxis(grid, value, axis) {
+  const lo = axis === "u" ? grid.u_min_mm : grid.v_min_mm;
+  const hi = axis === "u" ? grid.u_max_mm : grid.v_max_mm;
+  return Math.max(lo, Math.min(hi, value));
+}
+
+// grid.values are §M.3's own kW/m^2 convention (heliostat.web.app's
+// _flux_grid_payload, row-major, row 0 = v_min_mm -- the bottom of the map,
+// same as _render_flux_png's origin="lower") -- scaled back to W/m^2 here
+// so power comes out in watts. A bin counts as "inside" when its CENTER
+// lies within radiusMm of the aperture center (the standard encircled-power
+// discretization); average flux divides by the aperture's own ideal
+// circular area (pi * r^2), not the discretized sum of included bin areas,
+// matching mockup M17's own worked example.
+function apertureMetrics(grid, centerUMm, centerVMm, radiusMm) {
+  const nU = grid.n_u;
+  const nV = grid.n_v;
+  const duMm = (grid.u_max_mm - grid.u_min_mm) / nU;
+  const dvMm = (grid.v_max_mm - grid.v_min_mm) / nV;
+  const binAreaM2 = (duMm / 1000) * (dvMm / 1000);
+  const r2 = radiusMm * radiusMm;
+  let powerW = 0;
+  for (let row = 0; row < nV; row++) {
+    const vMid = grid.v_min_mm + (row + 0.5) * dvMm;
+    const dv = vMid - centerVMm;
+    const dv2 = dv * dv;
+    if (dv2 > r2) continue; // whole row is out of range -- skip its n_u work
+    const rowBase = row * nU;
+    for (let col = 0; col < nU; col++) {
+      const uMid = grid.u_min_mm + (col + 0.5) * duMm;
+      const du = uMid - centerUMm;
+      if (du * du + dv2 > r2) continue;
+      const kwM2 = grid.values[rowBase + col];
+      if (kwM2 != null) powerW += kwM2 * 1000 * binAreaM2;
+    }
+  }
+  const radiusM = radiusMm / 1000;
+  const areaM2 = Math.PI * radiusM * radiusM;
+  const avgFluxWM2 = areaM2 > 0 ? powerW / areaM2 : 0;
+  return { powerW, avgFluxWM2 };
+}
+
+// Power vs. radius, mockup M17's encircled-power curve -- nSamples evenly
+// spaced radii from 0 to maxRadiusMm.
+function apertureCurve(grid, centerUMm, centerVMm, maxRadiusMm, nSamples) {
+  const pts = [];
+  for (let i = 0; i <= nSamples; i++) {
+    const r = (maxRadiusMm * i) / nSamples;
+    pts.push({ r, powerW: apertureMetrics(grid, centerUMm, centerVMm, r).powerW });
+  }
+  return pts;
+}
+
+function buildApertureSnapshotForSave() {
+  // Resaving an already-reopened (frozen) run keeps its own annotation
+  // rather than trying to recompute one from a grid that, for a reopened
+  // run, does not exist (see openSavedRun/scheduleApertureGridFetch).
+  if (reopenedAperture) return reopenedAperture;
+  if (!apertureGrid || selectedStepIndex == null) return null;
+  const step = currentStepForAperture();
+  if (!step) return null;
+  const grid = apertureGrid;
+  const center = currentApertureCenterMm(grid, step);
+  const radius = currentApertureRadiusMm(grid, step);
+  const { powerW, avgFluxWM2 } = apertureMetrics(grid, center.u, center.v, radius);
+  const collectedW = step.power_w;
+  const dni = step.dni_w_m2;
+  return {
+    step_index: selectedStepIndex,
+    center_u_mm: center.u,
+    center_v_mm: center.v,
+    radius_mm: radius,
+    power_w: powerW,
+    frac_collected_pct: collectedW ? (100 * powerW) / collectedW : null,
+    avg_flux_w_m2: avgFluxWM2,
+    dni_w_m2: dni != null ? dni : null,
+    avg_concentration: dni ? avgFluxWM2 / dni : null,
+  };
+}
+
+// -- analysis aperture canvas: rendering + drag interaction ------------------
+// A dedicated <canvas> rather than an overlay on the existing matplotlib
+// <img> (fluxImg): that PNG carries axis labels/colorbar/title chrome this
+// module has no exact pixel geometry for, so a draggable circle drawn on
+// top of it could not be positioned reliably. This canvas is instead
+// painted directly from the fetched grid, at a uniform mm-per-pixel scale
+// in both axes (sizeApertureCanvas) so a physical-radius circle is a true
+// circle on screen, not an ellipse.
+const APERTURE_MAGMA_STOPS = [
+  [0.0, 0, 0, 4],
+  [0.2, 59, 15, 112],
+  [0.4, 140, 41, 129],
+  [0.6, 222, 73, 104],
+  [0.8, 254, 159, 109],
+  [1.0, 252, 253, 191],
+];
+
+function magmaColor(t) {
+  const c = Math.max(0, Math.min(1, t));
+  for (let i = 1; i < APERTURE_MAGMA_STOPS.length; i++) {
+    const [t0, r0, g0, b0] = APERTURE_MAGMA_STOPS[i - 1];
+    const [t1, r1, g1, b1] = APERTURE_MAGMA_STOPS[i];
+    if (c <= t1 || i === APERTURE_MAGMA_STOPS.length - 1) {
+      const f = t1 > t0 ? (c - t0) / (t1 - t0) : 0;
+      const r = Math.round(r0 + (r1 - r0) * f);
+      const g = Math.round(g0 + (g1 - g0) * f);
+      const b = Math.round(b0 + (b1 - b0) * f);
+      return `rgb(${r},${g},${b})`;
+    }
+  }
+  return "rgb(0,0,4)";
+}
+
+function sizeApertureCanvas(canvas, grid, targetWidth) {
+  const uExtent = Math.max(1e-6, grid.u_max_mm - grid.u_min_mm);
+  const vExtent = Math.max(1e-6, grid.v_max_mm - grid.v_min_mm);
+  const pxPerMm = targetWidth / uExtent;
+  canvas.width = Math.round(targetWidth);
+  canvas.height = Math.max(60, Math.round(vExtent * pxPerMm));
+  return pxPerMm;
+}
+
+function apertureDataToCanvas(grid, canvas, uMm, vMm) {
+  const x = ((uMm - grid.u_min_mm) / (grid.u_max_mm - grid.u_min_mm)) * canvas.width;
+  // v (north/up in the data) grows upward; canvas y grows downward -- flip,
+  // matching _render_flux_png's own origin="lower".
+  const y = (1 - (vMm - grid.v_min_mm) / (grid.v_max_mm - grid.v_min_mm)) * canvas.height;
+  return [x, y];
+}
+
+function apertureCanvasToData(grid, canvas, x, y) {
+  const uMm = grid.u_min_mm + (x / canvas.width) * (grid.u_max_mm - grid.u_min_mm);
+  const vMm = grid.v_min_mm + (1 - y / canvas.height) * (grid.v_max_mm - grid.v_min_mm);
+  return [uMm, vMm];
+}
+
+function paintApertureCanvas(canvas, grid, centerUMm, centerVMm, radiusMm) {
+  const pxPerMm = sizeApertureCanvas(canvas, grid, 380);
+  const ctx2d = canvas.getContext("2d");
+  const nU = grid.n_u;
+  const nV = grid.n_v;
+  const cellW = canvas.width / nU;
+  const cellH = canvas.height / nV;
+  let maxKw = 0;
+  for (const v of grid.values) if (v != null && v > maxKw) maxKw = v;
+  for (let row = 0; row < nV; row++) {
+    // canvas row 0 is the TOP of the picture; grid row 0 is v_min_mm (the
+    // bottom of the map) -- flip so the picture reads right-side up.
+    const canvasRow = nV - 1 - row;
+    const rowBase = row * nU;
+    for (let col = 0; col < nU; col++) {
+      const kw = grid.values[rowBase + col];
+      const t = maxKw > 0 && kw != null ? kw / maxKw : 0;
+      ctx2d.fillStyle = magmaColor(t);
+      ctx2d.fillRect(col * cellW, canvasRow * cellH, cellW + 0.5, cellH + 0.5);
+    }
+  }
+
+  const [cx, cy] = apertureDataToCanvas(grid, canvas, centerUMm, centerVMm);
+  const rPx = radiusMm * pxPerMm;
+  ctx2d.save();
+  ctx2d.setLineDash([6, 4]);
+  ctx2d.lineWidth = 2;
+  ctx2d.strokeStyle = "#ffffff";
+  ctx2d.beginPath();
+  ctx2d.arc(cx, cy, rPx, 0, Math.PI * 2);
+  ctx2d.stroke();
+  ctx2d.lineWidth = 1;
+  ctx2d.strokeStyle = "#0b5fd0";
+  ctx2d.stroke();
+  ctx2d.restore();
+
+  // Resize handle: a small square at the circle's east edge (mockup M17).
+  const hx = cx + rPx;
+  ctx2d.fillStyle = "#ffffff";
+  ctx2d.strokeStyle = "#0b5fd0";
+  ctx2d.lineWidth = 1.3;
+  ctx2d.fillRect(hx - 5, cy - 5, 10, 10);
+  ctx2d.strokeRect(hx - 5, cy - 5, 10, 10);
+
+  // Compass rider (§M) -- the aperture is scoped to flat receivers (see
+  // apertureReceiverIsFlat), so this canvas only ever needs the flat-window
+  // convention: u = east/west, v = north/south, no rotation.
+  ctx2d.fillStyle = "rgba(255,255,255,0.85)";
+  ctx2d.font = "10px sans-serif";
+  ctx2d.textAlign = "center";
+  ctx2d.fillText("N", canvas.width / 2, 12);
+  ctx2d.fillText("S", canvas.width / 2, canvas.height - 5);
+  ctx2d.textAlign = "left";
+  ctx2d.fillText("W", 4, canvas.height / 2 + 3);
+  ctx2d.textAlign = "right";
+  ctx2d.fillText("E", canvas.width - 4, canvas.height / 2 + 3);
+}
+
+function paintApertureCurve(canvas, curve, currentRadiusMm, currentPowerW) {
+  canvas.width = 380;
+  canvas.height = 160;
+  const ctx2d = canvas.getContext("2d");
+  ctx2d.clearRect(0, 0, canvas.width, canvas.height);
+  const padL = 46;
+  const padR = 10;
+  const padT = 12;
+  const padB = 22;
+  const plotW = canvas.width - padL - padR;
+  const plotH = canvas.height - padT - padB;
+  const maxR = curve.length ? curve[curve.length - 1].r : 1;
+  let maxP = 1e-9;
+  for (const p of curve) if (p.powerW > maxP) maxP = p.powerW;
+  const xOf = (r) => padL + (r / maxR) * plotW;
+  const yOf = (p) => padT + plotH - (p / maxP) * plotH;
+
+  ctx2d.strokeStyle = "#c7cdd6";
+  ctx2d.lineWidth = 1;
+  ctx2d.beginPath();
+  ctx2d.moveTo(padL, padT + plotH);
+  ctx2d.lineTo(padL + plotW, padT + plotH);
+  ctx2d.moveTo(padL, padT);
+  ctx2d.lineTo(padL, padT + plotH);
+  ctx2d.stroke();
+
+  ctx2d.strokeStyle = "#45739e";
+  ctx2d.lineWidth = 2;
+  ctx2d.beginPath();
+  curve.forEach((p, i) => {
+    const x = xOf(p.r);
+    const y = yOf(p.powerW);
+    if (i === 0) ctx2d.moveTo(x, y);
+    else ctx2d.lineTo(x, y);
+  });
+  ctx2d.stroke();
+
+  const markX = xOf(currentRadiusMm);
+  const markY = yOf(currentPowerW);
+  ctx2d.setLineDash([4, 4]);
+  ctx2d.strokeStyle = "#0b5fd0";
+  ctx2d.lineWidth = 1;
+  ctx2d.beginPath();
+  ctx2d.moveTo(markX, padT + plotH);
+  ctx2d.lineTo(markX, markY);
+  ctx2d.lineTo(padL, markY);
+  ctx2d.stroke();
+  ctx2d.setLineDash([]);
+  ctx2d.fillStyle = "#0b5fd0";
+  ctx2d.beginPath();
+  ctx2d.arc(markX, markY, 3.5, 0, Math.PI * 2);
+  ctx2d.fill();
+
+  ctx2d.fillStyle = "#64748b";
+  ctx2d.font = "9.5px sans-serif";
+  ctx2d.textAlign = "left";
+  ctx2d.fillText("0", padL - 4, padT + plotH + 14);
+  ctx2d.textAlign = "right";
+  ctx2d.fillText((maxR / 1000).toFixed(1) + " m", padL + plotW, padT + plotH + 14);
+  ctx2d.textAlign = "left";
+  ctx2d.fillText(fmtPower(maxP), 2, padT + 8);
+}
+
+// Pointer-drag handling for the aperture canvas: click near the resize
+// handle to change the radius, click anywhere else inside the circle to
+// move it, click outside it to do nothing (no "click to place" -- the
+// circle always has a defined default position).
+function apertureCanvasEventPoint(canvas, e) {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  return [(e.clientX - rect.left) * scaleX, (e.clientY - rect.top) * scaleY];
+}
+
+function apertureHandlePointerDown(e) {
+  if (!apertureGrid) return;
+  const canvas = e.currentTarget;
+  const step = currentStepForAperture();
+  const grid = apertureGrid;
+  const center = currentApertureCenterMm(grid, step);
+  const radius = currentApertureRadiusMm(grid, step);
+  const [x, y] = apertureCanvasEventPoint(canvas, e);
+  const [cx, cy] = apertureDataToCanvas(grid, canvas, center.u, center.v);
+  const pxPerMm = canvas.width / (grid.u_max_mm - grid.u_min_mm);
+  const rPx = radius * pxPerMm;
+  const dHandle = Math.hypot(x - (cx + rPx), y - cy);
+  const dCenter = Math.hypot(x - cx, y - cy);
+  if (dHandle <= 10) {
+    apertureDrag = { mode: "resize" };
+  } else if (dCenter <= rPx + 10) {
+    apertureDrag = { mode: "move" };
+  } else {
+    return;
+  }
+  canvas.setPointerCapture(e.pointerId);
+  e.preventDefault();
+}
+
+function apertureHandlePointerMove(e) {
+  if (!apertureDrag || !apertureGrid) return;
+  const canvas = e.currentTarget;
+  const grid = apertureGrid;
+  const step = currentStepForAperture();
+  const [x, y] = apertureCanvasEventPoint(canvas, e);
+  const [uMm, vMm] = apertureCanvasToData(grid, canvas, x, y);
+  if (apertureDrag.mode === "move") {
+    apertureCenterUMm = clampToGridAxis(grid, uMm, "u");
+    apertureCenterVMm = clampToGridAxis(grid, vMm, "v");
+  } else {
+    const center = currentApertureCenterMm(grid, step);
+    const rMm = Math.hypot(uMm - center.u, vMm - center.v);
+    const halfU = Math.abs(grid.u_max_mm - grid.u_min_mm) / 2;
+    const halfV = Math.abs(grid.v_max_mm - grid.v_min_mm) / 2;
+    apertureRadiusMm = Math.max(1, Math.min(rMm, 1.5 * Math.max(halfU, halfV)));
+  }
+  paintIfVisible();
+}
+
+function apertureHandlePointerUp(e) {
+  if (!apertureDrag) return;
+  apertureDrag = null;
+  const canvas = e.currentTarget;
+  try {
+    canvas.releasePointerCapture(e.pointerId);
+  } catch (err) {
+    // Capture may already be gone (pointer left the window, etc.) -- the
+    // drag is over either way.
+  }
+}
+
+// -- sweep drill-down rendering (§M.2) ---------------------------------------
+
+function paintDrillMiniPlan(svg) {
+  const heliostats = currentFieldHeliostats();
+  svg.innerHTML = "";
+  const bg = document.createElementNS(svg.namespaceURI, "rect");
+  bg.setAttribute("width", "150");
+  bg.setAttribute("height", "120");
+  bg.setAttribute("fill", "#ffffff");
+  svg.appendChild(bg);
+  const cx = 75;
+  const cy = 60;
+  if (heliostats.length) {
+    let maxR = 1;
+    for (const h of heliostats) maxR = Math.max(maxR, Math.hypot(h.x_mm, h.y_mm));
+    const scale = 52 / maxR;
+    for (const h of heliostats) {
+      const px = cx + h.x_mm * scale;
+      // World y (north) is up on a plan view; SVG y grows downward -- flip.
+      const py = cy - h.y_mm * scale;
+      const sel = h.id === drillHeliostatId;
+      const dot = document.createElementNS(svg.namespaceURI, "circle");
+      dot.setAttribute("cx", px.toFixed(1));
+      dot.setAttribute("cy", py.toFixed(1));
+      dot.setAttribute("r", sel ? "3.6" : "2.2");
+      dot.setAttribute("fill", sel ? "none" : "#cfe0ef");
+      dot.setAttribute("stroke", sel ? "#0b5fd0" : "#33455c");
+      dot.setAttribute("stroke-width", sel ? "1.8" : "0.6");
+      dot.dataset.hid = String(h.id);
+      dot.style.cursor = "pointer";
+      svg.appendChild(dot);
+    }
+  }
+  const tower = document.createElementNS(svg.namespaceURI, "circle");
+  tower.setAttribute("cx", String(cx));
+  tower.setAttribute("cy", String(cy));
+  tower.setAttribute("r", "4");
+  tower.setAttribute("fill", "#7b8794");
+  svg.appendChild(tower);
 }
 
 // -- repaint helper: async callbacks (a poll tick, a flux fetch landing) hit
@@ -1616,6 +2307,12 @@ function build(container) {
   const fluxCaption = document.createElement("div");
   fluxCaption.className = "caption";
   fluxPanel.appendChild(fluxCaption);
+  // Compass rider (§M): quiet caption text, same idiom as fluxCaption above
+  // -- not a pixel overlay on this matplotlib PNG, which carries axis/
+  // colorbar/title chrome this module has no exact pixel geometry for.
+  const fluxCompass = document.createElement("div");
+  fluxCompass.className = "caption an-compass";
+  fluxPanel.appendChild(fluxCompass);
   // docs/ui-spec-v0.2.md §D: the FEA CSV grid for this timestep. Only a
   // link (like energyCsv above), not a fetch -- and only ever shown for a
   // step the sweep itself stored a map for (fluxSrcUrl set): the on-demand
@@ -1628,6 +2325,164 @@ function build(container) {
   fluxFeaCsv.hidden = true;
   fluxPanel.appendChild(fluxFeaCsv);
   right.appendChild(fluxPanel);
+
+  // -- sweep drill-down to one heliostat (docs/ui-spec-v0.2.md §M.2) --------
+  const drillPanel = document.createElement("div");
+  drillPanel.className = "panel an-drillpanel";
+  const drillH2 = document.createElement("h2");
+  drillH2.textContent = "Heliostat footprint";
+  drillPanel.appendChild(drillH2);
+
+  const drillIdRow = document.createElement("div");
+  drillIdRow.className = "an-drillidrow";
+  const drillIdLabel = document.createElement("label");
+  drillIdLabel.textContent = "…or by id";
+  const drillIdInput = document.createElement("input");
+  drillIdInput.type = "number";
+  drillIdInput.className = "val";
+  drillIdInput.min = "0";
+  drillIdInput.step = "1";
+  drillIdInput.placeholder = "heliostat id";
+  drillIdInput.addEventListener("change", () => {
+    const v = parseInt(drillIdInput.value, 10);
+    if (Number.isFinite(v)) selectDrillHeliostat(v);
+  });
+  drillIdRow.appendChild(drillIdLabel);
+  drillIdRow.appendChild(drillIdInput);
+  drillPanel.appendChild(drillIdRow);
+
+  const drillRow = document.createElement("div");
+  drillRow.className = "an-drillrow";
+
+  const drillPlanCard = document.createElement("div");
+  drillPlanCard.className = "an-drillcard";
+  const drillPlanHead = document.createElement("div");
+  drillPlanHead.className = "an-drillhead";
+  drillPlanHead.textContent = "Mini plan — click to select";
+  const drillPlanFrame = document.createElement("div");
+  drillPlanFrame.className = "an-drillframe";
+  const drillPlanSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  drillPlanSvg.setAttribute("viewBox", "0 0 150 120");
+  drillPlanSvg.addEventListener("click", (e) => {
+    const target = e.target.closest("[data-hid]");
+    if (!target) return;
+    selectDrillHeliostat(Number(target.dataset.hid));
+  });
+  drillPlanFrame.appendChild(drillPlanSvg);
+  drillPlanCard.appendChild(drillPlanHead);
+  drillPlanCard.appendChild(drillPlanFrame);
+
+  const drillFootCard = document.createElement("div");
+  drillFootCard.className = "an-drillcard";
+  const drillFootHead = document.createElement("div");
+  drillFootHead.className = "an-drillhead";
+  drillFootHead.textContent = "Footprint";
+  const drillFootFrame = document.createElement("div");
+  drillFootFrame.className = "an-drillframe";
+  const drillFootImg = document.createElement("img");
+  drillFootImg.alt = "Selected heliostat's own flux footprint";
+  drillFootImg.hidden = true;
+  const drillFootPlaceholder = document.createElement("p");
+  drillFootPlaceholder.className = "placeholder";
+  drillFootPlaceholder.textContent = "Pick a heliostat to see its own footprint.";
+  drillFootFrame.appendChild(drillFootImg);
+  drillFootFrame.appendChild(drillFootPlaceholder);
+  drillFootCard.appendChild(drillFootHead);
+  drillFootCard.appendChild(drillFootFrame);
+
+  drillRow.appendChild(drillPlanCard);
+  drillRow.appendChild(drillFootCard);
+  drillPanel.appendChild(drillRow);
+  const drillCaption = document.createElement("div");
+  drillCaption.className = "caption";
+  drillCaption.textContent =
+    "Computed on demand as a single-heliostat trace at the stored sun position -- the same mechanism the field map above already uses, so nothing new is stored.";
+  drillPanel.appendChild(drillCaption);
+  right.appendChild(drillPanel);
+
+  // -- analysis aperture (docs/ui-spec-v0.2.md §M.4) ------------------------
+  const aperturePanel = document.createElement("div");
+  aperturePanel.className = "panel an-aperturepanel";
+  const apertureH2 = document.createElement("h2");
+  apertureH2.textContent = "Analysis aperture";
+  aperturePanel.appendChild(apertureH2);
+
+  const apertureMsg = document.createElement("p");
+  apertureMsg.className = "placeholder";
+  aperturePanel.appendChild(apertureMsg);
+
+  const apertureBody = document.createElement("div");
+  apertureBody.className = "an-aperturebody";
+
+  const apertureCanvasWrap = document.createElement("div");
+  apertureCanvasWrap.className = "an-aperturecanvaswrap";
+  const apertureCanvas = document.createElement("canvas");
+  apertureCanvas.className = "an-aperturecanvas";
+  apertureCanvas.addEventListener("pointerdown", apertureHandlePointerDown);
+  apertureCanvas.addEventListener("pointermove", apertureHandlePointerMove);
+  apertureCanvas.addEventListener("pointerup", apertureHandlePointerUp);
+  apertureCanvas.addEventListener("pointercancel", apertureHandlePointerUp);
+  apertureCanvasWrap.appendChild(apertureCanvas);
+  const apertureCanvasCaption = document.createElement("div");
+  apertureCanvasCaption.className = "caption";
+  apertureCanvasCaption.textContent = "Dashed circle: drag to move · square: drag to resize.";
+  apertureCanvasWrap.appendChild(apertureCanvasCaption);
+
+  const apertureReadout = document.createElement("div");
+  apertureReadout.className = "readout";
+  const apertureReadoutH3 = document.createElement("h3");
+  apertureReadoutH3.textContent = "Aperture readout";
+  apertureReadout.appendChild(apertureReadoutH3);
+
+  function apRow(label) {
+    const row = document.createElement("div");
+    row.className = "rmetric";
+    const lbl = document.createElement("div");
+    lbl.className = "rlbl";
+    lbl.textContent = label;
+    const num = document.createElement("div");
+    num.className = "rnum";
+    row.appendChild(lbl);
+    row.appendChild(num);
+    apertureReadout.appendChild(row);
+    return num;
+  }
+  const apRadius = apRow("aperture radius");
+  const apPower = apRow("power within");
+  const apFrac = apRow("of collected");
+  const apFlux = apRow("avg flux");
+  const apConc = apRow("avg concentration");
+  const apFormula = document.createElement("div");
+  apFormula.className = "rformula";
+  apFormula.textContent = "avg C = avg flux ÷ DNI";
+  apertureReadout.appendChild(apFormula);
+  const apFrozenNote = document.createElement("div");
+  apFrozenNote.className = "hint";
+  apFrozenNote.textContent = "Saved with this run -- shown as saved, not recomputed.";
+  apFrozenNote.hidden = true;
+  apertureReadout.appendChild(apFrozenNote);
+  const apHint = document.createElement("div");
+  apHint.className = "hint";
+  apHint.textContent =
+    "Draggable and resizable on the map above; saves with the run as an annotation. Post-processing only -- the trace, intercept and collected totals never change.";
+  apertureReadout.appendChild(apHint);
+
+  apertureBody.appendChild(apertureCanvasWrap);
+  apertureBody.appendChild(apertureReadout);
+  aperturePanel.appendChild(apertureBody);
+
+  const apertureCurveFrame = document.createElement("div");
+  apertureCurveFrame.className = "an-aperturecurveframe";
+  const apertureCurveH3 = document.createElement("div");
+  apertureCurveH3.className = "an-drillhead";
+  apertureCurveH3.textContent = "Encircled power vs. aperture radius";
+  const apertureCurveCanvas = document.createElement("canvas");
+  apertureCurveCanvas.className = "an-aperturecurvecanvas";
+  apertureCurveFrame.appendChild(apertureCurveH3);
+  apertureCurveFrame.appendChild(apertureCurveCanvas);
+  aperturePanel.appendChild(apertureCurveFrame);
+
+  right.appendChild(aperturePanel);
 
   content.appendChild(left);
   content.appendChild(right);
@@ -1692,7 +2547,28 @@ function build(container) {
     fluxImg,
     fluxPlaceholder,
     fluxCaption,
+    fluxCompass,
     fluxFeaCsv,
+    drillPanel,
+    drillIdInput,
+    drillPlanSvg,
+    drillFootHead,
+    drillFootImg,
+    drillFootPlaceholder,
+    aperturePanel,
+    apertureMsg,
+    apertureBody,
+    apertureCanvasWrap,
+    apertureCanvas,
+    apertureReadout,
+    apRadius,
+    apPower,
+    apFrac,
+    apFlux,
+    apConc,
+    apFrozenNote,
+    apertureCurveFrame,
+    apertureCurveCanvas,
     savedRunsLabel,
     savedRunsList,
     dayReopenBanner,
@@ -1869,6 +2745,7 @@ function paintFluxPanel() {
     els.fluxPlaceholder.hidden = false;
     els.fluxPlaceholder.textContent = "Click a timestep to render its irradiance map.";
     els.fluxCaption.textContent = "";
+    els.fluxCompass.textContent = "";
     els.fluxFeaCsv.hidden = true;
     return;
   }
@@ -1878,6 +2755,7 @@ function paintFluxPanel() {
     els.fluxPlaceholder.hidden = false;
     els.fluxPlaceholder.textContent = "Rendering…";
     els.fluxCaption.textContent = "";
+    els.fluxCompass.textContent = "";
     els.fluxFeaCsv.hidden = true;
     return;
   }
@@ -1887,6 +2765,7 @@ function paintFluxPanel() {
     els.fluxPlaceholder.hidden = false;
     els.fluxPlaceholder.textContent = fluxError;
     els.fluxCaption.textContent = "";
+    els.fluxCompass.textContent = "";
     els.fluxFeaCsv.hidden = true;
     return;
   }
@@ -1896,6 +2775,8 @@ function paintFluxPanel() {
     els.fluxImg.hidden = false;
     els.fluxPlaceholder.hidden = true;
     els.fluxCaption.textContent = `${fmtHHMM(step.hour)} solar · peak ${fmtFlux(fluxPeakKwM2 != null ? fluxPeakKwM2 : step.peak_flux_kw_m2)}`;
+    // Compass rider (§M) -- see compassCaptionFor.
+    els.fluxCompass.textContent = compassCaptionFor(store.get("doc"));
     // Only a sweep-stored map (fluxSrcUrl, backed by a live job id) has a
     // raw grid on the server to export -- an on-demand trace's flux_png and
     // a reopened saved run's stored PNG are pixels only, nothing to grid.
@@ -1910,8 +2791,156 @@ function paintFluxPanel() {
     els.fluxPlaceholder.hidden = false;
     els.fluxPlaceholder.textContent = "Click a timestep to render its irradiance map.";
     els.fluxCaption.textContent = "";
+    els.fluxCompass.textContent = "";
     els.fluxFeaCsv.hidden = true;
   }
+}
+
+// -- sweep drill-down to one heliostat (§M.2) --------------------------------
+
+function paintDrillPanel() {
+  const doc = store.get("doc");
+  const steps = dayResult && dayResult.steps;
+  const haveSteps = !!(steps && steps.length);
+  const isField = doc.field.mode === "field";
+  els.drillPanel.hidden = !isField || !haveSteps;
+  if (els.drillPanel.hidden) return;
+
+  paintDrillMiniPlan(els.drillPlanSvg);
+
+  const step = currentStepForAperture();
+  const heliostat =
+    drillHeliostatId != null ? currentFieldHeliostats().find((h) => h.id === drillHeliostatId) : null;
+  els.drillIdInput.value = drillHeliostatId != null ? String(drillHeliostatId) : "";
+  els.drillFootHead.textContent =
+    heliostat && step ? `H-${heliostat.id} footprint — ${fmtHHMM(step.hour)}` : "Footprint";
+
+  if (!heliostat) {
+    els.drillFootImg.hidden = true;
+    els.drillFootPlaceholder.hidden = false;
+    els.drillFootPlaceholder.textContent = "Pick a heliostat to see its own footprint.";
+    return;
+  }
+  if (heliostatFootprintLoading) {
+    els.drillFootImg.hidden = true;
+    els.drillFootPlaceholder.hidden = false;
+    els.drillFootPlaceholder.textContent = "Tracing…";
+    return;
+  }
+  if (heliostatFootprintError) {
+    els.drillFootImg.hidden = true;
+    els.drillFootPlaceholder.hidden = false;
+    els.drillFootPlaceholder.textContent = heliostatFootprintError;
+    return;
+  }
+  if (heliostatFootprintPngBase64) {
+    els.drillFootImg.src = "data:image/png;base64," + heliostatFootprintPngBase64;
+    els.drillFootImg.hidden = false;
+    els.drillFootPlaceholder.hidden = true;
+  } else {
+    els.drillFootImg.hidden = true;
+    els.drillFootPlaceholder.hidden = false;
+    els.drillFootPlaceholder.textContent = "Pick a heliostat to see its own footprint.";
+  }
+}
+
+// -- analysis aperture (§M.4) -------------------------------------------------
+
+function renderApertureReadout(data, frozen) {
+  els.apRadius.textContent = data.radius_mm != null ? (data.radius_mm / 1000).toFixed(2) + " m" : "—";
+  els.apPower.textContent = data.power_w != null ? fmtPower(data.power_w) : "—";
+  els.apFrac.textContent = data.frac_collected_pct != null ? data.frac_collected_pct.toFixed(1) + " %" : "—";
+  els.apFlux.textContent = data.avg_flux_w_m2 != null ? fmtFlux(data.avg_flux_w_m2 / 1000) : "—";
+  els.apConc.textContent = data.avg_concentration != null ? data.avg_concentration.toFixed(0) + "×" : "—";
+  els.apFrozenNote.hidden = !frozen;
+}
+
+function paintAperturePanel() {
+  const doc = store.get("doc");
+  if (!apertureReceiverIsFlat(doc)) {
+    // §M.4 scopes the aperture to flat receivers first ("curved later if
+    // wanted") -- the readout math above assumes a uniform bin area, which
+    // is not exact for a frustum.
+    els.aperturePanel.hidden = false;
+    els.apertureMsg.hidden = false;
+    els.apertureMsg.textContent = "The analysis aperture is available for flat receivers (curved receivers are not yet supported).";
+    els.apertureBody.hidden = true;
+    els.apertureCurveFrame.hidden = true;
+    return;
+  }
+
+  const step = currentStepForAperture();
+
+  // A reopened run's frozen annotation, on its own timestep -- shown
+  // verbatim, never recomputed (mockup M17's own checknote).
+  if (reopenedAperture && selectedStepIndex === reopenedAperture.step_index) {
+    els.aperturePanel.hidden = false;
+    els.apertureMsg.hidden = true;
+    els.apertureBody.hidden = false;
+    els.apertureCanvasWrap.hidden = true; // no live grid to draw the circle against
+    els.apertureReadout.hidden = false;
+    els.apertureCurveFrame.hidden = true;
+    renderApertureReadout(reopenedAperture, true);
+    return;
+  }
+  if (reopenedAperture) {
+    els.aperturePanel.hidden = false;
+    els.apertureMsg.hidden = false;
+    els.apertureMsg.textContent =
+      "This run's saved aperture belongs to a different timestep -- select it to see the same circle and readout.";
+    els.apertureBody.hidden = true;
+    els.apertureCurveFrame.hidden = true;
+    return;
+  }
+
+  // Gate on the grid itself, not just the conditions that make one worth
+  // fetching -- scheduleApertureGridFetch's own fetch is still in flight
+  // the first time paint() runs right after a step becomes selected (it
+  // sets apertureGridLoading and repaints before the network call lands),
+  // so step.has_flux_map/resultJobId being fine is not enough to know
+  // apertureGrid itself is populated yet.
+  if (!step || !step.has_flux_map || resultJobId == null || !apertureGrid) {
+    els.aperturePanel.hidden = false;
+    els.apertureMsg.hidden = false;
+    els.apertureMsg.textContent = apertureGridLoading
+      ? "Loading aperture grid…"
+      : apertureGridError || "Select a timestep with a stored irradiance map to use the aperture.";
+    els.apertureBody.hidden = true;
+    els.apertureCurveFrame.hidden = true;
+    return;
+  }
+
+  els.aperturePanel.hidden = false;
+  els.apertureMsg.hidden = true;
+  els.apertureBody.hidden = false;
+  els.apertureCanvasWrap.hidden = false;
+  els.apertureReadout.hidden = false;
+  els.apertureCurveFrame.hidden = false;
+
+  const grid = apertureGrid;
+  const center = currentApertureCenterMm(grid, step);
+  const radius = currentApertureRadiusMm(grid, step);
+  paintApertureCanvas(els.apertureCanvas, grid, center.u, center.v, radius);
+
+  const { powerW, avgFluxWM2 } = apertureMetrics(grid, center.u, center.v, radius);
+  const collectedW = step.power_w;
+  const dni = step.dni_w_m2;
+  renderApertureReadout(
+    {
+      radius_mm: radius,
+      power_w: powerW,
+      frac_collected_pct: collectedW ? (100 * powerW) / collectedW : null,
+      avg_flux_w_m2: avgFluxWM2,
+      avg_concentration: dni ? avgFluxWM2 / dni : null,
+    },
+    false
+  );
+
+  const halfU = Math.abs(grid.u_max_mm - grid.u_min_mm) / 2;
+  const halfV = Math.abs(grid.v_max_mm - grid.v_min_mm) / 2;
+  const maxR = Math.min(halfU, halfV) * 0.98;
+  const curve = apertureCurve(grid, center.u, center.v, maxR, 32);
+  paintApertureCurve(els.apertureCurveCanvas, curve, radius, powerW);
 }
 
 // -- saved runs (docs/ui-spec.md 4) -------------------------------------------
@@ -2172,6 +3201,8 @@ function paint() {
   paintEnergyPanel();
   paintTimestepsTable();
   paintFluxPanel();
+  paintDrillPanel();
+  paintAperturePanel();
   paintYearControls();
   paintYearResult();
   paintManageOverlay();
@@ -2185,6 +3216,8 @@ function paint() {
   els.energyPanel.classList.toggle("an-stale", stale);
   els.tsPanel.classList.toggle("an-stale", stale);
   els.fluxPanel.classList.toggle("an-stale", stale);
+  els.drillPanel.classList.toggle("an-stale", stale);
+  els.aperturePanel.classList.toggle("an-stale", stale);
 }
 
 let lastCtx = null;

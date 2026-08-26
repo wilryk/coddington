@@ -52,6 +52,7 @@ from __future__ import annotations
 import base64
 import csv
 import datetime as _dt
+import json
 import math
 import os
 import threading
@@ -830,6 +831,14 @@ class _TraceRequestBase(_StrictModel):
     #: Lowering it is the fidelity/speed dial: Monte Carlo error falls as
     #: 1/sqrt(rays), so a tenth of the rays is about three times the noise.
     n_rays: int | None = Field(default=None, ge=100, le=2_000_000)
+    #: Opt-in (spec §M.3): a small, downsampled raw flux grid alongside
+    #: ``flux_png``, for the 3D scene's receiver drape (js/scene3d.js builds
+    #: a THREE texture from it client-side rather than re-rendering the
+    #: matplotlib PNG onto a mesh). ``False`` by default -- every caller that
+    #: only wants the rendered PNG (scripts, the flux CSV endpoints, the
+    #: existing test suite) pays nothing extra for it. See
+    #: :func:`_flux_grid_payload` for the downsampling/size tradeoff.
+    include_flux_grid: bool = False
 
     def trace_mode(self) -> TraceMode:
         """The fidelity mode this request asks for, ray budget applied."""
@@ -1423,6 +1432,18 @@ class SavedRunDocument(_StrictModel):
     request: dict
     result: dict
     flux_pngs: dict[str, str] = Field(default_factory=dict)
+    #: §M.4's analysis aperture, frozen at save time -- js/tabs/analysis.js
+    #: computes the circle and its readout live from the fetched flux grid;
+    #: this field is only ever that already-computed snapshot, asked to be
+    #: persisted verbatim. Reopening a saved run redraws the same circle and
+    #: numbers with no recompute (mockup M17's own checknote: "reopening a
+    #: saved analysis shows the same circle and readout without recomputing
+    #: anything"). ``None`` when the run was saved with no aperture drawn.
+    #: A loose dict, like ``request``/``result`` above, rather than a typed
+    #: sub-model -- this is presentation metadata about a run, not physics,
+    #: and its shape is owned by the one frontend module that reads and
+    #: writes it.
+    aperture: dict | None = None
 
 
 #: Which pydantic shape validates a document posted to each library
@@ -2481,6 +2502,35 @@ def _day_flux_fea_blob_key(step: int) -> str:
     return f"day-flux-fea/{step}"
 
 
+def _day_flux_grid_blob_key(step: int) -> str:
+    """Same idea as :func:`_day_flux_blob_key`, for that step's raw flux
+    grid instead of its PNG -- §M.4's Analysis-tab aperture needs the
+    numbers behind the picture, not just the picture, and computes them
+    entirely client-side (no re-trace). Reuses :func:`_flux_grid_payload`
+    verbatim -- the same downsampled, JSON-safe grid shape §M.3's 3D
+    receiver drape already carries over the wire in ``/api/trace``'s own
+    response -- so the Analysis tab's aperture math and the 3D drape parse
+    one grid convention between them, not two. Computed alongside the
+    PNG/CSV in ``day_start``'s work loop, once, never re-traced."""
+    return f"day-flux-grid/{step}"
+
+
+def _day_dni_provider(req: "DayTraceRequest") -> ClearSkyDNI:
+    """Clear-sky DNI source for a day sweep's own per-timestep
+    ``dni_w_m2`` -- §M.4's average-concentration readout (avg flux / DNI)
+    needs a DNI number to divide by, and the day sweep otherwise reports
+    none (unlike the year estimate, which already leans on this same
+    :class:`~heliostat.dni.ClearSkyDNI` model via ``heliostat.energy``).
+    Display/analysis only: never fed back into the trace, the flux grid, or
+    the collected-power numbers, which is why this lives beside
+    ``_day_timesteps`` rather than inside ``_trace_instant_metrics``.
+    """
+    site = req.site
+    return ClearSkyDNI(
+        SimpleNamespace(latitude=site.latitude_deg, longitude=site.longitude_deg, timezone=site.timezone_h)
+    )
+
+
 def _day_timesteps(req: "DayTraceRequest") -> list:
     """The day's sample times, from true sunrise to true sunset."""
     site = req.site
@@ -3293,6 +3343,112 @@ def _render_flux_png(
     return buf.getvalue()
 
 
+#: Target resolution (per axis) for :func:`_flux_grid_payload` -- deliberately
+#: coarser than FLUX_GRID (128): the drape is an orientation view ("where the
+#: hot spot physically sits", spec §M.3), not the quantitative one, so it does
+#: not need the same resolution the stored flux map and its CSV export do.
+FLUX_GRID_TEXTURE_DIM = 64
+
+
+def _flux_grid_payload(flux: np.ndarray, u_edges: np.ndarray, v_edges: np.ndarray) -> dict:
+    """Downsampled raw flux grid for the 3D receiver drape (js/scene3d.js).
+
+    ``flux`` is ``(n_v, n_u)`` W/m^2, the same array :func:`_render_flux_png`
+    plots with ``origin="lower"`` -- row 0 is ``v_edges[0]`` (the bottom of
+    the unrolled/plan map), increasing with row index, exactly like that
+    plot's own y-axis. The client builds a canvas texture from ``values``
+    (row-major, same row order) and maps it onto the receiver mesh with UVs
+    baked from the identical physics convention (see scene3d.js's
+    receiver-UV comment), so this payload only needs to carry the grid and
+    its ``(u, v)`` extent in mm -- not the receiver's shape, which the
+    existing ``scene.receiver`` block already describes.
+
+    Downsamples to :data:`FLUX_GRID_TEXTURE_DIM` per axis by block-averaging
+    (128x128 -> 64x64 here, since :data:`FLUX_GRID` is 128) and rounds to
+    kW/m^2 with 2 decimal digits, both purely to keep this opt-in field
+    small: 64*64 = 4096 numbers at ~5-6 bytes each (a value like "123.45,")
+    is roughly 20-25 KB of JSON, versus ~100 KB+ for the full-resolution grid
+    at the same rounding. Nothing here is stored -- it is recomputed from the
+    same ``flux``/``u_edges``/``v_edges`` every other reading in the response
+    already came from.
+    """
+    n_v, n_u = flux.shape
+    factor_v = max(1, n_v // FLUX_GRID_TEXTURE_DIM)
+    factor_u = max(1, n_u // FLUX_GRID_TEXTURE_DIM)
+    trimmed_v = (n_v // factor_v) * factor_v
+    trimmed_u = (n_u // factor_u) * factor_u
+    down = flux[:trimmed_v, :trimmed_u].reshape(trimmed_v // factor_v, factor_v, trimmed_u // factor_u, factor_u).mean(
+        axis=(1, 3)
+    )
+    kw_m2 = np.round(down / 1000.0, 2)
+    return {
+        "n_u": int(down.shape[1]),
+        "n_v": int(down.shape[0]),
+        "u_min_mm": float(u_edges[0]),
+        "u_max_mm": float(u_edges[-1]),
+        "v_min_mm": float(v_edges[0]),
+        "v_max_mm": float(v_edges[-1]),
+        "unit": "kW/m2",
+        "values": [_clean(x) for x in kw_m2.flatten().tolist()],
+    }
+
+
+def _aperture_metrics(
+    flux_w_m2: np.ndarray,
+    u_min_mm: float,
+    u_max_mm: float,
+    v_min_mm: float,
+    v_max_mm: float,
+    center_u_mm: float,
+    center_v_mm: float,
+    radius_mm: float,
+) -> dict:
+    """Reference implementation of spec §M.4's analysis-aperture math: power
+    within a circle of ``radius_mm`` centred on ``(center_u_mm, center_v_mm)``,
+    read straight off an already-computed, uniform-bin flux grid -- no
+    trace, and no receiver-specific knowledge beyond "bin area is uniform"
+    (exact for a flat window and for a cylinder's own unrolled arc length;
+    NOT exact for a frustum's position-dependent bin area -- see
+    :meth:`~heliostat.geometry.receiver.FrustumReceiver.bin_areas_m2` --
+    which is exactly why spec §M.4 scopes the aperture to flat receivers
+    first, curved ones "later if wanted").
+
+    This mirrors, bin for bin, ``js/tabs/analysis.js``'s own
+    ``apertureMetrics`` -- the function that actually drives the live,
+    drag-as-you-go readout from the grid the browser already fetched (spec
+    §M.4: "ALL computed frontend-side from the flux grid", no server round
+    trip per drag frame). It is not wired into any endpoint; it exists here,
+    beside that JS twin, purely so the formula has an automated check --
+    this repo runs pytest only, with no JS test runner, so a synthetic-grid
+    analytic case (a uniform-flux disk, where the answer is exact
+    arithmetic) is checked against this Python copy instead of the shipped
+    JS directly. Keep the two in lockstep if the formula ever changes.
+
+    A grid bin counts as "inside" the aperture when its CENTRE lies within
+    ``radius_mm`` -- the standard discretization of encircled power. Average
+    flux divides by the aperture's own ideal circular area (pi * r^2), not
+    the discretized sum of included bin areas, matching mockup M17's own
+    worked example (9.61 MW / (pi * 3.80 m^2) ~= 212 kW/m^2).
+    """
+    n_v, n_u = flux_w_m2.shape
+    du_mm = (u_max_mm - u_min_mm) / n_u
+    dv_mm = (v_max_mm - v_min_mm) / n_v
+    u_mid = u_min_mm + (np.arange(n_u) + 0.5) * du_mm
+    v_mid = v_min_mm + (np.arange(n_v) + 0.5) * dv_mm
+    gu, gv = np.meshgrid(u_mid, v_mid)  # (n_v, n_u), matches flux_w_m2's own shape
+    bin_area_m2 = (du_mm / 1000.0) * (dv_mm / 1000.0)
+    inside = (gu - center_u_mm) ** 2 + (gv - center_v_mm) ** 2 <= radius_mm**2
+    power_w = float(np.sum(flux_w_m2[inside]) * bin_area_m2)
+    radius_m = radius_mm / 1000.0
+    area_m2 = math.pi * radius_m**2
+    avg_flux_w_m2 = power_w / area_m2 if area_m2 > 0 else 0.0
+    return {
+        "power_w": power_w,
+        "avg_flux_w_m2": avg_flux_w_m2,
+        "n_bins_inside": int(np.sum(inside)),
+    }
+
+
 # ---------------------------------------------------------------------------
 # field tracing
 #
@@ -3630,6 +3786,11 @@ def create_app():
         # (receiver kind/curved-unrolling note), so a kept timestep's export
         # never has to re-resolve optics params or rebuild the geometry.
         _, day_receiver = _geometry_for(body.optics, optics_params)
+        # §M.4: clear-sky DNI per timestep, for the aperture readout's
+        # "avg concentration = avg flux / DNI" -- cheap (no tracing), see
+        # _day_dni_provider.
+        day_dni_provider = _day_dni_provider(body)
+        day_date = _dt.date(body.site.year, body.site.month, body.site.day)
         if body.layout is None:
             day_heliostat_desc = (
                 f"single heliostat at x={body.heliostat_x_mm / 1000.0:.3f} m, "
@@ -3685,6 +3846,12 @@ def create_app():
                     job.blobs[_day_flux_fea_blob_key(index)] = _flux_fea_csv(
                         metrics["flux"], metrics["u_edges"], metrics["v_edges"], day_receiver, subject
                     )
+                    # §M.4: the raw grid the Analysis-tab aperture reads,
+                    # never re-traced -- same payload shape §M.3's 3D drape
+                    # already sends over the wire (_flux_grid_payload).
+                    job.blobs[_day_flux_grid_blob_key(index)] = json.dumps(
+                        _flux_grid_payload(metrics["flux"], metrics["u_edges"], metrics["v_edges"])
+                    ).encode("utf-8")
                 rows.append(
                     {
                         "key": step.key,
@@ -3698,6 +3865,9 @@ def create_app():
                         },
                         "n_heliostats": metrics["n_heliostats"],
                         "has_flux_map": want_flux,
+                        # §M.4: clear-sky DNI at this instant, display/analysis
+                        # only -- see _day_dni_provider.
+                        "dni_w_m2": round(float(day_dni_provider.dni(day_date, float(step.hour))), 2),
                     }
                 )
                 job.done = index + 1
@@ -3799,6 +3969,31 @@ def create_app():
                 "Content-Disposition": f'attachment; filename="heliostat-day-flux-fea-{step}.csv"'
             },
         )
+
+    @app.get("/api/day/flux/{job_id}/{step}.grid.json")
+    def day_flux_grid_json(job_id: str, step: int) -> Response:
+        """That same timestep's flux map as a compact JSON grid (§M.4): the
+        raw numbers the Analysis tab's aperture reads and does its own
+        arithmetic against, client-side -- power within a radius, average
+        flux, average concentration, the encircled-power curve. Built once,
+        alongside the PNG and the FEA CSV, during the sweep itself (see
+        ``day_start``) -- no re-trace here either, and the same
+        ``has_flux_map``/404 rules as ``.../{step}.png`` apply.
+        """
+        job = JOBS.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"no job {job_id!r}")
+        if job.state == "running":
+            raise HTTPException(status_code=409, detail="still running")
+        if job.state == "error":
+            raise HTTPException(status_code=500, detail=job.error or "the run failed")
+        steps = (job.result or {}).get("steps") or []
+        if not 0 <= step < len(steps):
+            raise HTTPException(status_code=404, detail=f"no timestep {step} in that day's run")
+        grid_bytes = job.blobs.get(_day_flux_grid_blob_key(step))
+        if grid_bytes is None:
+            raise HTTPException(status_code=404, detail="no stored flux map for that timestep")
+        return Response(content=grid_bytes, media_type="application/json")
 
     @app.get("/api/day/export/{job_id}.csv")
     def day_export(job_id: str) -> Response:
@@ -4306,6 +4501,7 @@ def create_app():
                 "elapsed_ms": elapsed_ms,
                 "mode": body.mode,
                 "flux_png": base64.b64encode(png_bytes).decode("ascii"),
+                "flux_grid": _flux_grid_payload(flux, u_edges, v_edges) if body.include_flux_grid else None,
                 "aim_point_mm": [aim_x_mm, aim_y_mm, aim_z_mm],
                 "slant_range_m": slant_range_mm / 1000.0,
                 # What the tower geometry actually resolved to, so the
@@ -4480,6 +4676,7 @@ def create_app():
                 },
                 "mode": body.mode,
                 "flux_png": base64.b64encode(png_bytes).decode("ascii"),
+                "flux_grid": _flux_grid_payload(flux, u_edges, v_edges) if body.include_flux_grid else None,
                 "n_heliostats": n,
                 "eta_min": _clean(float(np.min(eta_union))),
                 "eta_median": _clean(float(np.median(eta_union))),
@@ -4642,6 +4839,7 @@ def create_app():
                 },
                 "mode": body.mode,
                 "flux_png": base64.b64encode(png_bytes).decode("ascii"),
+                "flux_grid": _flux_grid_payload(flux, u_edges, v_edges) if body.include_flux_grid else None,
                 "n_heliostats": n,
                 "eta_min": _clean(float(np.min(eta_union))),
                 "eta_median": _clean(float(np.median(eta_union))),

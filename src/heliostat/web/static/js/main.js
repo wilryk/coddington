@@ -151,6 +151,16 @@ function renderTopbar() {
 const fluxOverlay = document.getElementById("flux-overlay");
 const fluxOverlayImg = document.getElementById("flux-overlay-img");
 const fluxOverlayClose = document.getElementById("flux-overlay-close");
+// v0.2 §M compass rider: N/E/S/W edges for a flat window, an axis caption in
+// compass terms for the unwrapped cylinder/frustum maps (js/scene3d.js's own
+// ground-plane compass markers are the 3D twin of these). Toggled in
+// openFluxOverlay() below, off the same trace result's scene.receiver.kind
+// the drape (§M.3) reads.
+const fluxCompassN = document.getElementById("flux-compass-n");
+const fluxCompassS = document.getElementById("flux-compass-s");
+const fluxCompassE = document.getElementById("flux-compass-e");
+const fluxCompassW = document.getElementById("flux-compass-w");
+const fluxCompassAxis = document.getElementById("flux-compass-axis");
 
 // Field-trace progress and its cancel control, deliberately NOT gated by
 // ui.tab (unlike #runbar's contents -- see renderTabs) -- a field trace is a
@@ -480,6 +490,15 @@ function traceSucceeded(data) {
   if (!stale && data.scene && data.scene.rays) {
     scene.showTraceRays(data.scene.rays, data.scene.miss_rays);
   }
+  // §M.3: the 3D receiver drape, same staleness rule as the rays above --
+  // flux_grid is opt-in (buildTraceRequest always asks for it) and absent
+  // for a receiver-less optics/scene, in which case scene.showFluxDrape is a
+  // no-op.
+  if (!stale && data.flux_grid) {
+    scene.showFluxDrape(data.flux_grid);
+  } else {
+    scene.clearFluxDrape();
+  }
   renderAllPanels();
 }
 
@@ -627,10 +646,40 @@ function exportFluxFeaCsv() {
     });
 }
 
+// v0.2 §M compass rider: N/E/S/W on a flat window's map edges; the unwrapped
+// cylinder/frustum axis labelled in compass terms instead, seam-to-seam.
+//
+// The seam sits at +y (north) -- heliostat.geometry.receiver's module
+// docstring and CylinderReceiver/FrustumReceiver's own ("azimuth arc...
+// seam at +y"), with az = atan2(x, -y) measured from -y (south)
+// (_continuous_azimuth). u = radius(_mean) * az spans uv_extent's
+// (-half_circ, +half_circ), i.e. az over [-pi, pi] -- so u_min and u_max are
+// BOTH the seam (north, the same physical generatrix), and the map's
+// horizontal centre (u=0, az=0) is south. Walking left (u_min) to right
+// (u_max): az runs -pi -> 0 -> +pi, passing -pi/2 (west) on the way to 0
+// and +pi/2 (east) on the way out -- N . W . S . E . N, not the more
+// guessable "seam-is-south" reading.
+const CYLINDER_AXIS_COMPASS = ["N", "W", "S", "E", "N"];
+
 function openFluxOverlay() {
   const data = store.get("ui.traceResult");
   if (!data || !data.flux_png) return;
   fluxOverlayImg.src = "data:image/png;base64," + data.flux_png;
+  const kind = data.scene && data.scene.receiver ? data.scene.receiver.kind : null;
+  const isFlat = kind === "flat";
+  const isCurved = kind === "cylinder" || kind === "frustum";
+  fluxCompassN.hidden = !isFlat;
+  fluxCompassS.hidden = !isFlat;
+  fluxCompassE.hidden = !isFlat;
+  fluxCompassW.hidden = !isFlat;
+  fluxCompassAxis.hidden = !isCurved;
+  if (isCurved && !fluxCompassAxis.childElementCount) {
+    for (const letter of CYLINDER_AXIS_COMPASS) {
+      const span = document.createElement("span");
+      span.textContent = letter;
+      fluxCompassAxis.appendChild(span);
+    }
+  }
   fluxOverlay.hidden = false;
 }
 
@@ -714,6 +763,7 @@ store.subscribe((path, value) => {
     if (ui.traceResult && !ui.staleResults && ui.traceFidelity && value !== ui.traceFidelity) {
       store.set("ui.staleResults", true);
       scene.clearTraceRays();
+      scene.clearFluxDrape();
     }
   }
 
@@ -723,6 +773,7 @@ store.subscribe((path, value) => {
     if (ui.traceResult && !ui.staleResults) {
       store.set("ui.staleResults", true);
       scene.clearTraceRays();
+      scene.clearFluxDrape();
     }
     // Phase 3b save state (docs/ui-spec.md 5): any edit dirties the
     // project -- guarded so a doc.* change doesn't re-set (and re-notify
