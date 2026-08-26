@@ -126,13 +126,16 @@ Riders from the approval: **(a)** irradiance maps gain **N/E/S/W compass marking
 
 Mockups: M14 (desktop shell, §L), M15 (plan-view power coloring + drill-down), M16 (3D receiver drape), M17 (analysis aperture + encircled-power curve) to be added to the mockup page for approval.
 
-## N. Tab restructure: Ray Trace vs. Analysis (decisions 2026-08-26; declutter proposal pending mockup M18)
+## N. Tab restructure: Design · 3D View · Heliostat Shape · Analysis (FINAL, decided 2026-08-26)
 
-Ryker raised splitting the Analysis tab and decluttering the Workspace. Decided 2026-08-26:
+Evolved through two rounds on 2026-08-26. The morning's Ray Trace tab is **superseded** by the afternoon decision: the Workspace itself splits into an authoring tab and an observing/simulating tab, and the instant-trace instruments live with the 3D scene. Four tabs; the app **opens on 3D View** (preserving the signed-off vision: the plant is there in 3D, live, from the first frame).
 
-- **Workspace** — the four design stages, live 3D/plan/elevation, corner rays. **Run + fidelity stay here too** (one shared state seen twice, like fidelity today): tracing what you're designing is core to the 3D-first vision. What else leaves the Workspace is proposed in **mockup M18** for Ryker's reaction, not decided in prose.
-- **Ray Trace** (new tab) — everything about one instant's trace: fidelity + run + progress (the second home), irradiance maps (receiver/secondary selector, compass markings per §M rider), the 3D drape toggle (M.3), per-heliostat power coloring (M.1 — its home, per the M15 rider), single-heliostat footprint inspection (M.2's richer viewer), the analysis aperture (M.4), FEA exports. "What does the light do right now."
-- **Analysis** — time-integrated studies: day sweep, year estimate, energy plots, timestep table, saved runs. **Timestep irradiance maps stay inline** beside the table for fast scrubbing (decided), with an "Open in Ray Trace" link for the richer viewers one click deeper.
+- **Design** — where the plant is authored. The full four-stage sidebar (Heliostat, Field, Receiver & Tower, Sun) beside the precision 2D views: **plan view** for Field, **elevation** for Receiver & Tower, switched explicitly (a view toggle, not the old expand-a-stage auto-morph — that magic retires with the Workspace). Both views keep their new zoom/pan. Edits apply live to the shared model as always.
+- **3D View** — where the plant is observed and simulated. The live 3D scene (edits from Design are there instantly), a compact trace bar (fidelity + Run, the §A purpose subtitles), and a **results dock**: the irradiance map (receiver/secondary selector, compass edges, the M.4 analysis aperture), the M.3 drape toggle, per-heliostat power coloring (M.1), single-heliostat footprint viewing (M.2), FEA exports. Editing stays light here: the **click-to-edit inspector keeps working** (click a heliostat, the receiver, the sun arrow — edit in place), plus a compact sun chip; the full control surface is Design's.
+- **Heliostat Shape** — unchanged.
+- **Analysis** — time-integrated studies, as already decided: day sweep, year estimate, energy plots, timestep table with **inline irradiance maps** for fast scrubbing (compass edges per the §M rider), the M.2 drill-down row, saved runs — with an "**Open in 3D View**" link on maps for the richer viewers one click deeper.
+
+Mockup M18 is redrawn to this structure (M18a Design, M18b 3D View, M18c Analysis). The M18b "Workspace declutter" question is dissolved rather than answered: the old Workspace ceases to exist.
 
 ## J. Acceptance checklist (v0.2 additions)
 
