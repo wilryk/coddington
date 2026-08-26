@@ -182,7 +182,8 @@ export function createScene(container, callbacks) {
     cornerRays: [],
     traceRays: null, // null => show corner rays; [] or [...] => show these instead
     missIds: new Set(), // heliostat ids in miss.aperture_miss_ids or miss.total_miss_ids
-    missRays: [],
+    missRays: [], // dashed misses for the live corner-ray view (aperture-rim probe)
+    traceMissRays: [], // dashed misses for the current real trace (build_scene/build_field_scene's own miss_rays)
     selection: null, // null | {kind: "heliostat"|"secondary"|"receiver"|"sun", id}
     secondaryMesh: null,
     secondaryFillMat: null,
@@ -454,13 +455,20 @@ export function createScene(container, callbacks) {
     const rays = state.traceRays !== null ? state.traceRays : state.cornerRays;
     if (rays && rays.length) raysGroup.add(raysToLineSegments(rays));
 
-    // Dropped miss rays ride alongside the corner rays (docs/ui-spec.md
-    // 2.3) and clear once a real trace's own rays take over (2.1: "traced
-    // rays ... augment the scene until the next edit makes them stale").
+    // Dropped miss rays ride alongside whichever ray set is showing:
+    // the live corner-ray view's own aperture-rim probe (docs/ui-spec.md
+    // 2.3) while state.traceRays is null, or a real trace's own
+    // build_scene/build_field_scene misses once one lands (2.1: "rays that
+    // miss the optics ... draw dashed red rather than disappearing" --
+    // curved-receiver misses included, not just the aperture rim). Either
+    // way this never mixes the two: the corner-ray probe's misses are
+    // computed against a different (enlarged-aperture) heuristic and would
+    // mislabel a real trace's own rays.
     disposeObject(missRaysGroup);
     missRaysGroup.clear();
-    if (state.traceRays === null && state.missRays && state.missRays.length) {
-      missRaysGroup.add(missRaysToLineSegments(state.missRays));
+    const missRays = state.traceRays !== null ? state.traceMissRays : state.missRays;
+    if (missRays && missRays.length) {
+      missRaysGroup.add(missRaysToLineSegments(missRays));
     }
   }
 
@@ -617,11 +625,14 @@ export function createScene(container, callbacks) {
       applySelectionVisuals(); // miss ids recolour heliostats
     },
 
-    // A real trace's own rays (response.scene.rays), shown in place of the
-    // live corner rays (and the miss rays) until the next edit makes
-    // results stale.
-    showTraceRays(rays) {
+    // A real trace's own rays (response.scene.rays) and its own miss rays
+    // (response.scene.miss_rays -- rays that reflected off their mirror,
+    // and secondary if any, but never reached the receiver), shown in place
+    // of the live corner rays (and their own miss rays) until the next edit
+    // makes results stale.
+    showTraceRays(rays, missRays) {
       state.traceRays = rays || [];
+      state.traceMissRays = missRays || [];
       renderRays();
     },
 
@@ -629,6 +640,7 @@ export function createScene(container, callbacks) {
     // response drew.
     clearTraceRays() {
       state.traceRays = null;
+      state.traceMissRays = [];
       renderRays();
     },
 
@@ -638,6 +650,7 @@ export function createScene(container, callbacks) {
       state.cornerRays = [];
       state.traceRays = null;
       state.missRays = [];
+      state.traceMissRays = [];
       renderRays();
     },
 

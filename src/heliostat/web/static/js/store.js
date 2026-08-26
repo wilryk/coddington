@@ -59,8 +59,8 @@ const DEFAULT_DOC = {
       aperture_to_receiver_mm: 0,
       cylinder_radius_mm: 3000,
       cylinder_height_mm: 6000,
-      frustum_top_radius_mm: 2500,
-      frustum_bottom_radius_mm: 4000,
+      frustum_top_radius_mm: 4000,
+      frustum_bottom_radius_mm: 2500,
       frustum_height_mm: 6000,
     },
     axicon: {

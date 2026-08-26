@@ -310,11 +310,15 @@ AXICON_APERTURE_RADIUS_MM = 14000.0
 AXICON_RECEIVER_Z_MM = 7000.0
 
 # Defaults for prime focus's cylindrical/frustum receiver shapes -- plain
-# defaults, not derived from anything.
+# defaults, not derived from anything. The frustum defaults flare OUT toward
+# the top (top radius > bottom radius): the light cone converging on a
+# prime-focus receiver from the field below is widest where it first meets
+# the receiver, so the absorbing surface should slope to face it there,
+# narrowing toward the bottom rather than the top.
 PRIME_FOCUS_CYLINDER_RADIUS_MM = 3000.0
 PRIME_FOCUS_CYLINDER_HEIGHT_MM = 6000.0
-PRIME_FOCUS_FRUSTUM_TOP_RADIUS_MM = 2500.0
-PRIME_FOCUS_FRUSTUM_BOTTOM_RADIUS_MM = 4000.0
+PRIME_FOCUS_FRUSTUM_TOP_RADIUS_MM = 4000.0
+PRIME_FOCUS_FRUSTUM_BOTTOM_RADIUS_MM = 2500.0
 PRIME_FOCUS_FRUSTUM_HEIGHT_MM = 6000.0
 
 # The Cassegrain relay's own conic constants. Fixed, not exposed: they were
@@ -3915,6 +3919,8 @@ def create_app():
 
         if result["backend"] == "mc":
             traced_paths = result["paths"]
+            traced_miss_paths = result["miss_paths"]
+            traced_miss_dirs = result["miss_dirs"]
             xy = result["xy"]
             counters = result["counters"]
             watts_per_ray = result["watts_per_ray"]
@@ -3925,6 +3931,8 @@ def create_app():
             )
         else:
             traced_paths = None  # cone optics carries no rays; the scene samples its own
+            traced_miss_paths = None
+            traced_miss_dirs = None
             flux = result["flux"]
             u_edges, v_edges = result["u_edges"], result["v_edges"]
             power_w = result["power_w"]
@@ -3952,6 +3960,8 @@ def create_app():
             secondary,
             receiver,
             paths=traced_paths,
+            miss_paths=traced_miss_paths,
+            miss_dirs=traced_miss_dirs,
         )
 
         return JSONResponse(
@@ -4372,16 +4382,23 @@ def create_app():
         drew, without this endpoint pretending to solve something that has
         no solution.
 
-        ``miss`` is docs/ui-spec.md 2.3's amber "warning" tier: ``null``
-        for prime focus (no secondary to miss), the sun below the horizon
-        (no solved orientation to build a chief ray from), or an empty
-        field; otherwise ``{needed_aperture_radius_mm, aperture_miss_ids,
-        total_miss_ids, rays}`` from :func:`~heliostat.web.scene.field_miss_detection`
-        plus the dropped-corner-ray polylines
+        ``miss`` carries two independent things under one key: docs/ui-spec.md
+        2.3's amber "warning" tier (``needed_aperture_radius_mm``,
+        ``aperture_miss_ids``, ``total_miss_ids`` from
+        :func:`~heliostat.web.scene.field_miss_detection` -- ``null`` for
+        prime focus, which has no secondary to miss at all) and 2.1's
+        unconditional "rays that miss the optics ... draw dashed red rather
+        than disappearing" (``rays``, the dropped-corner-ray polylines
         :func:`~heliostat.web.scene.build_geometry_scene` collects from the
-        same strided sources as its own ``rays``. Nothing here is adjusted
-        automatically -- the geometry solve above is untouched; this is
-        purely a report on it.
+        same strided sources as its own ``rays``). The second one is NOT
+        gated on the first: a shrunk prime-focus cylinder/frustum drops
+        corner rays the same way a too-small axicon aperture does, even
+        though prime focus never gets an aperture-miss verdict. ``miss`` as
+        a whole is ``null`` only when there is truly nothing to report --
+        no verdict AND no dropped rays -- or the sun is below the horizon
+        (no solved orientation to build a chief ray from in the first
+        place). Nothing here is adjusted automatically -- the geometry
+        solve above is untouched; this is purely a report on it.
         """
         try:
             optics_params = resolve_optics_params(body.optics, body.optics_params)
@@ -4476,6 +4493,21 @@ def create_app():
         )
         if miss is not None:
             miss["rays"] = miss_rays
+        elif miss_rays and not sun_below_horizon:
+            # field_miss_detection has no verdict to give -- prime focus has
+            # no secondary to miss at all, so its own docstring says "None
+            # means no warning to report" unconditionally -- but the corner
+            # rays it was never asked about can still have missed a shrunk
+            # cylinder/frustum receiver. That is docs/ui-spec.md 2.1's plain
+            # "rays that miss ... draw dashed red" contract, not 2.3's amber
+            # aperture-miss tier, and it must not be dropped just because
+            # the tier that usually rides alongside it has nothing to say.
+            miss = {
+                "needed_aperture_radius_mm": None,
+                "aperture_miss_ids": [],
+                "total_miss_ids": [],
+                "rays": miss_rays,
+            }
         scene["miss"] = miss
         scene["optics_resolved"] = optics_params.model_dump()
         return JSONResponse(scene)

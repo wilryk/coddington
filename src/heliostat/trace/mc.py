@@ -221,7 +221,14 @@ def trace_heliostat(
     ``hit_cone``, equal to ``hit_secondary``, for backward-compatible
     naming). With ``return_paths`` the dict also carries ``paths``: ``(4
     vertices, 3, K)`` world-mm polylines source point -> mirror hit ->
-    secondary hit -> receiver hit for every surviving ray.
+    secondary hit -> receiver hit for every surviving ray; plus
+    ``miss_paths`` (``3, 3, J``: source -> mirror hit -> secondary exit) and
+    ``miss_dirs`` (``3, J``: the direction each of those ``J`` rays left the
+    secondary in) for every ray that reflected off the mirror -- and the
+    secondary, if any -- but never reached the receiver's window. Picture
+    code (``web/scene.py``) extends each ``miss_dirs`` ray a further fixed
+    distance to draw a dashed "missed" overshoot; nothing here decides how
+    far.
 
     ``source_disk_radius_mm`` and ``source_power_w`` default to the values
     every stored trace was generated with; passing different ones changes
@@ -443,9 +450,26 @@ def trace_heliostat(
         # secondary itself.
         result["secondary_xy"] = pre[:2].copy()
     if return_paths:
-        src = p[:, ok][:, on_sec][:, hit_mask][:, inside]
-        mir = hit[:, on_sec][:, hit_mask][:, inside]
-        con = pre[:, hit_mask][:, inside]  # == mir when there is no secondary
+        # `pre`/`d` are already down to the K = on_sec.sum() rays that
+        # struck the secondary (or all of them, for NoSecondary); `hit_mask`
+        # is a K-length mask into them, and `uv`/`inside` are already
+        # compacted to hit_mask's own survivors (Receiver.intersect's
+        # contract -- see the note in web/scene.py's field_corner_rays about
+        # not indexing `inside` against the wrong length). Scattering
+        # `inside` back onto the K-length space gives one mask, `delivered`,
+        # that answers "this on-secondary ray reached the receiver AND
+        # landed in its window" -- exactly the old chained
+        # `[:, hit_mask][:, inside]` filter, just named so its complement
+        # (rays that got through the mirror/secondary but never made it to
+        # the receiver) can be captured too.
+        src_sec = p[:, ok][:, on_sec]
+        mir_sec = hit[:, on_sec]
+        delivered = np.zeros(pre.shape[1], dtype=bool)
+        delivered[hit_mask] = inside
+
+        src = src_sec[:, delivered]
+        mir = mir_sec[:, delivered]
+        con = pre[:, delivered]  # == mir when there is no secondary
         rec_uv = uv[:, inside]
         # World xyz of the receiver hit -- exact for any receiver kind via
         # its own uv_to_world (flat, cylinder, frustum, or an aperture-
@@ -453,4 +477,18 @@ def trace_heliostat(
         # not a bare z_mm lookup that only exists on the flat case.
         rec = receiver.uv_to_world(rec_uv)
         result["paths"] = np.stack([src, mir, con, rec])
+
+        # Rays that reflected off the mirror (and the secondary, if any)
+        # but never reached the receiver -- missed its surface entirely, or
+        # landed outside its window -- used to simply vanish: a curved
+        # receiver's finite extent (a shrunk cylinder/frustum height) drops
+        # rays here that a flat window's infinite-plane test never did.
+        # docs/ui-spec.md 2.1 wants these drawn dashed red rather than
+        # disappearing; web/scene.py builds that polyline (source, mirror
+        # hit, secondary exit, then a picture-only overshoot along `d`) from
+        # the raw points and this exit direction returned here, the same way
+        # it already does for field_corner_rays' aperture-rim misses.
+        miss = ~delivered
+        result["miss_paths"] = np.stack([src_sec[:, miss], mir_sec[:, miss], pre[:, miss]])
+        result["miss_dirs"] = d[:, miss]
     return result

@@ -476,7 +476,9 @@ function traceSucceeded(data) {
   editedDuringTrace = false;
   store.set("ui.staleResults", stale);
   store.set("ui.traceFidelity", tracedFidelity);
-  if (!stale && data.scene && data.scene.rays) scene.showTraceRays(data.scene.rays);
+  if (!stale && data.scene && data.scene.rays) {
+    scene.showTraceRays(data.scene.rays, data.scene.miss_rays);
+  }
   renderAllPanels();
 }
 

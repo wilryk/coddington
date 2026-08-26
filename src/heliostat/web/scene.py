@@ -109,12 +109,20 @@ SIDE_TRACE_SEED = 20260818
 MISS_PROBE_ENLARGE = 20.0
 
 # Fallback overshoot length for a dropped corner ray's dashed extension,
-# used only if the secondary has no revolved profile to measure a "top
-# height" from (should not happen -- miss detection only runs for axicon
-# and Cassegrain, both surfaces of revolution). Reuses the scene's own
-# "far enough to read as deliberate" source distance rather than inventing
-# a new constant.
+# used whenever the secondary has no revolved profile to measure a "top
+# height" from -- prime focus's NoSecondary (no surface of revolution at
+# all, so the ray missed a curved receiver directly off the mirror) as well
+# as the degenerate case of a real secondary with no profile. Reuses the
+# scene's own "far enough to read as deliberate" source distance rather
+# than inventing a new constant.
 _MISS_RAY_FALLBACK_LEN_MM = SOURCE_DIST_MM
+
+# How far past the secondary's own top height a dashed miss ray overshoots
+# -- shared by field_corner_rays' aperture-rim misses and
+# _miss_rays_payload's receiver misses, so both read as the same "this
+# family of rays would have overshot about this far" picture rather than
+# two different conventions that happen to look similar.
+_MISS_RAY_OVERSHOOT_FACTOR = 1.3
 
 # Outline sampling: azimuths per facet, and the radial profile resolution
 # the client revolves the secondary from.
@@ -350,6 +358,28 @@ def _receiver_dict(receiver: Receiver) -> dict | None:
     return out
 
 
+def _receiver_center_mm(receiver: Receiver) -> np.ndarray:
+    """A representative world point ON (or at the axis of) ``receiver``, mm.
+
+    Not exact for a curved shape -- there is no single "the" point on a
+    cylinder or frustum -- but good enough to size a missed ray's dashed
+    overshoot (:func:`_miss_rays_payload`) so it actually reads as heading
+    toward the receiver's own neighbourhood, whatever the field's scale.
+    Unwraps an :class:`ApertureClippedReceiver` to its inner surface, same
+    as :func:`_receiver_dict`.
+    """
+    target = receiver.inner if isinstance(receiver, ApertureClippedReceiver) else receiver
+    if isinstance(target, FlatWindowReceiver):
+        return np.array([target.center_x_mm, target.center_y_mm, target.z_mm])
+    if isinstance(target, CylinderReceiver):
+        return np.array([target.center_x_mm, target.center_y_mm, target.center_z_mm])
+    if isinstance(target, FrustumReceiver):
+        return np.array(
+            [target.center_x_mm, target.center_y_mm, 0.5 * (target.z_bot_mm + target.z_top_mm)]
+        )
+    return np.array([0.0, 0.0, 0.0])  # pragma: no cover - defensive, no other Receiver kind exists
+
+
 # ---------------------------------------------------------------------------
 # rays
 
@@ -378,6 +408,51 @@ def _rays_payload(paths: np.ndarray, max_rays: int = MAX_SCENE_RAYS) -> list:
         [[_round(sel[vtx, axis, i]) for axis in range(3)] for vtx in range(4)]
         for i in range(sel.shape[2])
     ]
+
+
+def _miss_rays_payload(
+    miss_paths: np.ndarray | None,
+    miss_dirs: np.ndarray | None,
+    secondary: Secondary,
+    receiver: Receiver,
+    max_rays: int = MAX_SCENE_RAYS,
+) -> list:
+    """:func:`~heliostat.trace.mc.trace_heliostat`'s ``(3, 3, J)`` miss
+    triplets (source, mirror hit, secondary exit) plus their ``(3, J)`` exit
+    directions -> the same dashed-red polyline shape
+    :func:`field_corner_rays`'s aperture-rim misses already draw, extended
+    one more vertex: secondary exit + an overshoot along the real exit
+    direction.
+
+    The overshoot length is the LARGER of two things, per ray:
+    :data:`_MISS_RAY_OVERSHOOT_FACTOR` x the secondary's own top height
+    (:func:`field_corner_rays`'s aperture-rim convention, unchanged for
+    axicon/Cassegrain, where the secondary sits close enough to the
+    receiver that this alone already overshoots past it), and
+    :data:`_MISS_RAY_OVERSHOOT_FACTOR` x that ray's own distance to the
+    receiver's centre (:func:`_receiver_center_mm`). The second term is
+    what actually matters for prime focus: its fallback overshoot is a
+    fixed 30 m (no secondary to measure a height from), which comfortably
+    covers a near heliostat but leaves a dashed line from one 90 m out
+    stopping in open air, nowhere near the receiver it missed -- this ray
+    picked the exact case up (Ryker's own repro: a shrunk prime-focus
+    frustum's far corner rays trailed off well short of the tower). Taking
+    the max rather than replacing the secondary-based term keeps the
+    aperture-rim picture exactly as it was.
+
+    ``None`` (no side-trace miss data, e.g. an older caller) or zero misses
+    both return ``[]`` rather than erroring -- a scene with nothing to warn
+    about is the common case, not an edge one.
+    """
+    if miss_paths is None or miss_dirs is None or miss_paths.shape[2] == 0:
+        return []
+    secondary_len = _MISS_RAY_OVERSHOOT_FACTOR * _secondary_top_height_mm(secondary)
+    centre = _receiver_center_mm(receiver)
+    dist_to_centre = np.linalg.norm(miss_paths[2] - centre[:, None], axis=0)
+    ext_len = np.maximum(secondary_len, _MISS_RAY_OVERSHOOT_FACTOR * dist_to_centre)
+    overshoot = miss_paths[2] + ext_len[None, :] * miss_dirs
+    full = np.concatenate([miss_paths, overshoot[None, :, :]], axis=0)
+    return _rays_payload(full, max_rays)
 
 
 # ---------------------------------------------------------------------------
@@ -411,6 +486,8 @@ def build_scene(
     secondary: Secondary,
     receiver: Receiver,
     paths: np.ndarray | None = None,
+    miss_paths: np.ndarray | None = None,
+    miss_dirs: np.ndarray | None = None,
     max_rays: int = MAX_SCENE_RAYS,
     n_sample_rays: int = SIDE_TRACE_RAYS,
 ) -> dict:
@@ -429,9 +506,24 @@ def build_scene(
     call with its own rng and its output never reaches the reported
     metrics.
 
+    ``miss_paths``/``miss_dirs`` are :func:`~heliostat.trace.mc.trace_heliostat`'s
+    own ``miss_paths``/``miss_dirs`` (source -> mirror hit -> secondary exit,
+    and the direction each left the secondary in) for rays that survived the
+    mirror -- and the secondary, if any -- but never reached the receiver's
+    window. Only meaningful alongside an explicit ``paths``; when ``paths``
+    is ``None`` these are ignored and the side trace's own miss arrays are
+    used instead, so the picture's hits and misses always come from the same
+    sample. docs/ui-spec.md 2.1's "rays that miss the optics ... draw dashed
+    red rather than disappearing" previously only covered the aperture-rim
+    case (:func:`field_corner_rays`'s ``return_misses``); a curved
+    receiver's own finite extent (a shrunk cylinder/frustum height) drops
+    rays this same way, and :func:`_miss_rays_payload` draws them through
+    the identical dashed-red pathway.
+
     :returns: JSON-safe dict with ``heliostat`` (facet outline polygons),
         ``secondary`` (``None`` or ``{kind, profile}``), ``receiver``,
-        ``sun`` (unit vector toward the sun), ``rays`` and ``rays_source``.
+        ``sun`` (unit vector toward the sun), ``rays``, ``rays_source`` and
+        ``miss_rays``.
     """
     helio = np.array([helio_x_mm, helio_y_mm, 0.0])
     n, u, v = _mirror_frame(rot_az_deg, rot_el_deg)
@@ -457,6 +549,8 @@ def build_scene(
             design=design,
         )
         paths = sample["paths"]
+        miss_paths = sample["miss_paths"]
+        miss_dirs = sample["miss_dirs"]
     else:
         rays_source = "trace"
 
@@ -478,6 +572,7 @@ def build_scene(
         "sun": [_round_unit(c) for c in sun],
         "rays": _rays_payload(paths, max_rays),
         "rays_source": rays_source,
+        "miss_rays": _miss_rays_payload(miss_paths, miss_dirs, secondary, receiver, max_rays),
     }
 
 
@@ -550,6 +645,13 @@ def build_field_scene(
     the picture means the drawn bundle is the same whichever backend ran,
     and a field-wide Monte Carlo carries far more paths than a picture can
     use anyway.
+
+    ``miss_rays`` carries the same stride's corner rays that reflected off
+    their mirror (and secondary, if any) but never reached the receiver --
+    dashed-red polylines from :func:`field_corner_rays`'s ``return_misses``,
+    the picture half of the same "rays that miss ... draw dashed red rather
+    than disappearing" contract (docs/ui-spec.md 2.1) that
+    :func:`build_geometry_scene` already exposes for the no-trace view.
     """
     outline = decimate_outline(np.asarray(outline_local_mm, dtype=float), max_vertices)
 
@@ -576,8 +678,21 @@ def build_field_scene(
     # to stand in for this came from a stride of a dozen mirrors and read as
     # "only these were traced" -- which is exactly the wrong impression, the
     # trace covers all of them.
-    corner = field_corner_rays(
-        heliostats, outline_local_mm, solar_az_deg, solar_el_deg, secondary, receiver
+    #
+    # return_misses=True so a corner ray that reflects off its mirror (and
+    # secondary, if any) but never reaches the receiver -- a shrunk
+    # cylinder/frustum height drops rays here that used to just vanish --
+    # comes back as the same dashed-red polyline build_geometry_scene's
+    # aperture-rim warning already draws, through the identical
+    # field_corner_rays pathway.
+    corner, field_miss_rays = field_corner_rays(
+        heliostats,
+        outline_local_mm,
+        solar_az_deg,
+        solar_el_deg,
+        secondary,
+        receiver,
+        return_misses=True,
     )
 
     profile = _secondary_profile(secondary)
@@ -602,6 +717,7 @@ def build_field_scene(
         "sun": [_round_unit(c) for c in sun],
         "rays": corner,
         "rays_source": "corner_chief",
+        "miss_rays": field_miss_rays,
     }
 
 
@@ -657,10 +773,16 @@ def build_geometry_scene(
     ``include_miss_rays`` (off by default, so every other caller's return
     shape is untouched) additionally routes the same strided sources
     through :func:`field_corner_rays`'s ``return_misses`` and exposes the
-    dropped-ray polylines under ``miss_rays`` -- the picture half of
-    :func:`field_miss_detection`'s warning tier, which the endpoint
-    computes separately (it needs every heliostat's centre, not a
-    corner-ray stride) and stitches back together with this key.
+    dropped-ray polylines under ``miss_rays`` -- docs/ui-spec.md 2.1's
+    unconditional "rays that miss the optics ... draw dashed red rather
+    than disappearing", for ANY receiver a corner ray fails to reach
+    (including a shrunk prime-focus cylinder/frustum, which has no
+    secondary at all). This is independent of
+    :func:`field_miss_detection`'s 2.3 amber warning tier -- that one only
+    exists for a real secondary and answers "does this heliostat need a
+    bigger aperture"; the endpoint computes it separately (it needs every
+    heliostat's centre, not a corner-ray stride) and stitches it onto this
+    same response, but the two must not be gated on each other.
 
     :returns: JSON-safe dict with ``outline_local``, ``heliostats`` (id,
         position, orientation), ``secondary``, ``receiver``, ``sun``,
@@ -689,7 +811,16 @@ def build_geometry_scene(
     result: dict = {}
     if include_corner_rays and not sun_below_horizon and outline is not None and heliostats:
         sources = [heliostats[i] for i in _field_ray_sources(len(heliostats), max_corner_sources)]
-        want_misses = include_miss_rays and secondary is not None and not isinstance(secondary, NoSecondary)
+        # Used to be gated on having a real secondary (axicon/Cassegrain) --
+        # but a prime-focus cylinder/frustum has finite extent too, and a
+        # corner ray reflecting straight off the mirror can miss it exactly
+        # the same way one can miss a too-small axicon aperture. Excluding
+        # NoSecondary here just meant a shrunk curved receiver's dropped
+        # rays never made it into the picture (docs/ui-spec.md 2.1's dashed-
+        # red contract is unconditional); field_corner_rays' return_misses
+        # already handles NoSecondary correctly (secondary.redirect passes
+        # every ray through untouched), so there is nothing left to gate on.
+        want_misses = include_miss_rays and secondary is not None
         if want_misses:
             rays, result["miss_rays"] = field_corner_rays(
                 sources, outline, solar_az_deg, solar_el_deg, secondary, receiver, return_misses=True
@@ -812,8 +943,10 @@ def _secondary_top_height_mm(secondary: Secondary) -> float:
     :func:`_secondary_profile`, the same revolved profile the 3-D view
     draws the secondary from, so the overshoot length tracks whatever
     surface is actually on screen. Falls back to a fixed scene distance
-    for a secondary with no such profile (should not arise here: miss
-    detection only runs for axicon and Cassegrain).
+    for a secondary with no such profile: prime focus's ``NoSecondary``
+    (no surface of revolution to measure at all -- a dropped ray there
+    missed the receiver directly off the mirror) as well as the degenerate
+    case of a real secondary with no profile.
     """
     profile = _secondary_profile(secondary)
     if profile is None:
@@ -938,7 +1071,7 @@ def field_corner_rays(
         return hit_rays
 
     miss_mask = ~hit_ok
-    ext_len = 1.3 * _secondary_top_height_mm(secondary)
+    ext_len = _MISS_RAY_OVERSHOOT_FACTOR * _secondary_top_height_mm(secondary)
     miss_paths = np.stack(
         [
             src[:, miss_mask],
