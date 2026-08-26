@@ -636,8 +636,18 @@ def trace_heliostat_cone(
 
     bin_area_mm2 = (u_edges[1] - u_edges[0]) * (v_edges[1] - v_edges[0])
     power_w = float(out.sum() * bin_area_mm2)
+    flux = out * 1.0e6  # W/mm^2 -> W/m^2
+    # `out` is power per (u, v) parameter bin. On a frustum the parameter
+    # bins are uniform but the surface rows they map to are not (area scales
+    # with r(v)/r_mean), so the physical W/m^2 divides bin power by the TRUE
+    # row area — the same bin_areas_m2 the MC backend, _mean_flux_kw_m2 and
+    # the FEA CSV already use. Flat/cylinder areas are uniform: untouched.
+    true_area_m2 = receiver.bin_areas_m2((n_u, n_v))
+    uniform_area_m2 = bin_area_mm2 * 1.0e-6
+    if not np.allclose(true_area_m2, uniform_area_m2):
+        flux *= uniform_area_m2 / true_area_m2
     return {
-        "flux": out * 1.0e6,  # W/mm^2 -> W/m^2
+        "flux": flux,
         "u_edges": u_edges,
         "v_edges": v_edges,
         "power_w": power_w,

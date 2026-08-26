@@ -157,3 +157,56 @@ class TestSlopeErrorBroadening:
         sigma_broaden = 2.0 * 1.0e-3
         expected_rms2 = base.rms_radius_rad() ** 2 + 2.0 * sigma_broaden**2
         assert broadened.rms_radius_rad() ** 2 == pytest.approx(expected_rms2, rel=0.02)
+
+
+class TestFrustumFluxNormalisation:
+    """A frustum's flux grid is uniform in the (u, v) parameterisation, but
+    the surface rows those bins map to are not: bin area scales with
+    r(v)/r_mean (FrustumReceiver.bin_areas_m2). The tracer's deposit
+    accumulates power per PARAMETER bin, so reporting that density directly
+    as W/m^2 mislabels every row that isn't at r_mean -- ~0.18% near
+    mid-slant, growing toward the rims. The physical field must satisfy
+    power == sum(flux * TRUE bin areas), the same contraction the MC
+    backend, _mean_flux_kw_m2 and the FEA CSV export already use.
+    """
+
+    def _frustum_trace(self):
+        from heliostat.geometry.receiver import FrustumReceiver
+
+        receiver = FrustumReceiver(
+            z_bot_mm=32335.0, r_bot_mm=2500.0, z_top_mm=38335.0, r_top_mm=4000.0
+        )
+        cone = trace_heliostat_cone(
+            _ROW.x_mm,
+            _ROW.y_mm,
+            _ROW.rot_az_deg,
+            _ROW.rot_el_deg,
+            _ROW.c3,
+            _ROW.c4,
+            _ROW.c5,
+            _ROW.solar_az_deg,
+            _ROW.solar_el_deg,
+            _SECONDARY,
+            receiver,
+            _KERNEL,
+        )
+        return receiver, cone
+
+    def test_flux_times_true_bin_areas_recovers_collected_power(self):
+        receiver, cone = self._frustum_trace()
+        assert cone["power_w"] > 0
+        n_u = len(cone["u_edges"]) - 1
+        n_v = len(cone["v_edges"]) - 1
+        areas = receiver.bin_areas_m2((n_u, n_v))
+        assert np.sum(cone["flux"] * areas) == pytest.approx(cone["power_w"], rel=1e-9)
+
+    def test_parameter_bin_contraction_no_longer_matches_power(self):
+        """The uniform-bin contraction was the OLD (wrong) invariant; with
+        true W/m^2 in the grid it must now visibly diverge from power, or
+        the row correction silently regressed to a no-op."""
+        receiver, cone = self._frustum_trace()
+        du = cone["u_edges"][1] - cone["u_edges"][0]
+        dv = cone["v_edges"][1] - cone["v_edges"][0]
+        uniform_m2 = du * dv * 1.0e-6
+        wrong = float(np.sum(cone["flux"]) * uniform_m2)
+        assert abs(wrong - cone["power_w"]) / cone["power_w"] > 1.0e-7
