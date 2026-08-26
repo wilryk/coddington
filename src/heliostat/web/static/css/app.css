@@ -335,6 +335,17 @@ input.val::-webkit-inner-spin-button {
   padding: 5px 8px;
   margin: 4px 0 8px 0;
 }
+/* The duration estimate's quiet form -- same box, no amber: the estimate
+   always shows (tabs/analysis.js applyDurationHint), only long runs warn. */
+.fieldhint {
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 11.5px;
+  padding: 5px 8px;
+  margin: 4px 0 8px 0;
+}
 
 .stageactions {
   display: flex;

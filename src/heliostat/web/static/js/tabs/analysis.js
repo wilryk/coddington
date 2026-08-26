@@ -313,17 +313,29 @@ function estimateDurationS(mode, nHeliostats, nTimesteps) {
   return traceCostSPerUnit(mode) * units;
 }
 
-// Only worth a line once the rough estimate clears a couple of minutes --
-// anything shorter is not worth interrupting the flow to warn about.
+// The estimate line ALWAYS shows (an estimate that vanishes when the run
+// gets short reads as a bug -- user report, 2026-08-26: changing the
+// timestep from 0.5 h to 3 h made the estimate "disappear"). The threshold
+// now only decides the styling: past a couple of minutes it wears the
+// amber warning class, under it a quiet hint.
 const DURATION_WARNING_THRESHOLD_S = 120;
 
 function durationWarningText(estimateS, nHeliostats, nTimesteps) {
-  if (!(estimateS > DURATION_WARNING_THRESHOLD_S)) return null;
+  if (!(estimateS > 0)) return null;
   const dur = fmtDuration(estimateS) || `${Math.round(estimateS)} s`;
-  return (
-    `Rough estimate: about ${dur} for ${nHeliostats} heliostat(s) x ${nTimesteps} timesteps. ` +
-    "This is a rough guess, not a promise -- actual time depends on hardware and settings."
-  );
+  const caveat =
+    estimateS > DURATION_WARNING_THRESHOLD_S
+      ? " This is a rough guess, not a promise -- actual time depends on hardware and settings."
+      : "";
+  return `Rough estimate: about ${dur} for ${nHeliostats} heliostat(s) x ${nTimesteps} timesteps.` + caveat;
+}
+
+function applyDurationHint(el, estimateS, text) {
+  el.hidden = !text;
+  if (!text) return;
+  el.textContent = text;
+  // fieldwarn is the amber warning look; fieldhint the quiet one.
+  el.className = estimateS > DURATION_WARNING_THRESHOLD_S ? "fieldwarn" : "fieldhint";
 }
 
 // -- subject strip: what's being analyzed, read from doc + ctx.geometry -----
@@ -2630,8 +2642,7 @@ function paintSweepControls() {
     const nTimesteps = estimateDayTimesteps(formHourStep, formMinElevationDeg);
     const estimateS = estimateDurationS(fidelity, nHeliostats, nTimesteps);
     const text = durationWarningText(estimateS, nHeliostats, nTimesteps);
-    els.durationHint.hidden = !text;
-    if (text) els.durationHint.textContent = text;
+    applyDurationHint(els.durationHint, estimateS, text);
   } else {
     els.durationHint.hidden = true;
   }
@@ -3030,8 +3041,7 @@ function paintYearControls() {
     const nTimesteps = estimateYearTimesteps(yearFastMode, formHourStep, formMinElevationDeg);
     const estimateS = estimateDurationS(fidelity, nHeliostats, nTimesteps);
     const text = durationWarningText(estimateS, nHeliostats, nTimesteps);
-    els.yearDurationHint.hidden = !text;
-    if (text) els.yearDurationHint.textContent = text;
+    applyDurationHint(els.yearDurationHint, estimateS, text);
   } else {
     els.yearDurationHint.hidden = true;
   }

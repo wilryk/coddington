@@ -191,18 +191,50 @@ function bakeCylindricalUV(geometry, vMinM, vMaxM) {
   const pos = geometry.attributes.position;
   const uv = new Float32Array(pos.count * 2);
   const span = vMaxM - vMinM || 1;
+  // atan2(x, -y): az=0 at -y (south), az=+-pi at +y (north) -- the exact
+  // convention _continuous_azimuth documents. u_extent is (-piR, piR)
+  // (CylinderReceiver.uv_extent), i.e. az in [-pi, pi], so normalizing
+  // (az+pi)/(2*pi) lands the seam at north and u=0.5 at south -- see the
+  // module-level comment above for the compass sequence this produces
+  // (N . W . S . E . N left to right).
+  //
+  // The seam needs one extra step. CylinderGeometry's closed wrap
+  // DUPLICATES the seam vertex column, and a naive per-vertex atan2 gives
+  // both duplicates the same u -- so one mesh segment interpolated u all
+  // the way back across the whole texture, smearing a reversed copy of the
+  // map into a visible stripe (user-reported, screenshot 2026-08-26). The
+  // fix: CylinderGeometry's own NATIVE uv.x already runs linearly
+  // 0..1 around the wrap and is the one thing that tells the two seam
+  // duplicates apart (0 vs 1). So measure once how native u maps to the
+  // physical azimuth (anchor angle at native u=0, direction from the first
+  // angular step) and assign u LINEARLY in native u -- continuous
+  // everywhere, seam duplicates exactly one full turn apart. Sampling then
+  // needs wrapS = RepeatWrapping on the drape texture (set in
+  // showFluxDrape), which is also what makes the seam bins blend
+  // physically -- the flux grid wraps there too (Receiver.u_period_mm).
+  const nativeUv = geometry.attributes.uv;
+  const azOf = (i) => Math.atan2(pos.getX(i), -pos.getY(i));
+  let anchor = 0;
+  let step = 1;
   for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i);
-    const y = pos.getY(i);
+    if (nativeUv.getX(i) === 0) anchor = i;
+  }
+  let bestFrac = Infinity;
+  for (let i = 0; i < pos.count; i++) {
+    const nu = nativeUv.getX(i);
+    if (nu > 0 && nu < bestFrac) {
+      bestFrac = nu;
+      step = i;
+    }
+  }
+  const azAnchor = azOf(anchor);
+  let delta = azOf(step) - azAnchor;
+  if (delta > Math.PI) delta -= 2 * Math.PI;
+  if (delta < -Math.PI) delta += 2 * Math.PI;
+  const dir = delta >= 0 ? 1 : -1;
+  for (let i = 0; i < pos.count; i++) {
     const z = pos.getZ(i);
-    // atan2(x, -y): az=0 at -y (south), az=+-pi at +y (north) -- the exact
-    // convention _continuous_azimuth documents. u_extent is (-piR, piR)
-    // (CylinderReceiver.uv_extent), i.e. az in [-pi, pi], so normalizing
-    // (az+pi)/(2*pi) lands u=0/1 (the seam, duplicated at both texture
-    // edges by CylinderGeometry's own closed wrap) at north and u=0.5 at
-    // south -- see the module-level comment above for the compass sequence
-    // this produces (N . W . S . E . N left to right).
-    const az = Math.atan2(x, -y);
+    const az = azAnchor + dir * 2 * Math.PI * nativeUv.getX(i);
     uv[i * 2] = (az + Math.PI) / (2 * Math.PI);
     uv[i * 2 + 1] = (z - vMinM) / span;
   }
@@ -651,6 +683,7 @@ export function createScene(container, callbacks) {
 
     state.receiverMesh = mesh;
     state.receiverMat = material;
+    state.receiverKind = kind; // showFluxDrape: curved kinds wrap their drape texture
     state.receiverEdgeLines = edgeLines;
     state.receiverEdgeMat = edgeMat;
   }
@@ -887,6 +920,16 @@ export function createScene(container, callbacks) {
       if (!mat || !fluxGrid || !fluxGrid.values || !fluxGrid.values.length) return;
       if (state.receiverDrapeTexture) state.receiverDrapeTexture.dispose();
       const texture = fluxGridTexture(fluxGrid);
+      // Curved receivers wrap: the baked u runs linearly across the seam
+      // (bakeCylindricalUV), landing the duplicate seam column exactly one
+      // turn past its twin, so sampling must wrap too -- and the flux grid
+      // is physically periodic there (Receiver.u_period_mm), making
+      // repeat-sampling the correct blend, not just a cosmetic one. Flat
+      // windows keep the clamped default.
+      if (state.receiverKind === "cylinder" || state.receiverKind === "frustum") {
+        texture.wrapS = THREE.RepeatWrapping;
+        texture.needsUpdate = true;
+      }
       state.receiverDrapeTexture = texture;
       mat.map = texture;
       mat.color.set(0xffffff); // let the texture's own colors show, untinted
