@@ -678,3 +678,65 @@ def test_field_trace_peak_flux_is_never_below_mean_flux(optics_params):
     assert resp.status_code == 200
     assert data["power_w"] > 0
     assert data["peak_flux_kw_m2"] >= data["mean_flux_kw_m2"]
+
+
+# ---------------------------------------------------------------------------
+# adaptive flux grid (striping fix): a curved receiver unrolls its FULL
+# circumference into u while v spans only its height/slant, so the historical
+# square FLUX_GRID left u-bins ~pi*(diameter/height) coarser than v-bins
+# (~146 mm vs 47 mm on the default cylinder) -- a single heliostat's spot was
+# ~4 bins wide and every flux map striped, in BOTH backends, because they
+# share the same edges. _receiver_flux_grid widens n_u to square-ish bins.
+
+
+class TestAdaptiveFluxGrid:
+    def test_flat_window_keeps_the_historical_square_grid(self):
+        from heliostat.web.app import FLUX_GRID, _receiver_flux_grid
+
+        flat = FlatWindowReceiver(z_mm=35335.0, half_u_mm=2000.0, half_v_mm=2000.0, facing="down")
+        assert _receiver_flux_grid(flat) == (FLUX_GRID, FLUX_GRID)
+
+    def test_default_cylinder_gets_square_ish_bins(self):
+        from heliostat.web.app import FLUX_GRID, FLUX_GRID_TEXTURE_DIM, _receiver_flux_grid
+
+        cyl = CylinderReceiver(center_z_mm=35335.0, radius_mm=3000.0, height_mm=6000.0)
+        n_u, n_v = _receiver_flux_grid(cyl)
+        assert n_v == FLUX_GRID
+        assert n_u == 448  # ceil(128*pi / 64) * 64 -- pinned so payload sizes stay known
+        (u0, u1), (v0, v1) = cyl.uv_extent()
+        du, dv = (u1 - u0) / n_u, (v1 - v0) / n_v
+        # The point of the fix: u resolution within ~25% of v resolution,
+        # instead of the old pi-fold mismatch.
+        assert du / dv < 1.25
+        # Drape texture block-averaging must divide evenly.
+        assert n_u % FLUX_GRID_TEXTURE_DIM == 0
+
+    def test_frustum_and_aperture_clipped_receivers_also_adapt(self):
+        from heliostat.web.app import FLUX_GRID, FLUX_GRID_MAX_U, _receiver_flux_grid
+
+        fr = FrustumReceiver(z_bot_mm=32335.0, r_bot_mm=2500.0, z_top_mm=38335.0, r_top_mm=4000.0)
+        n_u, n_v = _receiver_flux_grid(fr)
+        assert n_v == FLUX_GRID and FLUX_GRID < n_u <= FLUX_GRID_MAX_U
+
+        clipped = ApertureClippedReceiver(
+            aperture=FlatWindowReceiver(z_mm=35335.0, half_u_mm=5000.0, half_v_mm=5000.0, facing="down"),
+            inner=CylinderReceiver(center_z_mm=35335.0, radius_mm=3000.0, height_mm=6000.0),
+        )
+        # is_planar delegates to the inner surface, so the cavity's flux map
+        # gets the same resolution its bare cylinder would.
+        assert _receiver_flux_grid(clipped) == _receiver_flux_grid(clipped.inner)
+
+    def test_single_cylinder_trace_round_trips_the_adaptive_grid(self, client):
+        """End-to-end: the traced flux grid, its payload, and the drape
+        texture all agree on the widened u axis."""
+        body = _payload({"receiver_type": "cylinder"})
+        body["include_flux_grid"] = True
+        resp = client.post("/api/trace", json=body)
+        assert resp.status_code == 200
+        data = resp.json()
+        grid = data["flux_grid"]
+        assert grid is not None
+        # 448 u-bins block-average by 7 into a 64-wide texture; 128 v-bins by 2.
+        assert grid["n_u"] == 64 and grid["n_v"] == 64
+        assert data["power_w"] > 0
+        assert data["peak_flux_kw_m2"] >= data["mean_flux_kw_m2"]

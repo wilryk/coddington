@@ -167,6 +167,48 @@ JOBS = JobRegistry()
 WINDOW_MM = 2000.0
 FLUX_GRID = 128
 
+#: Cap on the adaptive u-bin count for curved receivers (below). 512 bounds
+#: the deposit cost (a cone footprint touches ~4x the bins of a 128-wide
+#: grid) and the flux-array size; the default cylinder and frustum land at
+#: 448, comfortably inside it.
+FLUX_GRID_MAX_U = 512
+
+
+def _receiver_flux_grid(receiver) -> tuple[int, int]:
+    """``(n_u, n_v)`` for a receiver's flux map.
+
+    A flat window keeps the historical ``FLUX_GRID`` square. A curved
+    receiver unrolls its FULL circumference into u while v spans only its
+    height/slant, so a square grid leaves u-bins ~pi*(diameter/height) times
+    coarser than v-bins (~146 mm vs 47 mm on the default cylinder) -- a
+    single heliostat's spot lands in ~4 bins and every flux map goes stripy
+    (both backends identically, since they share these edges). Scale n_u so
+    u-bins match v-bins (square bins on the unrolled surface), rounded UP to
+    a multiple of ``FLUX_GRID_TEXTURE_DIM`` so the drape texture's
+    block-averaging divides evenly, clamped to
+    ``[FLUX_GRID, FLUX_GRID_MAX_U]``.
+
+    Deterministic from the receiver alone -- worker processes and the
+    parent build their grids independently and MUST agree bin-for-bin.
+    """
+    if getattr(receiver, "is_planar", True):
+        return (FLUX_GRID, FLUX_GRID)
+    (u0, u1), (v0, v1) = receiver.uv_extent()
+    ratio = (u1 - u0) / (v1 - v0)
+    n_u = int(np.ceil(FLUX_GRID * ratio / FLUX_GRID_TEXTURE_DIM)) * FLUX_GRID_TEXTURE_DIM
+    return (int(np.clip(n_u, FLUX_GRID, FLUX_GRID_MAX_U)), FLUX_GRID)
+
+
+def _flux_edges(receiver) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The one shared ``(u_edges, v_edges, bin_area_m2)`` every flux-map
+    producer bins against -- single vs field trace, MC vs cone, sweep
+    steps -- so no two paths can disagree on resolution again."""
+    (u0, u1), (v0, v1) = receiver.uv_extent()
+    n_u, n_v = _receiver_flux_grid(receiver)
+    u_edges = np.linspace(u0, u1, n_u + 1)
+    v_edges = np.linspace(v0, v1, n_v + 1)
+    return u_edges, v_edges, receiver.bin_areas_m2((n_u, n_v))
+
 # ---------------------------------------------------------------------------
 # the manuscript field: the paper's real 643-heliostat layout
 #
@@ -1842,12 +1884,9 @@ def _geometry_for(optics: str, params: OpticsParams | None = None):
 
 def _mc_flux_and_metrics(xy: np.ndarray, watts_per_ray: float, receiver: Receiver):
     """2D-histogram flux map + spot metrics from raw Monte Carlo receiver hits."""
-    (u0, u1), (v0, v1) = receiver.uv_extent()
-    u_edges = np.linspace(u0, u1, FLUX_GRID + 1)
-    v_edges = np.linspace(v0, v1, FLUX_GRID + 1)
     # Per-bin area, not a scalar: uniform for a flat window or cylinder, but
     # a frustum's bins shrink toward its narrow end (Receiver.bin_areas_m2).
-    bin_area_m2 = receiver.bin_areas_m2((FLUX_GRID, FLUX_GRID))
+    u_edges, v_edges, bin_area_m2 = _flux_edges(receiver)
 
     counts, _, _ = np.histogram2d(xy[1], xy[0], bins=[v_edges, u_edges])
     flux = counts * watts_per_ray / bin_area_m2  # (n_v, n_u), W/m^2
@@ -1989,6 +2028,9 @@ def _trace_core(
         "super_gauss", slope_error_mrad=slope_error_mrad, specularity_mrad=specularity_mrad
     )
     cone_kwargs = dict(mode.cone_kwargs)
+    # Same rule every flux-map consumer bins against (_flux_edges) -- a
+    # worker's cone trace and the parent's accumulator grid must agree.
+    cone_kwargs["flux_grid"] = _receiver_flux_grid(receiver)
     if _design_is_flat(design, sol.c3, sol.c4, sol.c5):
         # A deliberately flat mirror (explicit cant_focal_mm=0 on a
         # grid/flower design -- see _design_is_flat) has no focusing figure
@@ -2234,7 +2276,7 @@ def _trace_field_heliostats(
     # can track wall-time share instead of racing through cheap inner rings
     # and stalling on expensive outer ones (see _heliostat_progress_weights).
     progress_weight = _heliostat_progress_weights(xy_mm)
-    flux = np.zeros((FLUX_GRID, FLUX_GRID))
+    flux = np.zeros((len(v_edges) - 1, len(u_edges) - 1))
     power_w = 0.0
     incident_power_w = 0.0 if mode.backend == "cone" else None
     counters: dict[str, float] = {}
@@ -2576,10 +2618,7 @@ def _trace_instant_metrics(
     optics_params = resolve_optics_params(req.optics, req.optics_params)
     secondary, receiver = _geometry_for(req.optics, optics_params)
     mode = req.trace_mode()
-    (u0, u1), (v0, v1) = receiver.uv_extent()
-    u_edges = np.linspace(u0, u1, FLUX_GRID + 1)
-    v_edges = np.linspace(v0, v1, FLUX_GRID + 1)
-    bin_area_m2 = receiver.bin_areas_m2((FLUX_GRID, FLUX_GRID))
+    u_edges, v_edges, bin_area_m2 = _flux_edges(receiver)
 
     if req.layout is None:
         xy_mm = np.array([[req.heliostat_x_mm, req.heliostat_y_mm]], dtype=float)
@@ -2604,7 +2643,7 @@ def _trace_instant_metrics(
         ones = np.ones(len(ids))
         eta_shade = eta_block = eta_union = ones
 
-    flux = np.zeros((FLUX_GRID, FLUX_GRID))
+    flux = np.zeros((len(v_edges) - 1, len(u_edges) - 1))
     power_w = 0.0
     for i in range(len(ids)):
         # Checked per heliostat, not per timestep: one timestep of a large
@@ -3364,7 +3403,9 @@ def _flux_grid_payload(flux: np.ndarray, u_edges: np.ndarray, v_edges: np.ndarra
     existing ``scene.receiver`` block already describes.
 
     Downsamples to :data:`FLUX_GRID_TEXTURE_DIM` per axis by block-averaging
-    (128x128 -> 64x64 here, since :data:`FLUX_GRID` is 128) and rounds to
+    (128x128 -> 64x64 for a flat window; a curved receiver's wider adaptive
+    grid -- see :func:`_receiver_flux_grid` -- is sized as a multiple of
+    this dim so it divides evenly too) and rounds to
     kW/m^2 with 2 decimal digits, both purely to keep this opt-in field
     small: 64*64 = 4096 numbers at ~5-6 bytes each (a value like "123.45,")
     is roughly 20-25 KB of JSON, versus ~100 KB+ for the full-resolution grid
@@ -4494,7 +4535,7 @@ def create_app():
                 "incident_power_w": _clean(incident_power_w),
                 "note": _zero_power_note(counters, _clean(power_w)),
                 "peak_flux_kw_m2": _clean(float(np.max(flux)) / 1000.0),
-                "mean_flux_kw_m2": _clean(_mean_flux_kw_m2(flux, receiver.bin_areas_m2((FLUX_GRID, FLUX_GRID)))),
+                "mean_flux_kw_m2": _clean(_mean_flux_kw_m2(flux, receiver.bin_areas_m2((flux.shape[1], flux.shape[0])))),
                 "rms_radius_mm": _clean(rms_mm),
                 "centroid_mm": [_clean(centroid[0]), _clean(centroid[1])],
                 "counters": {k: int(v) for k, v in counters.items()},
@@ -4595,10 +4636,7 @@ def create_app():
         # has no use for MC ray paths -- and 600 heliostats' worth of them is
         # a lot of array for a picture that will not use it (mc_return_paths
         # inside _trace_field_heliostats is always False).
-        (u0, u1), (v0, v1) = receiver.uv_extent()
-        u_edges = np.linspace(u0, u1, FLUX_GRID + 1)
-        v_edges = np.linspace(v0, v1, FLUX_GRID + 1)
-        bin_area_m2 = receiver.bin_areas_m2((FLUX_GRID, FLUX_GRID))
+        u_edges, v_edges, bin_area_m2 = _flux_edges(receiver)
 
         traced = _trace_field_heliostats(
             designs,
@@ -4741,10 +4779,7 @@ def create_app():
             )
             t_occlusion = time.perf_counter()
 
-            (u0, u1), (v0, v1) = receiver.uv_extent()
-            u_edges = np.linspace(u0, u1, FLUX_GRID + 1)
-            v_edges = np.linspace(v0, v1, FLUX_GRID + 1)
-            bin_area_m2 = receiver.bin_areas_m2((FLUX_GRID, FLUX_GRID))
+            u_edges, v_edges, bin_area_m2 = _flux_edges(receiver)
 
             # Cost-weighted total, set once up front so eta_s/snapshot's
             # `frac` can weight progress from the very first callback (see
