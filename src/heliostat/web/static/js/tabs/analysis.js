@@ -1993,7 +1993,7 @@ function build(container) {
 
   const startBtn = document.createElement("div");
   startBtn.className = "btn primary";
-  startBtn.textContent = "Start day sweep";
+  startBtn.textContent = "Trace day sweep";
   startBtn.addEventListener("click", () => {
     if (startBtn.classList.contains("disabled-link")) return;
     startSweep();
@@ -2164,7 +2164,7 @@ function build(container) {
   });
   const yearStartBtn = document.createElement("div");
   yearStartBtn.className = "btn primary";
-  yearStartBtn.textContent = "Run year estimate";
+  yearStartBtn.textContent = "Trace year estimate";
   yearStartBtn.addEventListener("click", () => {
     if (yearStartBtn.classList.contains("disabled-link")) return;
     startYear();
@@ -2632,7 +2632,7 @@ function paintSweepControls() {
 
   const busy = starting || running;
   els.startBtn.classList.toggle("disabled-link", busy);
-  els.startBtn.textContent = starting ? "Starting…" : running ? "Running…" : "Start day sweep";
+  els.startBtn.textContent = starting ? "Starting…" : running ? "Tracing…" : "Trace day sweep";
   els.cancelBtn.hidden = !running;
   els.cancelBtn.classList.toggle("disabled-link", cancelling);
   els.cancelBtn.textContent = cancelling ? "Cancelling…" : "Cancel";
@@ -3030,7 +3030,7 @@ function paintYearControls() {
   const running = yearJobSnapshot && yearJobSnapshot.state === "running";
   const busy = yearStarting || running;
   els.yearStartBtn.classList.toggle("disabled-link", busy);
-  els.yearStartBtn.textContent = yearStarting ? "Starting…" : running ? "Running…" : "Run year estimate";
+  els.yearStartBtn.textContent = yearStarting ? "Starting…" : running ? "Tracing…" : "Trace year estimate";
   els.yearCancelBtn.hidden = !running;
   els.yearCancelBtn.classList.toggle("disabled-link", yearCancelling);
   els.yearCancelBtn.textContent = yearCancelling ? "Cancelling…" : "Cancel";
