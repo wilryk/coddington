@@ -666,11 +666,19 @@ store.subscribe((path, value) => {
   // the one currently showing (collapsing Field while in elevation, say,
   // must not touch it).
   if (path === "ui.expanded.field") {
-    if (value) store.set("ui.view", "plan");
-    else if (store.get("ui.view") === "plan") store.set("ui.view", viewForOpenStage());
+    if (value) {
+      store.set("ui.view", "plan");
+      // v0.2 fix wave item 2: Field and Receiver & Tower are mutually
+      // exclusive -- expanding one collapses the other so the viewport
+      // (just switched to this stage's own view, above) is never left
+      // showing a stage that isn't actually the one on screen.
+      if (store.get("ui.expanded.receiver")) store.set("ui.expanded.receiver", false);
+    } else if (store.get("ui.view") === "plan") store.set("ui.view", viewForOpenStage());
   } else if (path === "ui.expanded.receiver") {
-    if (value) store.set("ui.view", "elevation");
-    else if (store.get("ui.view") === "elevation") store.set("ui.view", viewForOpenStage());
+    if (value) {
+      store.set("ui.view", "elevation");
+      if (store.get("ui.expanded.field")) store.set("ui.expanded.field", false);
+    } else if (store.get("ui.view") === "elevation") store.set("ui.view", viewForOpenStage());
   }
 
   if (path === "ui.fidelity") {

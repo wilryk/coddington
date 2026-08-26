@@ -25,6 +25,18 @@ const HELIOSTAT_STROKE = "#33455c";
 let built = false;
 let els = {};
 let lastGeometry = null;
+let builtContainer = null;
+
+// v0.2 fix wave item 4: mouse-wheel zoom (both directions, centred on the
+// cursor) + click-drag pan, on top of the auto-fit projection every other
+// layer already draws against. null = "still auto-fitting"; once the user
+// zooms or pans this holds the live scale + a pixel pan offset from the
+// fitted centre, and stays in effect (surviving re-renders from doc/geometry
+// edits) until reset (double-click the background, or the reset-view chip
+// that appears in the chrome layer while this is non-null).
+let manualView = null; // { scale, panX, panY }
+let lastProj = null;
+let suppressNextClick = false;
 
 // Called by main.js on every successful /api/scene/geometry response --
 // never on error, so (like the 3D scene) this view keeps drawing the last
@@ -33,12 +45,30 @@ export function setGeometry(data) {
   lastGeometry = data;
 }
 
+function resetView() {
+  if (!manualView) return;
+  manualView = null;
+  if (builtContainer) render(builtContainer);
+}
+
 function handleClick(e) {
+  if (suppressNextClick) {
+    // A drag just ended here (handlePointerUp) -- the browser still fires
+    // its own synthetic "click" after mouseup regardless of how far the
+    // pointer travelled, so without this a pan would also fire whatever
+    // click semantics (select/deselect) sit under the pointer's resting spot.
+    suppressNextClick = false;
+    return;
+  }
+  const actionEl = e.target.closest && e.target.closest("[data-action]");
+  if (actionEl && actionEl.dataset.action === "reset-view") {
+    resetView();
+    return;
+  }
   // Phase 3c wave 1: the selection card's "View shape" button
   // (docs/ui-spec.md 3, "clicking any heliostat in the workspace offers
   // 'View shape'") -- checked before [data-kind] since the button itself
   // isn't a heliostat/secondary/receiver shape.
-  const actionEl = e.target.closest && e.target.closest("[data-action]");
   if (actionEl && actionEl.dataset.action === "view-shape") {
     const id = Number(actionEl.dataset.id);
     if (Number.isFinite(id)) {
@@ -63,6 +93,66 @@ function handleClick(e) {
   }
 }
 
+// Wheel over the SVG zooms about the cursor: the world point currently under
+// it is solved from the projection in effect *before* the zoom, then the new
+// pan is picked so that same point lands back under the cursor after.
+const ZOOM_MIN_FACTOR = 0.15; // relative to the fitted scale
+const ZOOM_MAX_FACTOR = 40;
+
+function handleWheel(e) {
+  if (!lastProj) return;
+  e.preventDefault();
+  const rect = els.svg.getBoundingClientRect();
+  const mx = ((e.clientX - rect.left) / rect.width) * lastProj.w;
+  const my = ((e.clientY - rect.top) / rect.height) * lastProj.h;
+  const proj = lastProj;
+  const factor = Math.exp(-e.deltaY * 0.0015); // deltaY > 0 (scroll down) zooms out
+  const minScale = proj.fitScale * ZOOM_MIN_FACTOR;
+  const maxScale = proj.fitScale * ZOOM_MAX_FACTOR;
+  const newScale = Math.min(maxScale, Math.max(minScale, proj.scale * factor));
+
+  const xm = (mx - proj.cx) / proj.scale;
+  const ym = -(my - proj.cy) / proj.scale;
+  const newCx = mx - xm * newScale;
+  const newCy = my + ym * newScale;
+  manualView = { scale: newScale, panX: newCx - proj.w / 2, panY: newCy - proj.h / 2 };
+  render(builtContainer);
+}
+
+const PAN_DRAG_THRESHOLD_PX = 3;
+let dragState = null; // { startX, startY, startPanX, startPanY, moved }
+
+function handlePointerDown(e) {
+  if (e.button !== 0 || !lastProj) return;
+  dragState = {
+    startX: e.clientX,
+    startY: e.clientY,
+    startPanX: manualView ? manualView.panX : 0,
+    startPanY: manualView ? manualView.panY : 0,
+    moved: false,
+  };
+  els.svg.setPointerCapture(e.pointerId);
+}
+
+function handlePointerMove(e) {
+  if (!dragState) return;
+  const dx = e.clientX - dragState.startX;
+  const dy = e.clientY - dragState.startY;
+  if (!dragState.moved && Math.hypot(dx, dy) < PAN_DRAG_THRESHOLD_PX) return;
+  dragState.moved = true;
+  const scale = manualView ? manualView.scale : lastProj.fitScale;
+  manualView = { scale, panX: dragState.startPanX + dx, panY: dragState.startPanY + dy };
+  render(builtContainer);
+}
+
+function handlePointerUp(e) {
+  if (dragState && dragState.moved) suppressNextClick = true;
+  dragState = null;
+  if (els.svg.hasPointerCapture && els.svg.hasPointerCapture(e.pointerId)) {
+    els.svg.releasePointerCapture(e.pointerId);
+  }
+}
+
 function build(container) {
   container.innerHTML =
     '<svg preserveAspectRatio="xMidYMid meet">' +
@@ -80,8 +170,18 @@ function build(container) {
     layers[name] = container.querySelector('[data-layer="' + name + '"]');
   }
   svg.addEventListener("click", handleClick);
+  svg.addEventListener("dblclick", (e) => {
+    e.preventDefault();
+    resetView();
+  });
+  svg.addEventListener("wheel", handleWheel, { passive: false });
+  svg.addEventListener("pointerdown", handlePointerDown);
+  svg.addEventListener("pointermove", handlePointerMove);
+  svg.addEventListener("pointerup", handlePointerUp);
+  svg.addEventListener("pointercancel", handlePointerUp);
   els = { svg, bg, layers };
   built = true;
+  builtContainer = container;
   // Container is only ever the size the flex layout gives it; a pure
   // window resize while this view is showing gets no other signal to
   // re-render on (store-driven renders already cover every edit).
@@ -90,7 +190,8 @@ function build(container) {
   });
 }
 
-// -- projection: world metres -> screen px, refit every render ------------
+// -- projection: world metres -> screen px, refit every render (unless the
+// user has zoomed/panned -- see manualView above) ---------------------------
 
 function computeProjection(heliostats, w, h) {
   let maxRm = 0;
@@ -100,8 +201,18 @@ function computeProjection(heliostats, w, h) {
   }
   if (maxRm < 5) maxRm = 5; // a sane minimum span for an empty/near field
   const halfSpan = maxRm * 1.08; // spec: "fit the whole field with ~8% margin"
-  const scale = Math.max((Math.min(w, h) / 2 - 40) / halfSpan, 0.01); // px/m
-  return { scale, cx: w / 2, cy: h / 2 };
+  const fitScale = Math.max((Math.min(w, h) / 2 - 40) / halfSpan, 0.01); // px/m
+  if (manualView) {
+    return {
+      scale: manualView.scale,
+      cx: w / 2 + manualView.panX,
+      cy: h / 2 + manualView.panY,
+      fitScale,
+      w,
+      h,
+    };
+  }
+  return { scale: fitScale, cx: w / 2, cy: h / 2, fitScale, w, h };
 }
 
 function toScreen(proj, xm, ym) {
@@ -348,6 +459,24 @@ function chromeSvg(doc, proj, w, h) {
     '<text x="' + ox + '" y="' + (oy + 24) + '" font-size="10.5" fill="#64748b" text-anchor="middle">sun az ' +
     doc.sun.az.toFixed(0) + "°</text>" +
     "</g>";
+  // Reset-view chip, top-right -- only while zoomed/panned away from the
+  // fit (v0.2 fix wave item 4's "double-click or a small reset control"),
+  // so it stays out of the way otherwise. Sits below the view pill (app.css
+  // .viewpill, right:14px top:14px), which is a sibling overlay outside
+  // this SVG entirely.
+  if (manualView) {
+    const bw = 84;
+    const bh = 24;
+    const bx2 = w - bw - 14;
+    const by2 = 52;
+    s +=
+      '<g data-action="reset-view" style="cursor:pointer">' +
+      '<rect x="' + bx2 + '" y="' + by2 + '" width="' + bw + '" height="' + bh +
+      '" rx="5" fill="rgba(255,255,255,0.9)" stroke="#a9b4c0"></rect>' +
+      '<text x="' + (bx2 + bw / 2) + '" y="' + (by2 + bh / 2 + 4) +
+      '" font-size="11" fill="#345a80" text-anchor="middle">Reset view</text>' +
+      "</g>";
+  }
   return s;
 }
 
@@ -365,6 +494,7 @@ export function render(container) {
   els.bg.setAttribute("height", h);
 
   const proj = computeProjection(heliostats, w, h);
+  lastProj = proj;
 
   els.layers.rings.innerHTML = ringsSvg(doc, proj, heliostats);
   els.layers.aperture.innerHTML = apertureSvg(doc, geometry, ui, proj);

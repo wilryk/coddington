@@ -423,6 +423,23 @@ input.val::-webkit-inner-spin-button {
   margin-top: 2px;
 }
 
+/* v0.2 fix wave item 4: appears only while the elevation view is zoomed or
+   panned away from its fit (js/views/elevation.js toggles [hidden]) --
+   top-left, clear of the sun disc and the (separate, sibling) view pill
+   which both live top-right. */
+.elevation-reset-view {
+  position: absolute;
+  left: 14px;
+  top: 14px;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid #a9b4c0;
+  border-radius: 5px;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: #345a80;
+  cursor: pointer;
+}
+
 .chip {
   position: absolute;
   left: 14px;

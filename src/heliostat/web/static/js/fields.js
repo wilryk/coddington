@@ -157,13 +157,27 @@ function opticsPath(key) {
 // Fields with a `group` show only while prime_focus's own receiver_type
 // (a string, kept out of this table -- see RECEIVER_TYPE_OPTIONS below)
 // equals that group; fields with no `group` are common to every receiver
-// type. window_half_u/v_mm has no group -- it now sizes the entrance
-// aperture (a flat rectangle) whichever receiver_type sits behind it.
+// type. window_half_u/v_mm and aperture_to_receiver_mm are tagged
+// group: "flat" -- they describe the flat entrance aperture / its offset
+// from the absorbing surface, which only reads as a meaningful control
+// when that absorbing surface is itself the flat window (v0.2 fix wave
+// item 1: they don't apply -- visibly -- to a cylinder/frustum receiver,
+// so they hide there; values are preserved and reappear under Flat).
 export const RECEIVER_FIELD_TABLE = {
   prime_focus: [
     { key: "focus_height_mm", label: "Focus height (mm)", path: opticsPath("focus_height_mm") },
-    { key: "window_half_u_mm", label: "Window ½ w (mm)", path: opticsPath("window_half_u_mm") },
-    { key: "window_half_v_mm", label: "Window ½ h (mm)", path: opticsPath("window_half_v_mm") },
+    {
+      key: "window_half_u_mm",
+      label: "Window ½ w (mm)",
+      path: opticsPath("window_half_u_mm"),
+      group: "flat",
+    },
+    {
+      key: "window_half_v_mm",
+      label: "Window ½ h (mm)",
+      path: opticsPath("window_half_v_mm"),
+      group: "flat",
+    },
     { key: "receiver_center_x_mm", label: "Receiver centre X (mm)", path: opticsPath("receiver_center_x_mm") },
     { key: "receiver_center_y_mm", label: "Receiver centre Y (mm)", path: opticsPath("receiver_center_y_mm") },
     {
@@ -171,6 +185,7 @@ export const RECEIVER_FIELD_TABLE = {
       label: "Aperture → receiver (mm)",
       path: opticsPath("aperture_to_receiver_mm"),
       min: 0,
+      group: "flat",
     },
     {
       key: "cylinder_radius_mm",

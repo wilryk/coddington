@@ -73,6 +73,67 @@ function disposeObject(obj) {
   });
 }
 
+// North indicator (v0.2 fix wave item 3): a quiet ground-plane compass mark
+// at the grid's own +y edge -- true north, per this module's own world-frame
+// docstring above (x east, y north, z up) -- so it reads as the 3D twin of
+// the plan view's north arrow (js/views/plan.js's chromeSvg) rather than a
+// second, disagreeing convention. Kept as faint as the grid it sits on
+// (docs/ui-spec.md 2.1's "quiet" chrome): same GRID_COLOR, low opacity, no
+// outline. The "N" label is a camera-facing sprite (a canvas texture) so it
+// stays legible from any orbit angle without needing real 3D text geometry.
+let northLabelTexture = null;
+function northLabelSprite() {
+  if (!northLabelTexture) {
+    const canvas = document.createElement("canvas");
+    canvas.width = 64;
+    canvas.height = 64;
+    const ctx = canvas.getContext("2d");
+    ctx.font = "600 42px system-ui, sans-serif";
+    ctx.fillStyle = "rgba(110, 130, 150, 0.8)"; // GRID_COLOR (0x6e8296), same family as plan.js's #64748b
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("N", 32, 34);
+    northLabelTexture = new THREE.CanvasTexture(canvas);
+  }
+  // A fresh material per call (disposeObject below reclaims it on rebuild),
+  // but the canvas texture itself is cached module-wide -- disposing a
+  // material never disposes the texture it points at, so this is safe.
+  const material = new THREE.SpriteMaterial({ map: northLabelTexture, transparent: true, depthWrite: false });
+  return new THREE.Sprite(material);
+}
+
+function buildNorthMarker(extentM) {
+  const group = new THREE.Group();
+  const z = -GROUND_OFFSET_MM * MM + 0.01; // a hair above the ground grid, avoids z-fighting
+  const y = extentM; // the grid's own north edge
+
+  // A small, flat, faint arrowhead pointing north (+y), lying on the ground
+  // the same way the grid itself does.
+  const len = Math.max(1.5, extentM * 0.035);
+  const shape = new THREE.Shape();
+  shape.moveTo(0, len);
+  shape.lineTo(len * 0.32, 0);
+  shape.lineTo(-len * 0.32, 0);
+  shape.closePath();
+  const arrowMat = new THREE.MeshBasicMaterial({
+    color: GRID_COLOR,
+    transparent: true,
+    opacity: 0.35,
+    side: THREE.DoubleSide,
+  });
+  const arrow = new THREE.Mesh(new THREE.ShapeGeometry(shape), arrowMat);
+  arrow.position.set(0, y - len, z);
+  group.add(arrow);
+
+  const label = northLabelSprite();
+  const labelSize = Math.max(1.2, extentM * 0.045);
+  label.scale.set(labelSize, labelSize, 1);
+  label.position.set(0, y + labelSize * 0.6, z);
+  group.add(label);
+
+  return group;
+}
+
 function mirrorFrame(rotAzDeg, rotElDeg) {
   const az = THREE.MathUtils.degToRad(rotAzDeg);
   const el = THREE.MathUtils.degToRad(rotElDeg);
@@ -236,6 +297,7 @@ export function createScene(container, callbacks) {
     grid.material.transparent = true;
     grid.material.opacity = 0.12;
     groundGroup.add(grid);
+    groundGroup.add(buildNorthMarker(extent));
   }
 
   // Per-instance color for one heliostat id: selection wins over the miss
