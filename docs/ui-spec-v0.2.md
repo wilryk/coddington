@@ -105,6 +105,15 @@ Research complete (2026-08-25). The literature's term is **polar field** (vs. *s
 - Roads, drag-to-move, and heliostat overrides interact with a sector field exactly as with full-surround layouts.
 - **Citations** (added to REFERENCES.md with the implementation): Lipps & Vant-Hull 1978, *Solar Energy* 20(6); Collado & Guallar 2012, *Renewable Energy* 46; Wagner & Wendelin 2018, *Solar Energy* 171 (SolarPILOT); PS10 plant description + Wei et al. 2010, *Renewable Energy* 35(9) for aperture-tilt precedent.
 
+## L. Desktop shell (added 2026-08-26)
+
+The desktop build stops presenting as a webpage. Requested by Ryker after evaluating v0.1.0's launch-a-browser-tab behavior.
+
+- **Own window:** the app opens in a native window hosting the existing UI via **WebView2** (`pywebview`) — the web engine already present on Windows 11 — with the Coddington title, taskbar icon (rev 5 §5b), and no browser chrome (no address bar, tabs, or bookmarks). The user's browser is never involved. Window size/position persist across launches.
+- **No console:** the launcher builds windowed (no terminal window); backend output goes to a log file under the storage directory, surfaced via a "View log" link in the About dialog for diagnosis.
+- The backend still binds localhost (unchanged architecture); a second launch focuses the existing window rather than starting a second server. Browser access to the localhost port keeps working for anyone who wants it — the shell is presentation, not a lockout.
+- Dev mode (`uvicorn` + a browser tab) is unchanged — this section is about the shipped build.
+
 ## J. Acceptance checklist (v0.2 additions)
 
 1. Fidelity picker shows the three purpose subtitles; hovering any optical-error field shows its glossary tooltip.
