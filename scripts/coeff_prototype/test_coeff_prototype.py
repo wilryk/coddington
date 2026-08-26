@@ -35,10 +35,12 @@ from heliostat.sweep import standard_optics
 from heliostat.trace.cone import sunshape_kernel, trace_heliostat_cone
 from heliostat.trace.kernels import RadialKernel, deposit
 
+from coeff_prototype import scenarios
 from coeff_prototype.binned import deposit_binned, power_w
 from coeff_prototype.bspline import control_grid_edges, deposit_bspline_coarse, evaluate_bspline
 from coeff_prototype.hermite import HermiteBasis, accumulate_hermite, evaluate_hermite
 from coeff_prototype.sampling import SampleBundle, flux_grid_edges, trace_heliostat_samples
+from coeff_prototype.sparsity_sweep import grid_for_density, trace_field_at_grid
 
 SIGMA = 0.0024  # rad, of order the solar half-width -- matches tests/test_kernels.py
 K_MASK = 16
@@ -280,3 +282,65 @@ class TestUniformDiskConservesPower:
         out = evaluate_bspline(coarse, u_c, v_c, u_edges, v_edges, wrap_u=False)
         total, _, _ = _moments(out, u_edges, v_edges)
         assert total == pytest.approx(self.WEIGHT, rel=5e-3)
+
+
+# ---------------------------------------------------------------------------
+# 4. sparsity_sweep.py: density->grid mapping and field-total conservation
+# ---------------------------------------------------------------------------
+
+
+class TestSparsityDensityGridMapping:
+    """grid_for_density() must reproduce the current hardcoded 20x12 grid
+    exactly at its own reference density on the manuscript's 5:3 mirror
+    bbox -- if this ever drifts, every "vs reference" number in the sweep's
+    report silently stops meaning what the report says it means."""
+
+    def test_reference_density_reproduces_20x12_on_5x3_bbox(self):
+        assert grid_for_density(16.0, 5.0, 3.0) == (20, 12)
+
+    def test_grid_aspect_matches_bbox_and_scales_with_density(self):
+        # 5*sqrt(4)=10, 3*sqrt(4)=6 -- exact, no rounding ambiguity.
+        n_x, n_y = grid_for_density(4.0, 5.0, 3.0)
+        assert (n_x, n_y) == (10, 6)
+        assert n_x / n_y == pytest.approx(5.0 / 3.0, rel=1e-9)
+
+    def test_min_grid_floor_at_very_low_density(self):
+        n_x, n_y = grid_for_density(0.01, 5.0, 3.0, min_n=2)
+        assert n_x >= 2
+        assert n_y >= 2
+
+
+class TestSparsitySweepFieldTotalConservation:
+    """A sweep rung's reported field-total power must equal an
+    independently computed sum -- both the sum of its own per-heliostat
+    powers (catches a bug in trace_field_at_grid's bookkeeping) and a
+    from-scratch re-trace/re-deposit of each case outside that function
+    entirely (catches a bug in the accumulation itself, not just the
+    arithmetic around it)."""
+
+    def test_field_total_matches_independent_sum(self):
+        scenario = scenarios.scenario_default_field()
+        cases = scenario.cases[:5]  # small subset -- this pin is about bookkeeping, not scale
+        u_edges, v_edges = flux_grid_edges(scenario.receiver, scenario.flux_grid)
+        grid = grid_for_density(1.0, 5.0, 3.0)  # coarse, keeps the test fast
+
+        result = trace_field_at_grid(cases, scenario.secondary, scenario.receiver, u_edges, v_edges, grid)
+        assert result["field_total_power_w"] == pytest.approx(
+            sum(result["per_heliostat_power_w"]), rel=1e-9
+        )
+
+        kernel = sunshape_kernel("super_gauss")
+        du = u_edges[1] - u_edges[0]
+        dv = v_edges[1] - v_edges[0]
+        independent_total = 0.0
+        for case in cases:
+            bundle = trace_heliostat_samples(
+                case.x_mm, case.y_mm, case.rot_az_deg, case.rot_el_deg,
+                case.c3, case.c4, case.c5, case.solar_az_deg, case.solar_el_deg,
+                scenario.secondary, scenario.receiver, kernel,
+                grid=grid, order=2, mask_nodes=16, occluders=case.occluders,
+            )
+            out = np.zeros((v_edges.size - 1, u_edges.size - 1))
+            deposit_binned(bundle, u_edges, v_edges, out=out)
+            independent_total += float(out.sum() * du * dv)
+        assert result["field_total_power_w"] == pytest.approx(independent_total, rel=1e-9)

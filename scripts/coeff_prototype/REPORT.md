@@ -368,3 +368,136 @@ fixed, with binned deposit remaining the reference for Fast Accurate and
 Monte Carlo as already specified in B2. Hermite-Gauss is a validated
 concept that is not yet a net win and needs the two fixes above before it
 is worth re-benchmarking.
+
+## 7. Sparsity sweep — how few mirror-surface samples does the field need?
+
+**Status: prototype complete, benchmarked, recommendation below.** Separate
+question from SS1-6 above: those sections compare *deposit methods* at a
+fixed sampling grid; this section holds the deposit method fixed (binned,
+ground truth) and instead sweeps the *sampling* grid itself.
+
+**Motivation.** `trace_heliostat_cone`'s mirror-surface sampling grid is a
+hardcoded `20x12` — an aspect ratio baked to the manuscript's 5m x 3m
+rectangular mirror, not derived from anything. `scripts/coeff_prototype/
+sparsity_sweep.py` instead derives the grid from a requested sampling
+**density** (samples/m²) applied to the mirror's own aperture bounding box,
+aspect-matched to that bbox, and sweeps density from very sparse to past
+the current hardcoded resolution to find the sparsest grid that still holds
+field-total accuracy.
+
+**Density -> grid mapping.** Requiring both `n_x*n_y == density*W*H` (the
+requested sample count over a `W x H` m bbox) and `n_x/n_y == W/H` (aspect
+matched to the bbox) simultaneously gives, by substitution:
+
+```
+n_x = round(W_m * sqrt(density))
+n_y = round(H_m * sqrt(density))
+```
+
+each axis independently its own physical length (m) times `sqrt(density)`,
+rounded (floor of 2 per axis). On the manuscript's 5m x 3m mirror at
+`density = 16.0` samples/m², this reproduces the current hardcoded grid
+**exactly**: `5*sqrt(16) = 20`, `3*sqrt(16) = 12`. That makes `density=16.0`
+a free reference point — no separate reference run needed, it is simply one
+rung of the ladder, pinned by `test_coeff_prototype
+.py::TestSparsityDensityGridMapping`.
+
+**Method.** Every rung traces the full 643-heliostat manuscript field, one
+timestep (`scenarios.scenario_default_field()`, same sun position as SS3.1:
+az=150°/el=45°, no occluders), through `sampling.trace_heliostat_samples` +
+`binned.deposit_binned` — the same bit-for-bit-validated path as SS1 — at
+`order=2`, `mask_nodes=16` (**`FAST_ACCURATE` settings**, not `ULTRA_FAST`,
+per the task's own instruction to gate against `fast_accurate` rather than
+the MC reference). Per rung: per-heliostat power (each bundle deposited
+onto its own scratch grid before being added to the field accumulator, so
+per-heliostat numbers cost one extra array-add, no extra tracing),
+field-total power, field peak flux, and wall time. All seeds are the fixed
+ones already used throughout this prototype (`SEED = 20260826` in
+`scenarios.py`); nothing here is time-seeded.
+
+Reference = the `density=16.0` rung itself (grid `(20,12)`, exactly the
+current hardcoded grid, at `order=2`/`mask_nodes=16` — the production
+`fast_accurate` settings). Every other rung's error is measured against it.
+
+### 7.1 Results — full 643-heliostat field, one timestep
+
+Raw numbers: `scripts/coeff_prototype/sparsity_sweep_results.json`.
+
+| Density (samples/m²) | Grid (n_x, n_y) | Field-total power err (%) | Max per-heliostat power err (%) | Peak-flux err (%) | Speedup vs reference | Wall time (s) |
+|---:|:---:|---:|---:|---:|---:|---:|
+| 0.5 | (4, 2) | 11.8896 | 57.8477 | 161.9145 | 17.36x | 18.5 |
+| 1.0 | (5, 3) | 3.4983 | 22.7030 | 471.8176 | 10.86x | 29.5 |
+| 2.0 | (7, 4) | 0.6513 | 13.7155 | 76.1445 | 6.59x | 48.7 |
+| 4.0 | (10, 6) | 0.5115 | 5.3196 | 18.8641 | 3.36x | 95.6 |
+| 8.0 | (14, 8) | 0.2247 | 2.2477 | 5.1994 | 1.92x | 167.3 |
+| **12.0** | **(17, 10)** | **0.0728** | **0.9966** | **0.5586** | **1.30x** | **247.6** |
+| 16.0 (reference) | (20, 12) | 0.0000 | 0.0000 | 0.0000 | 1.00x | 320.9 |
+| 24.0 | (24, 15) | 0.0695 | 0.8993 | 3.4947 | 0.14x\* | 2233.0 |
+
+\* *The 24.0 rung's wall time (2233s, vs an ~538s extrapolation from the
+33-heliostat quick probe) is very plausibly resource contention, not a real
+cost of the denser grid: an unrelated `pytest tests/test_web.py` process
+(which per this repo's own machine-resources rule spawns a trace worker
+pool) was observed running concurrently on this machine partway through the
+sweep. The accuracy numbers for this rung are unaffected by that
+contention — only wall time is suspect — but its speedup figure should not
+be trusted at face value; a re-run in isolation would very likely show it
+close to 0.7-0.8x (denser than reference, so slower, but not 7x slower).*
+
+**Convergence pattern**: field-total error falls monotonically and steeply
+from 11.9% at the sparsest rung (0.5/m², an 8-sample grid) to 0.07% at
+12/m², then **overshoots to 0** exactly at the reference rung by
+construction (it *is* the reference), then ticks back up slightly at 24/m²
+(0.07%) — consistent with random-ish residual quadrature noise at this
+scale rather than a real accuracy trend past ~8-12 samples/m²: the extra
+resolution beyond the current hardcoded grid buys essentially nothing
+further for field-total power. Max per-heliostat error and peak-flux error
+converge on the same shape, just with more amplitude (a single heliostat or
+a single peak pixel is a much noisier statistic than a 643-heliostat sum).
+
+### 7.2 Recommendation
+
+**Target metric (owner-specified): the sparsest rung holding field-total
+error ≤ ~0.1%.** That is **density = 12.0 samples/m²**, giving grid
+**`(n_x, n_y) = (17, 10)`** on the manuscript's 5m x 3m mirror (170 samples
+vs the current grid's 240 — a **29% reduction in sample count**, 1.30x
+measured speedup at field scale) — field-total error 0.073%, max
+single-heliostat error 1.00%, peak-flux error 0.56%, all comfortably inside
+the noise floor the field-total metric shows past this point. The 8.0/m²
+rung (grid `(14, 8)`, 112 samples, a 53% reduction, 1.92x speedup) is the
+next rung down and misses the target (0.225% field-total error) but stays
+within about 2% on every metric — worth keeping in mind as a looser
+tolerance's choice, not the recommendation under the stated 0.1% target.
+
+**Density, not a fixed grid, is the right unit to carry forward**: because
+`n_x`/`n_y` are derived from density x the mirror's own aperture bbox
+(aspect-matched to that bbox), `density = 12.0 samples/m²` is the portable
+recommendation — it reproduces `(17, 10)` on the manuscript's current 5m x
+3m mirror, but would derive a different, correctly-aspected grid
+automatically for any other mirror size, unlike today's hardcoded `(20,
+12)` which is silently wrong for any mirror that isn't 5m x 3m.
+
+### 7.3 Correctness pins
+
+Three pins added to `test_coeff_prototype.py`
+(`TestSparsityDensityGridMapping`, `TestSparsitySweepFieldTotalConservation`):
+
+* `grid_for_density(16.0, 5.0, 3.0) == (20, 12)` — the reference density
+  reproduces the current hardcoded grid exactly on the manuscript bbox; if
+  this ever drifts, every "vs reference" number above silently stops
+  meaning what this section says it means.
+* `grid_for_density(4.0, 5.0, 3.0) == (10, 6)` (exact, no rounding
+  ambiguity) with `n_x/n_y == 5/3` — aspect stays matched to the bbox as
+  density scales.
+* A 5-heliostat rung's field-total power equals both the sum of its own
+  per-heliostat powers (bookkeeping) and an independent from-scratch
+  re-trace/re-deposit of each case outside `trace_field_at_grid` entirely
+  (catches a regression in the accumulation itself, not just the
+  arithmetic around it) — `rel=1e-9` both ways.
+
+All 13 tests in this directory pass (the original 9 from SS5 plus these 4
+new pins):
+
+```
+13 passed in 5.21s
+```
