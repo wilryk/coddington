@@ -107,6 +107,16 @@ export async function postFluxCsv(body) {
   return resp.blob();
 }
 
+// docs/ui-spec-v0.2.md §D: the ANSYS-oriented FEA CSV grid (meters, W/m²,
+// one x/y/flux point per row behind commented metadata) -- a different file
+// format from postFluxCsv's mm/kW-m2 labelled matrix above, not a
+// replacement for it. Same request body shape (buildFluxCsvRequest), same
+// single-heliostat-map-even-in-field-mode limitation that function already
+// documents; only the endpoint and the resulting file differ.
+export function postFluxFeaCsv(body, signal) {
+  return postForBlob("/trace/flux_fea.csv", body, signal).then((resp) => resp.blob());
+}
+
 // ---------------------------------------------------------------------------
 // library: named designs, receiver configs and projects (docs/ui-spec.md 5)
 // -- plus the read-only legacy `/api/setups` used for the Projects tab's
@@ -170,6 +180,15 @@ export function dayExportUrl(jobId) {
 // `has_flux_map`) or the job has since been evicted.
 export function dayFluxUrl(jobId, stepIndex) {
   return `${API_BASE}/day/flux/${encodeURIComponent(jobId)}/${stepIndex}.png`;
+}
+
+// That same stored timestep's flux map as a §D FEA CSV grid (docs/ui-spec-v0.2.md
+// §D) -- built once, alongside the PNG, during the sweep itself. Only valid
+// for a step the sweep kept a map for (has_flux_map), exactly like
+// dayFluxUrl above; a direct download link, not a fetch wrapper, for the
+// same reason dayExportUrl is.
+export function dayFluxFeaCsvUrl(jobId, stepIndex) {
+  return `${API_BASE}/day/flux/${encodeURIComponent(jobId)}/${stepIndex}.csv`;
 }
 
 // `hour_step` is a MAXIMUM spacing: the server divides sunrise-to-sunset into
@@ -551,6 +570,15 @@ export async function postDesignSag(body, signal, includeCant = true) {
     peakToValleyMm: floatHeader(resp, "X-Peak-To-Valley-Mm"),
     slantRangeM: floatHeader(resp, "X-Slant-Range-M"),
   };
+}
+
+// docs/ui-spec-v0.2.md §D: the sag map's own "Export CSV for FEA" button --
+// /api/design/sag.csv is a sibling of /api/design/sag above (same solve,
+// same design, same sampling grid; only the file format differs), so it
+// takes the identical body and `cant` flag.
+export function postSagFeaCsv(body, signal, includeCant = true) {
+  const path = includeCant ? "/design/sag.csv" : "/design/sag.csv?cant=false";
+  return postForBlob(path, body, signal).then((resp) => resp.blob());
 }
 
 // The sag map is always for ONE named heliostat (docs/ui-spec.md 3), never

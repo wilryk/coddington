@@ -2232,6 +2232,164 @@ def test_sag_headers_report_contour_interval_peak_to_valley_and_slant_range(clie
     assert slant_range_m == pytest.approx(expected_slant_m, abs=5e-4)
 
 
+# -- §D FEA CSV exports -------------------------------------------------------
+
+
+def _parse_fea_csv(text: str) -> tuple[list[str], list[tuple[float, ...]]]:
+    """``(comment_lines, data_rows)`` for a §D-convention export: every
+    ``#``-prefixed line, verbatim, and every other non-blank line parsed as
+    a tuple of floats."""
+    comments = []
+    rows = []
+    for line in text.splitlines():
+        if not line:
+            continue
+        if line.startswith("#"):
+            comments.append(line)
+        else:
+            rows.append(tuple(float(x) for x in line.split(",")))
+    return comments, rows
+
+
+def test_sag_csv_matches_the_png_endpoints_grid(client):
+    """The FEA sag export must describe the exact same surface the sag PNG
+    draws -- checked here by an invariant that does not require decoding
+    pixels: the CSV's own peak-to-valley (max z_sag - min z_sag) must equal
+    the PNG endpoint's X-Peak-To-Valley-Mm header for the identical
+    request, since both are sampled by the same _sag_grid_mm grid."""
+    payload = _trace_payload(RECT_DESIGN)
+    png_resp = client.post("/api/design/sag", json=payload)
+    assert png_resp.status_code == 200
+    expected_span = float(png_resp.headers["X-Peak-To-Valley-Mm"])
+
+    csv_resp = client.post("/api/design/sag.csv", json=payload)
+    assert csv_resp.status_code == 200
+    assert csv_resp.headers["content-type"].startswith("text/csv")
+    _comments, rows = _parse_fea_csv(csv_resp.text)
+    assert rows
+    z = [r[2] for r in rows]
+    span = max(z) - min(z)
+    assert span == pytest.approx(expected_span, abs=5e-4)
+
+
+def test_sag_csv_header_states_units_subject_and_grid(client):
+    """§D: units, heliostat/sun/mode/timestamp, and grid dimensions are
+    always three separate `#` comment lines -- never left implied."""
+    payload = _trace_payload(RECT_DESIGN)
+    resp = client.post("/api/design/sag.csv", json=payload)
+    assert resp.status_code == 200
+    comments, rows = _parse_fea_csv(resp.text)
+    assert len(comments) >= 3
+
+    units_line = next(c for c in comments if c.startswith("# units:"))
+    assert "meters" in units_line
+    assert "z_sag_mm" in units_line and "millimeters" in units_line
+
+    subject_line = next(c for c in comments if c.startswith("# heliostat:"))
+    assert "sun:" in subject_line and "mode:" in subject_line and "timestamp:" in subject_line
+    assert f"az={payload['solar_az_deg']:.2f}" in subject_line
+
+    grid_line = next(c for c in comments if c.startswith("# grid:"))
+    assert "x" in grid_line
+
+    # x, y columns are meters -- well inside the mirror's own half-extent in
+    # metres, never the millimetre numbers the PNG's u/v axes use.
+    half_x_m = MIRROR_HALF_X_MM / 1000.0
+    half_y_m = MIRROR_HALF_Y_MM / 1000.0
+    assert all(abs(r[0]) <= half_x_m + 1e-6 for r in rows)
+    assert all(abs(r[1]) <= half_y_m + 1e-6 for r in rows)
+
+
+def test_sag_csv_rejects_a_sun_below_the_horizon(client):
+    resp = client.post("/api/design/sag.csv", json=_trace_payload(RECT_DESIGN, solar_el_deg=0.0))
+    assert resp.status_code == 422
+
+
+def test_flux_fea_csv_is_a_meters_and_w_m2_point_grid(client):
+    """The new FEA convention must never be confused with the existing
+    kW/m2 millimetre matrix export: same trace, different file. Cross-checked
+    against /api/trace/flux.csv's own peak (kW/m2) so a unit slip (a factor
+    of 1000, or mm vs m) would fail this test."""
+    payload = _trace_payload(RECT_DESIGN)
+    matrix_resp = client.post("/api/trace/flux.csv", json=payload)
+    assert matrix_resp.status_code == 200
+    matrix_rows = list(csv.reader(StringIO(matrix_resp.text)))
+    matrix_peak_kw_m2 = max(
+        float(x) for row in matrix_rows[1:] for x in row[1:]
+    )
+
+    resp = client.post("/api/trace/flux_fea.csv", json=payload)
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/csv")
+    comments, rows = _parse_fea_csv(resp.text)
+    assert len(rows) == FLUX_GRID * FLUX_GRID
+
+    units_line = next(c for c in comments if c.startswith("# units:"))
+    assert "meters" in units_line
+    assert "flux_w_m2" in units_line and "W/m" in units_line
+
+    grid_line = next(c for c in comments if c.startswith("# grid:"))
+    assert f"{FLUX_GRID}" in grid_line
+
+    peak_w_m2 = max(r[2] for r in rows)
+    assert peak_w_m2 == pytest.approx(matrix_peak_kw_m2 * 1000.0, rel=1e-4)
+    assert all(r[2] >= 0 for r in rows)
+
+
+def test_flux_fea_csv_notes_curved_receiver_unrolling(client):
+    """A cylinder/frustum receiver's x/y are really an unrolled (arc length,
+    height-or-slant) grid -- ANSYS maps flat coordinates, so §D requires the
+    header to say so explicitly rather than leave "x" looking like a plain
+    world coordinate."""
+    flat_payload = _trace_payload(RECT_DESIGN)
+    flat_resp = client.post("/api/trace/flux_fea.csv", json=flat_payload)
+    assert flat_resp.status_code == 200
+    flat_comments, _ = _parse_fea_csv(flat_resp.text)
+    assert not any("arc length" in c for c in flat_comments)
+
+    cyl_payload = _trace_payload(RECT_DESIGN)
+    cyl_payload["optics_params"] = {"receiver_type": "cylinder"}
+    cyl_resp = client.post("/api/trace/flux_fea.csv", json=cyl_payload)
+    assert cyl_resp.status_code == 200
+    cyl_comments, _ = _parse_fea_csv(cyl_resp.text)
+    assert any("arc length" in c for c in cyl_comments)
+
+
+def test_day_flux_fea_csv_matches_the_stored_pngs_peak(client):
+    """The day-sweep timestep export is built once, alongside the PNG,
+    during the sweep -- never a re-trace -- so its peak must agree with the
+    PNG-adjacent peak_flux_kw_m2 already reported for that step."""
+    job_id, data = _run_day(client, hour_step=2.0)
+    kept = [i for i, s in enumerate(data["steps"]) if s["has_flux_map"]]
+    assert kept
+    step = data["steps"][kept[0]]
+
+    resp = client.get(f"/api/day/flux/{job_id}/{kept[0]}.csv")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/csv")
+    comments, rows = _parse_fea_csv(resp.text)
+    assert rows
+    units_line = next(c for c in comments if c.startswith("# units:"))
+    assert "meters" in units_line and "W/m" in units_line
+
+    peak_w_m2 = max(r[2] for r in rows)
+    assert peak_w_m2 == pytest.approx(step["peak_flux_kw_m2"] * 1000.0, rel=1e-3)
+
+
+def test_day_flux_fea_csv_404s_for_a_step_without_a_stored_map(client, monkeypatch):
+    monkeypatch.setattr(app_module, "MAX_DAY_FLUX_MAPS", 3)
+    job_id, data = _run_day(client, hour_step=1.0)
+    steps = data["steps"]
+    assert len(steps) > 3
+    skipped = [i for i, s in enumerate(steps) if not s["has_flux_map"]]
+    assert skipped
+    assert client.get(f"/api/day/flux/{job_id}/{skipped[0]}.csv").status_code == 404
+
+
+def test_day_flux_fea_csv_404s_for_unknown_job(client):
+    assert client.get("/api/day/flux/nosuchjob/0.csv").status_code == 404
+
+
 # -- ray budget, day sweeps and exports --------------------------------------
 
 

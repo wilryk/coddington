@@ -13,6 +13,7 @@ import {
   postFieldTraceCancel,
   getFieldTraceResult,
   postFluxCsv,
+  postFluxFeaCsv,
   fetchManuscriptField,
   setManuscriptField,
 } from "./api.js";
@@ -602,6 +603,30 @@ function exportFluxCsv() {
     });
 }
 
+// docs/ui-spec-v0.2.md §D: the ANSYS-oriented FEA CSV grid for the run
+// bar's flux map -- same request body as exportFluxCsv above (same
+// single-heliostat-map-even-in-field-mode limitation buildFluxCsvRequest
+// documents), a different file: meters/W-m2 behind commented metadata
+// instead of a labelled mm/kW-m2 matrix.
+function exportFluxFeaCsv() {
+  const doc = store.get("doc");
+  const ui = store.get("ui");
+  const body = buildFluxCsvRequest(doc, ui);
+  postFluxFeaCsv(body)
+    .then((blob) => {
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "heliostat-flux-fea.csv";
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    })
+    .catch((err) => {
+      store.set("ui.traceError", "CSV export failed: " + ((err && err.message) || "unknown error"));
+      renderAllPanels();
+    });
+}
+
 function openFluxOverlay() {
   const data = store.get("ui.traceResult");
   if (!data || !data.flux_png) return;
@@ -617,6 +642,7 @@ const runActions = {
   onRunTrace: runTrace,
   onCancelTrace: cancelTrace,
   onExportCsv: exportFluxCsv,
+  onExportFeaCsv: exportFluxFeaCsv,
   onOpenFlux: openFluxOverlay,
 };
 

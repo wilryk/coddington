@@ -971,6 +971,16 @@ input.val::-webkit-inner-spin-button {
   font-size: 11.5px;
   margin-top: 8px;
 }
+/* §D map exports (docs/ui-spec-v0.2.md): "Export CSV for FEA" sits in a
+   map's own corner rather than crowding its header row -- .frame is already
+   position:relative, so this just anchors the ordinary .btn.small look
+   there. */
+.tabcontent .frame .cornerbtn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+}
 
 /* Custom-outline sketch canvas: draggable vertex handles, ghost mirror
    half, segment length labels. */

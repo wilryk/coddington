@@ -167,8 +167,20 @@ function build(container, actions) {
     e.preventDefault();
     actions.onExportCsv();
   });
+  // docs/ui-spec-v0.2.md §D: the ANSYS-oriented FEA CSV grid, beside (never
+  // instead of) the mm/kW-m2 export above -- same idiom, different file.
+  const exportFeaLink = document.createElement("a");
+  exportFeaLink.href = "#";
+  exportFeaLink.textContent = "Export CSV for FEA";
+  exportFeaLink.style.fontSize = "12px";
+  exportFeaLink.style.marginLeft = "10px";
+  exportFeaLink.addEventListener("click", (e) => {
+    e.preventDefault();
+    actions.onExportFeaCsv();
+  });
   stampWrap.appendChild(stamp);
   stampWrap.appendChild(exportLink);
+  stampWrap.appendChild(exportFeaLink);
   results.appendChild(stampWrap);
 
   container.appendChild(results);
@@ -189,6 +201,7 @@ function build(container, actions) {
     axisCaption,
     stamp,
     exportLink,
+    exportFeaLink,
   };
   built = true;
 }
@@ -219,6 +232,7 @@ export function render(container, actions, ctx) {
   els.staleChip.hidden = !(ui.staleResults && data);
   els.results.classList.toggle("stale", !!(ui.staleResults && data));
   els.exportLink.style.display = data ? "" : "none";
+  els.exportFeaLink.style.display = data ? "" : "none";
 
   if (data) {
     const metrics = deriveMetrics(data);

@@ -31,6 +31,7 @@ import {
   buildYearRequest,
   dayExportUrl,
   dayFluxUrl,
+  dayFluxFeaCsvUrl,
   deleteLibraryEntry,
   getDayResult,
   getDayStatus,
@@ -1615,6 +1616,17 @@ function build(container) {
   const fluxCaption = document.createElement("div");
   fluxCaption.className = "caption";
   fluxPanel.appendChild(fluxCaption);
+  // docs/ui-spec-v0.2.md §D: the FEA CSV grid for this timestep. Only a
+  // link (like energyCsv above), not a fetch -- and only ever shown for a
+  // step the sweep itself stored a map for (fluxSrcUrl set): the on-demand
+  // (uncapped-step) trace and a reopened saved run's map are both plain
+  // flux_png bytes with no raw grid behind them to export.
+  const fluxFeaCsv = document.createElement("a");
+  fluxFeaCsv.href = "#";
+  fluxFeaCsv.textContent = "Export CSV for FEA";
+  fluxFeaCsv.className = "an-fea-export";
+  fluxFeaCsv.hidden = true;
+  fluxPanel.appendChild(fluxFeaCsv);
   right.appendChild(fluxPanel);
 
   content.appendChild(left);
@@ -1680,6 +1692,7 @@ function build(container) {
     fluxImg,
     fluxPlaceholder,
     fluxCaption,
+    fluxFeaCsv,
     savedRunsLabel,
     savedRunsList,
     dayReopenBanner,
@@ -1856,6 +1869,7 @@ function paintFluxPanel() {
     els.fluxPlaceholder.hidden = false;
     els.fluxPlaceholder.textContent = "Click a timestep to render its irradiance map.";
     els.fluxCaption.textContent = "";
+    els.fluxFeaCsv.hidden = true;
     return;
   }
 
@@ -1864,6 +1878,7 @@ function paintFluxPanel() {
     els.fluxPlaceholder.hidden = false;
     els.fluxPlaceholder.textContent = "Rendering…";
     els.fluxCaption.textContent = "";
+    els.fluxFeaCsv.hidden = true;
     return;
   }
 
@@ -1872,6 +1887,7 @@ function paintFluxPanel() {
     els.fluxPlaceholder.hidden = false;
     els.fluxPlaceholder.textContent = fluxError;
     els.fluxCaption.textContent = "";
+    els.fluxFeaCsv.hidden = true;
     return;
   }
 
@@ -1880,11 +1896,21 @@ function paintFluxPanel() {
     els.fluxImg.hidden = false;
     els.fluxPlaceholder.hidden = true;
     els.fluxCaption.textContent = `${fmtHHMM(step.hour)} solar · peak ${fmtFlux(fluxPeakKwM2 != null ? fluxPeakKwM2 : step.peak_flux_kw_m2)}`;
+    // Only a sweep-stored map (fluxSrcUrl, backed by a live job id) has a
+    // raw grid on the server to export -- an on-demand trace's flux_png and
+    // a reopened saved run's stored PNG are pixels only, nothing to grid.
+    if (fluxSrcUrl && resultJobId != null) {
+      els.fluxFeaCsv.href = dayFluxFeaCsvUrl(resultJobId, selectedStepIndex);
+      els.fluxFeaCsv.hidden = false;
+    } else {
+      els.fluxFeaCsv.hidden = true;
+    }
   } else {
     els.fluxImg.hidden = true;
     els.fluxPlaceholder.hidden = false;
     els.fluxPlaceholder.textContent = "Click a timestep to render its irradiance map.";
     els.fluxCaption.textContent = "";
+    els.fluxFeaCsv.hidden = true;
   }
 }
 

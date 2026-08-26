@@ -30,6 +30,7 @@ import {
   expandCustomVertices,
   postDesignPreview,
   postDesignSag,
+  postSagFeaCsv,
   saveLibraryEntry,
 } from "../api.js";
 
@@ -75,6 +76,9 @@ let sagObjectUrl = null;
 let lastPreviewKey = null;
 let lastSagKey = null;
 let lastSagResult = null; // {contourIntervalMm, peakToValleyMm, slantRangeM} of the currently-shown sag PNG
+let lastSagBody = null; // the TraceRequest-shaped body the shown sag map/export both come from
+let sagExportBusy = false;
+let sagExportError = null;
 
 // Ephemeral view-only toggles -- these don't hold a value the user typed,
 // just which of two already-live views is showing.
@@ -828,9 +832,43 @@ function build(container) {
   sagPlaceholder.hidden = true;
   sagFrame.appendChild(sagImg);
   sagFrame.appendChild(sagPlaceholder);
+  // docs/ui-spec-v0.2.md §D / mockup M10: an "Export CSV for FEA" button
+  // sits in the map's own corner -- .frame is already position:relative, so
+  // this overlays it rather than crowding the header row. Hidden until a sag
+  // map has actually rendered (no request body to export before then).
+  const sagExportBtn = document.createElement("div");
+  sagExportBtn.className = "btn small cornerbtn";
+  sagExportBtn.textContent = "Export CSV for FEA";
+  sagExportBtn.hidden = true;
+  sagExportBtn.addEventListener("click", () => {
+    if (!lastSagBody || sagExportBusy) return;
+    sagExportBusy = true;
+    sagExportError = null;
+    renderSagCaption(store.get("doc"));
+    postSagFeaCsv(lastSagBody, undefined, sagShowCant)
+      .then((blob) => {
+        sagExportBusy = false;
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "heliostat-sag-fea.csv";
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+        renderSagCaption(store.get("doc"));
+      })
+      .catch((err) => {
+        sagExportBusy = false;
+        sagExportError = (err && err.message) || "Could not export the sag CSV.";
+        renderSagCaption(store.get("doc"));
+      });
+  });
+  sagFrame.appendChild(sagExportBtn);
   sagPanel.appendChild(sagFrame);
   const sagCaption = document.createElement("div");
   sagCaption.className = "caption";
+  const sagExportErrEl = document.createElement("div");
+  sagExportErrEl.className = "fielderr";
+  sagExportErrEl.hidden = true;
   const cantToggleLabel = document.createElement("label");
   cantToggleLabel.className = "caption";
   cantToggleLabel.style.cursor = "pointer";
@@ -851,6 +889,7 @@ function build(container) {
   sagCaption2.className = "caption";
   sagPanel.appendChild(sagCaption);
   sagPanel.appendChild(sagCaption2);
+  sagPanel.appendChild(sagExportErrEl);
 
   locatorSvg.addEventListener("click", (e) => {
     const geometry = (lastCtx && lastCtx.geometry) || null;
@@ -934,6 +973,8 @@ function build(container) {
     sagPlaceholder,
     sagCaption,
     sagCaption2,
+    sagExportBtn,
+    sagExportErrEl,
     cantToggle,
     // vertex-table row bookkeeping (rebuilt only when the count changes --
     // see renderCustomVertexRows)
@@ -1181,12 +1222,17 @@ function setSagImageBlob(result) {
   els.sagImg.hidden = false;
   els.sagPlaceholder.hidden = true;
   lastSagResult = result;
+  // A map actually rendered -- lastSagBody (set by renderSagPanel just
+  // before this fetch was scheduled) is now something worth exporting.
+  els.sagExportBtn.hidden = false;
 }
 
 function setSagError(err) {
   els.sagImg.hidden = true;
   els.sagPlaceholder.hidden = false;
   els.sagPlaceholder.textContent = (err && err.message) || "Could not render the sag map.";
+  // No map shown -- nothing for the export button to describe.
+  els.sagExportBtn.hidden = true;
 }
 
 function renderSagPanel(doc, previewHeliostat) {
@@ -1195,6 +1241,7 @@ function renderSagPanel(doc, previewHeliostat) {
 
   if (!previewHeliostat) {
     lastSagKey = null;
+    lastSagBody = null;
     setSagError({ message: "No heliostats in the field yet." });
     els.sagCaption.textContent = "";
     els.sagCaption2.textContent = "";
@@ -1202,6 +1249,9 @@ function renderSagPanel(doc, previewHeliostat) {
   }
 
   const body = buildSagRequest(doc, { x_mm: previewHeliostat.x_mm, y_mm: previewHeliostat.y_mm });
+  // The export must always match whatever the map is currently showing (or
+  // about to show), cache hit or fresh fetch alike -- set unconditionally.
+  lastSagBody = body;
   const key = JSON.stringify(body) + (sagShowCant ? "|whole" : "|perfacet");
   if (key !== lastSagKey) {
     lastSagKey = key;
@@ -1235,6 +1285,10 @@ function renderSagCaption(doc) {
     ? "Each facet measured from its own mounting plane — what a facet fabricator works to. Tick the box to see the mirror as one shape."
     : "Figure solved for the workspace's current sun and this heliostat's slant range. Pick another heliostat from the " +
       "locator above, the ▾ selector, or by clicking one in the workspace and choosing “View shape”.";
+  els.sagExportBtn.textContent = sagExportBusy ? "Exporting…" : "Export CSV for FEA";
+  els.sagExportBtn.classList.toggle("disabled-link", sagExportBusy);
+  els.sagExportErrEl.hidden = !sagExportError;
+  if (sagExportError) els.sagExportErrEl.textContent = sagExportError;
 }
 
 function renderLocator(ui, geometry, previewHeliostat) {

@@ -2474,6 +2474,13 @@ def _day_flux_blob_key(step: int) -> str:
     return f"day-flux/{step}"
 
 
+def _day_flux_fea_blob_key(step: int) -> str:
+    """Same idea as :func:`_day_flux_blob_key`, for that step's §D FEA CSV
+    grid instead of its PNG -- a sibling blob, not a re-trace, computed
+    alongside the PNG in ``day_start``'s work loop."""
+    return f"day-flux-fea/{step}"
+
+
 def _day_timesteps(req: "DayTraceRequest") -> list:
     """The day's sample times, from true sunrise to true sunset."""
     site = req.site
@@ -2599,12 +2606,18 @@ def _trace_instant_metrics(
     return out
 
 
-def _flux_grid_for(body: "TraceRequest") -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """``(flux_w_m2, u_edges, v_edges)`` for one single-heliostat request.
+def _flux_grid_for(
+    body: "TraceRequest",
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, "Receiver"]:
+    """``(flux_w_m2, u_edges, v_edges, receiver)`` for one single-heliostat
+    request.
 
     The same solve/design/trace path :func:`_trace_core` gives the trace
     endpoint, kept separate only so an export does not have to render a PNG
-    or build a scene to get at the numbers behind them.
+    or build a scene to get at the numbers behind them. ``receiver`` rides
+    along so a caller building an export's metadata (curved-receiver
+    unrolling convention, receiver kind) never has to re-resolve optics
+    params and re-build the geometry itself.
     """
     optics_params = resolve_optics_params(body.optics, body.optics_params)
     secondary, receiver = _geometry_for(body.optics, optics_params)
@@ -2638,8 +2651,136 @@ def _flux_grid_for(body: "TraceRequest") -> tuple[np.ndarray, np.ndarray, np.nda
         flux, u_edges, v_edges, _rms, _cen = _mc_flux_and_metrics(
             result["xy"], result["watts_per_ray"], receiver
         )
-        return flux, u_edges, v_edges
-    return result["flux"], result["u_edges"], result["v_edges"]
+        return flux, u_edges, v_edges, receiver
+    return result["flux"], result["u_edges"], result["v_edges"], receiver
+
+
+# ---------------------------------------------------------------------------
+# §D map exports: ANSYS-oriented FEA CSV grids (docs/ui-spec-v0.2.md §D).
+#
+# One convention, shared by every export below: three commented (``#``)
+# metadata lines -- units, "heliostat / sun / mode / timestamp", and grid
+# dimensions -- followed by a plain comma-separated numeric grid, one point
+# per row. Deliberately no header row naming the columns: the spec's own
+# wording ("plain comma-separated numeric grid ... preceded by commented
+# metadata lines") describes the comments as the only non-numeric content,
+# and ANSYS External Data's own CSV table import wants bare numeric columns
+# after whatever it skips as header/metadata -- a trailing "x_m,y_m,..." text
+# row would be one more line an importer has to be told to ignore. The units
+# comment line names the columns instead (e.g. "x_m, y_m ... z_sag_mm ..."),
+# so a human opening the file still knows what each column is.
+# ---------------------------------------------------------------------------
+
+
+def _fea_csv_header(
+    units_line: str, subject_line: str, grid_line: str, extra_lines: tuple[str, ...] = ()
+) -> str:
+    """The three-or-more ``#`` comment lines every §D export starts with."""
+    lines = [f"# units: {units_line}", f"# {subject_line}", f"# grid: {grid_line}"]
+    lines.extend(f"# {line}" for line in extra_lines)
+    return "\n".join(lines) + "\n"
+
+
+def _fea_subject_line(heliostat_desc: str, solar_az_deg: float, solar_el_deg: float, mode: str) -> str:
+    """The "heliostat / sun / mode / timestamp" comment line §D calls for.
+
+    ``timestamp`` is wall-clock UTC at export time (traceability -- "this
+    file was generated when"), not the simulated instant: the sun line
+    already carries the simulated az/el that instant traced at.
+    """
+    ts = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return (
+        f"heliostat: {heliostat_desc} · sun: az={solar_az_deg:.2f} deg, el={solar_el_deg:.2f} deg "
+        f"· mode: {mode} · timestamp: {ts}"
+    )
+
+
+def _fea_csv_bytes(header: str, rows) -> bytes:
+    """``header`` (already newline-terminated) followed by one plain
+    comma-separated numeric row per entry of ``rows``."""
+    out = StringIO()
+    out.write(header)
+    writer = csv.writer(out, lineterminator="\n")
+    for row in rows:
+        writer.writerow([f"{v:.6g}" for v in row])
+    return out.getvalue().encode("utf-8")
+
+
+#: Wording for the curved-receiver unrolling convention, shared between the
+#: run bar's on-screen axis caption (js/panels/run.js) and the FEA flux-CSV
+#: header comment, so the two never describe the same grid differently.
+_RECEIVER_UNROLL_NOTE = {
+    "cylinder": (
+        "unrolled receiver: u = arc length around the cylinder, seam at "
+        "north (+y); v = height above the receiver's own centre"
+    ),
+    "frustum": (
+        "unrolled receiver: u = arc length around the frustum at its mean "
+        "radius, seam at north (+y); v = slant distance from the bottom rim"
+    ),
+}
+
+
+def _sag_fea_csv(
+    design, sol, half_x_mm: float, half_y_mm: float, include_cant: bool, subject_line: str
+) -> bytes:
+    """§D sag-map export: ``x_m, y_m, z_sag_mm`` -- one row per grid point
+    that lands on a facet, from the exact grid :func:`_render_sag_png` draws
+    (:func:`_sag_grid_mm`), so an export can never show a different surface
+    than the picture beside it.
+
+    Points outside every facet (``NaN`` in the grid -- gaps in a grid
+    design, the space between petals) are dropped rather than emitted as a
+    row of ``nan``, which is not a number ANSYS's importer would accept.
+    """
+    gx_mm, gy_mm, sag_mm = _sag_grid_mm(design, sol, half_x_mm, half_y_mm, include_cant)
+    finite = np.isfinite(sag_mm)
+    n_total = sag_mm.size
+    n_valid = int(finite.sum())
+    header = _fea_csv_header(
+        units_line="x_m, y_m in meters (heliostat aperture frame); z_sag_mm in millimeters",
+        subject_line=subject_line,
+        grid_line=(
+            f"{sag_mm.shape[1]} x {sag_mm.shape[0]} samples over "
+            f"±{half_x_mm / 1000.0:.4f} x ±{half_y_mm / 1000.0:.4f} m, "
+            f"{n_valid} of {n_total} points on a facet"
+        ),
+    )
+    xs_m = gx_mm[finite] / 1000.0
+    ys_m = gy_mm[finite] / 1000.0
+    zs_mm = sag_mm[finite]
+    return _fea_csv_bytes(header, zip(xs_m, ys_m, zs_mm))
+
+
+def _flux_fea_csv(
+    flux_w_m2: np.ndarray, u_edges_mm: np.ndarray, v_edges_mm: np.ndarray, receiver, subject_line: str
+) -> bytes:
+    """§D irradiance-map export: ``x_m, y_m, flux_w_m2`` -- one row per bin
+    centre, in meters and W/m² (never the display kW/m² the PNG and
+    ``/api/trace/flux.csv`` use -- §D is explicit that units are always
+    stated, never implied, and W/m² is the unit that header states).
+
+    For a flat receiver ``x, y`` are plain receiver-plane coordinates; for a
+    curved one (cylinder/frustum) they are the unrolled ``(u, v)`` grid
+    (arc length × height/slant) converted straight to meters -- ANSYS
+    maps flat coordinates, so the header spells out the unrolling
+    convention rather than leaving a caller to guess why "x" is really an
+    arc length.
+    """
+    u_mid = 0.5 * (u_edges_mm[:-1] + u_edges_mm[1:])
+    v_mid = 0.5 * (v_edges_mm[:-1] + v_edges_mm[1:])
+    gu, gv = np.meshgrid(u_mid, v_mid)  # (n_v, n_u), matches flux's own shape
+    extra = (_RECEIVER_UNROLL_NOTE[receiver.kind],) if receiver.kind in _RECEIVER_UNROLL_NOTE else ()
+    header = _fea_csv_header(
+        units_line="x_m, y_m in meters; flux_w_m2 in W/m²",
+        subject_line=subject_line,
+        grid_line=f"{gu.shape[1]} x {gu.shape[0]} bins",
+        extra_lines=extra,
+    )
+    xs_m = gu.ravel() / 1000.0
+    ys_m = gv.ravel() / 1000.0
+    flux_flat = flux_w_m2.ravel()
+    return _fea_csv_bytes(header, zip(xs_m, ys_m, flux_flat))
 
 
 def _render_day_png(steps: list[dict]) -> bytes:
@@ -2958,39 +3099,33 @@ def _warm_matplotlib() -> None:
         pass
 
 
-def _render_sag_png(
-    design, sol, params, half_x_mm: float, half_y_mm: float, include_cant: bool = True
-) -> tuple[bytes, float | None, float | None]:
-    """Sag map of the mirror a trace would use, in millimetres.
+#: Sample resolution (per side) for the sag grid -- shared by the sag PNG
+#: and the sag CSV export so the CSV is, point for point, the same surface
+#: the picture shows (docs/ui-spec-v0.2.md §D: "never re-deriving a
+#: different surface").
+_SAG_GRID_N = 241
 
-    "Sag" is how far the reflecting surface departs from the flat plane
-    through its own vertex -- the shape that turns a mirror into a lens.
-    It is millimetres over metres of aperture, invisible in the 3-D scene
-    (which draws facets flat for exactly that reason), so it gets its own
-    view.
+
+def _sag_grid_mm(
+    design, sol, half_x_mm: float, half_y_mm: float, include_cant: bool = True, n: int = _SAG_GRID_N
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``(gx_mm, gy_mm, sag_mm)`` -- the sag field :func:`_render_sag_png` and
+    the FEA sag-CSV export both draw from, so a picture and its export can
+    never silently disagree.
 
     Sampled from the same objects the trace uses: for the legacy path the
     solve's own astigmatic coefficients, for a design each facet's surface
     evaluated in that facet's frame. Points outside every facet -- the gaps
-    in a grid, the space between petals -- are left blank rather than
+    in a grid, the space between petals -- come back ``NaN`` rather than
     filled with the value a facet would have had if it were there.
 
-    With ``include_cant`` (the default) each facet is drawn where its cant
+    With ``include_cant`` (the default) each facet is placed where its cant
     actually puts it, so a faceted design reads as the one continuous shape
     it was cut from, with the gaps punched out of it, and a canted flat
     heliostat shows the tilt of every facet. Turn it off to measure each
     facet from its own mounting plane instead -- what a facet fabricator
     needs, and what makes a grid look like a repeating tile.
-
-    :returns: ``(png_bytes, peak_to_valley_mm, contour_interval_mm)``. Both
-        numbers are ``None`` when no facet covers any sampled point ("no
-        surface here"); ``contour_interval_mm`` is additionally ``None`` for
-        a flat mirror (span at or below float noise), which draws no
-        contours at all -- there is nothing for a spacing to describe.
     """
-    from matplotlib.ticker import MaxNLocator
-
-    n = 241
     xs = np.linspace(-half_x_mm, half_x_mm, n)
     ys = np.linspace(-half_y_mm, half_y_mm, n)
     gx, gy = np.meshgrid(xs, ys)
@@ -3027,6 +3162,33 @@ def _render_sag_png(
                     if abs(nz) > 1e-12:
                         values = values - (nx * du + ny * dv) / nz
             sag = np.where(inside, values, sag)
+
+    return gx, gy, sag
+
+
+def _render_sag_png(
+    design, sol, params, half_x_mm: float, half_y_mm: float, include_cant: bool = True
+) -> tuple[bytes, float | None, float | None]:
+    """Sag map of the mirror a trace would use, in millimetres.
+
+    "Sag" is how far the reflecting surface departs from the flat plane
+    through its own vertex -- the shape that turns a mirror into a lens.
+    It is millimetres over metres of aperture, invisible in the 3-D scene
+    (which draws facets flat for exactly that reason), so it gets its own
+    view.
+
+    Sampled by :func:`_sag_grid_mm`; see that function for what "sag" means
+    here and what ``include_cant`` changes.
+
+    :returns: ``(png_bytes, peak_to_valley_mm, contour_interval_mm)``. Both
+        numbers are ``None`` when no facet covers any sampled point ("no
+        surface here"); ``contour_interval_mm`` is additionally ``None`` for
+        a flat mirror (span at or below float noise), which draws no
+        contours at all -- there is nothing for a spacing to describe.
+    """
+    from matplotlib.ticker import MaxNLocator
+
+    gx, gy, sag = _sag_grid_mm(design, sol, half_x_mm, half_y_mm, include_cant)
 
     fig, ax = _sag_figure()
     ax.clear()
@@ -3451,7 +3613,7 @@ def create_app():
         ``/api/day/status/{job_id}``.
         """
         try:
-            resolve_optics_params(body.optics, body.optics_params)
+            optics_params = resolve_optics_params(body.optics, body.optics_params)
             steps = _day_timesteps(body)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -3464,6 +3626,17 @@ def create_app():
             )
 
         kept_steps = _day_flux_step_indices(len(steps), cap=MAX_DAY_FLUX_MAPS)
+        # Cheap (no tracing) -- only for the FEA CSV export's header comment
+        # (receiver kind/curved-unrolling note), so a kept timestep's export
+        # never has to re-resolve optics params or rebuild the geometry.
+        _, day_receiver = _geometry_for(body.optics, optics_params)
+        if body.layout is None:
+            day_heliostat_desc = (
+                f"single heliostat at x={body.heliostat_x_mm / 1000.0:.3f} m, "
+                f"y={body.heliostat_y_mm / 1000.0:.3f} m"
+            )
+        else:
+            day_heliostat_desc = None  # filled in per-step once n_heliostats is known
 
         def work(job):
             rows = []
@@ -3502,6 +3675,15 @@ def create_app():
                 if want_flux:
                     job.blobs[_day_flux_blob_key(index)] = _render_flux_png(
                         metrics["flux"], metrics["u_edges"], metrics["v_edges"], body.mode, elapsed_ms
+                    )
+                    heliostat_desc = day_heliostat_desc or (
+                        f"field of {metrics['n_heliostats']} heliostats"
+                    )
+                    subject = _fea_subject_line(
+                        heliostat_desc, step.solar_az_deg, step.solar_el_deg, body.mode
+                    )
+                    job.blobs[_day_flux_fea_blob_key(index)] = _flux_fea_csv(
+                        metrics["flux"], metrics["u_edges"], metrics["v_edges"], day_receiver, subject
                     )
                 rows.append(
                     {
@@ -3588,6 +3770,35 @@ def create_app():
         if png_bytes is None:
             raise HTTPException(status_code=404, detail="no stored flux map for that timestep")
         return Response(content=png_bytes, media_type="image/png")
+
+    @app.get("/api/day/flux/{job_id}/{step}.csv")
+    def day_flux_fea_csv(job_id: str, step: int) -> Response:
+        """That same timestep's flux map as a §D-convention FEA CSV grid.
+
+        Built once, alongside the PNG, during the sweep itself (see
+        ``day_start``) -- no re-trace here either, and the same
+        ``has_flux_map``/404 rules as ``.../{step}.png`` apply.
+        """
+        job = JOBS.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"no job {job_id!r}")
+        if job.state == "running":
+            raise HTTPException(status_code=409, detail="still running")
+        if job.state == "error":
+            raise HTTPException(status_code=500, detail=job.error or "the run failed")
+        steps = (job.result or {}).get("steps") or []
+        if not 0 <= step < len(steps):
+            raise HTTPException(status_code=404, detail=f"no timestep {step} in that day's run")
+        csv_bytes = job.blobs.get(_day_flux_fea_blob_key(step))
+        if csv_bytes is None:
+            raise HTTPException(status_code=404, detail="no stored flux map for that timestep")
+        return Response(
+            content=csv_bytes,
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f'attachment; filename="heliostat-day-flux-fea-{step}.csv"'
+            },
+        )
 
     @app.get("/api/day/export/{job_id}.csv")
     def day_export(job_id: str) -> Response:
@@ -3786,7 +3997,7 @@ def create_app():
         bin centre in millimetres, so the grid is self-describing rather
         than a bare block of numbers whose axes live in another document.
         """
-        flux, u_edges, v_edges = _flux_grid_for(body)
+        flux, u_edges, v_edges, _receiver = _flux_grid_for(body)
         u_mid = 0.5 * (u_edges[:-1] + u_edges[1:])
         v_mid = 0.5 * (v_edges[:-1] + v_edges[1:])
         out = StringIO()
@@ -3798,6 +4009,32 @@ def create_app():
             content=out.getvalue(),
             media_type="text/csv",
             headers={"Content-Disposition": 'attachment; filename="heliostat-flux-kW_m2.csv"'},
+        )
+
+    @app.post("/api/trace/flux_fea.csv")
+    def trace_flux_fea_csv(body: TraceRequest) -> Response:
+        """The flux map of one trace as a §D-convention FEA CSV grid.
+
+        Same trace as ``/api/trace/flux.csv`` (:func:`_flux_grid_for` is
+        shared, so this is never a second, possibly-drifted computation of
+        the same map) -- only the file format differs: meters and W/m²
+        instead of millimeters and kW/m², one ``x, y, flux`` point per row
+        behind commented metadata instead of a labelled matrix, targeting
+        ANSYS External Data import rather than a spreadsheet.
+        """
+        flux, u_edges, v_edges, receiver = _flux_grid_for(body)
+        subject = _fea_subject_line(
+            f"single heliostat at x={body.heliostat_x_mm / 1000.0:.3f} m, "
+            f"y={body.heliostat_y_mm / 1000.0:.3f} m",
+            body.solar_az_deg,
+            body.solar_el_deg,
+            body.mode,
+        )
+        csv_bytes = _flux_fea_csv(flux, u_edges, v_edges, receiver, subject)
+        return Response(
+            content=csv_bytes,
+            media_type="text/csv",
+            headers={"Content-Disposition": 'attachment; filename="heliostat-flux-fea.csv"'},
         )
 
     @app.post("/api/sun")
@@ -3852,6 +4089,35 @@ def create_app():
 
         return Response(content=buf.getvalue(), media_type="image/png")
 
+    def _resolve_sag_request(body: "TraceRequest"):
+        """``(sol, design, slant_range_mm, half_x_mm, half_y_mm)`` for a sag
+        request -- the solve-and-build-design step shared by
+        ``/api/design/sag`` and ``/api/design/sag.csv`` so the CSV export is
+        built from exactly the same design object the PNG is, never a
+        second solve that could drift from it.
+
+        :raises ValueError: an unsolvable geometry -- callers turn this into
+            a 422, same as every other endpoint in this module.
+        """
+        optics_params = resolve_optics_params(body.optics, body.optics_params)
+        sol = _solve_for(
+            body.optics,
+            body.heliostat_x_mm,
+            body.heliostat_y_mm,
+            body.solar_az_deg,
+            body.solar_el_deg,
+            optics_params,
+        )
+        slant_range_mm = _slant_range_mm(sol, body.heliostat_x_mm, body.heliostat_y_mm)
+        design = _build_trace_design(body.design, sol, slant_range_mm)
+        if design is None:
+            half_x, half_y = MIRROR_HALF_X_MM, MIRROR_HALF_Y_MM
+        else:
+            u0, u1, v0, v1 = design.bbox
+            half_x = max(abs(u0), abs(u1))
+            half_y = max(abs(v0), abs(v1))
+        return sol, design, slant_range_mm, half_x, half_y
+
     @app.post("/api/design/sag")
     def design_sag(body: TraceRequest, cant: bool = True) -> Response:
         """Sag map of the mirror this exact request would trace.
@@ -3867,26 +4133,10 @@ def create_app():
                 detail="solar_el_deg must be > 0 (the sun is below the horizon)",
             )
         try:
-            optics_params = resolve_optics_params(body.optics, body.optics_params)
-            sol = _solve_for(
-                body.optics,
-                body.heliostat_x_mm,
-                body.heliostat_y_mm,
-                body.solar_az_deg,
-                body.solar_el_deg,
-                optics_params,
-            )
-            slant_range_mm = _slant_range_mm(sol, body.heliostat_x_mm, body.heliostat_y_mm)
-            design = _build_trace_design(body.design, sol, slant_range_mm)
+            sol, design, slant_range_mm, half_x, half_y = _resolve_sag_request(body)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-        if design is None:
-            half_x, half_y = MIRROR_HALF_X_MM, MIRROR_HALF_Y_MM
-        else:
-            u0, u1, v0, v1 = design.bbox
-            half_x = max(abs(u0), abs(u1))
-            half_y = max(abs(v0), abs(v1))
         png, span_mm, interval_mm = _render_sag_png(
             design, sol, body.design, half_x, half_y, include_cant=cant
         )
@@ -3896,6 +4146,47 @@ def create_app():
         if interval_mm is not None:
             headers["X-Contour-Interval-Mm"] = f"{interval_mm:g}"
         return Response(content=png, media_type="image/png", headers=headers)
+
+    @app.post("/api/design/sag.csv")
+    def design_sag_csv(body: TraceRequest, cant: bool = True) -> Response:
+        """The sag map of this exact request's mirror as a §D-convention FEA
+        CSV grid: ``x_m, y_m, z_sag_mm``, one row per grid point that lands
+        on a facet.
+
+        Sibling of ``/api/design/sag`` -- same solve, same design, same
+        sampling grid (:func:`_resolve_sag_request`, :func:`_sag_grid_mm`),
+        so this can never show a different surface than that PNG. ``cant``
+        means the same thing here as there: whole-mirror figure (default) vs
+        each facet measured from its own mounting plane.
+        """
+        if body.solar_el_deg <= 0:
+            raise HTTPException(
+                status_code=422,
+                detail="solar_el_deg must be > 0 (the sun is below the horizon)",
+            )
+        try:
+            sol, design, slant_range_mm, half_x, half_y = _resolve_sag_request(body)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        subject = _fea_subject_line(
+            f"single heliostat at x={body.heliostat_x_mm / 1000.0:.3f} m, "
+            f"y={body.heliostat_y_mm / 1000.0:.3f} m, slant range "
+            f"{slant_range_mm / 1000.0:.3f} m, {body.design.surface} figure"
+            + ("" if cant else " (per-facet, tilt removed)"),
+            body.solar_az_deg,
+            body.solar_el_deg,
+            body.mode,
+        )
+        csv_bytes = _sag_fea_csv(design, sol, half_x, half_y, cant, subject)
+        return Response(
+            content=csv_bytes,
+            media_type="text/csv",
+            headers={
+                "X-Slant-Range-M": f"{slant_range_mm / 1000.0:.3f}",
+                "Content-Disposition": 'attachment; filename="heliostat-sag-fea.csv"',
+            },
+        )
 
     @app.post("/api/trace")
     def trace(body: TraceRequest) -> JSONResponse:

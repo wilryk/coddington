@@ -191,6 +191,13 @@
 .an-fluxpanel {
   flex: 0 0 auto;
 }
+/* §D FEA export link, beside the map -- same idiom as .an-energyfoot's
+   "Export day CSV" above. */
+.an-fea-export {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+}
 
 /* -- saved runs bar (docs/ui-spec.md 4) ------------------------------------- */
 
