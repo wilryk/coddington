@@ -121,10 +121,10 @@
   <header class="intro">
     <div class="eyebrow">For sign-off · v0.2 additions · Aug 26, 2026</div>
     <h1>Coddington v0.2 Mockups</h1>
-    <p class="lede"><strong>v0.2 additions</strong> — companion to the Coddington Workspace mockups (M1–M7) and <code>ui-spec-v0.2.md</code>. <strong>Sections A–L and mockups M8–M13 are SIGNED OFF</strong> (2026-08-26); <strong>§M and §N, and mockups M14–M18, are draft, awaiting their own approval.</strong> Eleven mockups in all: the trace status bar moving to the top of the screen (M8), secondary-mirror irradiance with FEA-oriented CSV exports (M9), the optical-error glossary tooltips plus pointing error and measured error-map import (M10), a fidelity picker that explains itself in plain language (M11), the polar (sector) field with a tilted vertical receiver window (M12), rigid-body/deformation perturbations on the secondary mirror (M13), the native desktop window shell (M14), plan-view power coloring with a per-heliostat sweep drill-down (M15), irradiance draped on the 3D receiver (M16), a draggable analysis aperture with an encircled-power curve (M17), and — drawn as three screens — the Ray Trace/Analysis tab restructure with a Workspace declutter proposal (M18).</p>
+    <p class="lede"><strong>v0.2 additions</strong> — companion to the Coddington Workspace mockups (M1–M7) and <code>ui-spec-v0.2.md</code>. <strong>Sections A–L and mockups M8–M13 are SIGNED OFF</strong> (2026-08-26); <strong>§M and §N, and mockups M14–M18, are draft, awaiting their own approval.</strong> Eleven mockups in all: the trace status bar moving to the top of the screen (M8), secondary-mirror irradiance with FEA-oriented CSV exports (M9), the optical-error glossary tooltips plus pointing error and measured error-map import (M10), a fidelity picker that explains itself in plain language (M11), the polar (sector) field with a tilted vertical receiver window (M12), rigid-body/deformation perturbations on the secondary mirror (M13), the native desktop window shell (M14), plan-view power coloring with a per-heliostat sweep drill-down (M15), irradiance draped on the 3D receiver (M16), a draggable analysis aperture with an encircled-power curve (M17), and — drawn as three screens — the FINAL Design/3D View/Heliostat Shape/Analysis tab restructure, opening on 3D View (M18).</p>
     <p class="lede">M12's polar-field research (spec §I) finished on 2026-08-25 — the screen below reflects the final control names and defaults (Field span, Center azimuth, Half-span, Window facing, Tilt from vertical), not a preliminary sketch.</p>
     <p class="lede">M14 mockups §L (desktop shell) already carries Ryker's own sign-off on the spec section — the screen is here for a final look at the drawing itself. M15–M17 illustrate §M, which arrived after the main sign-off and has not been reviewed yet — nothing in that group is approved.</p>
-    <p class="lede">M18 illustrates §N's tab restructure. The split into Ray Trace + Analysis, and Run/fidelity living in both Workspace and Ray Trace as one shared state, are <strong>already decided</strong> (§N) — drawn in 18a/18c for a final look. What the Workspace loses to Ray Trace is <strong>not decided</strong>: 18b is a proposal for your reaction, tagged accordingly, and nothing shown as "moved" is deleted.</p>
+    <p class="lede">M18 illustrates §N's tab restructure, evolved through a second round today: <strong>FINAL — decided 2026-08-26.</strong> The morning's Ray Trace tab is superseded — the top bar becomes <strong>Design · 3D View · Heliostat Shape · Analysis</strong>, the app <strong>opens on 3D View</strong>, and every instrument's home (Design's sidebar + 2D canvas, 3D View's scene + trace bar + results dock, Analysis unchanged) is decided, not proposed. The three screens (18a/18b/18c) are drawn for a final look before build, and the old "Workspace declutter" question is dissolved — the Workspace name itself ceases to exist.</p>
     <p class="lede">The companion spec is <code>docs/ui-spec-v0.2.md</code> in the repo. Nothing gets built from the §M/§N screens until you approve both this document's M14–M18 and that spec's §M/§N.</p>
   </header>
 
@@ -1384,10 +1384,10 @@
   <div class="checknote">All five numbers are pure post-processing on the already-stored map — no re-trace. Dragging the circle or its resize handle recomputes the readout and the marked point on the encircled-power curve live; nothing about the underlying trace, intercept, or collected totals changes.</div>
   <div class="checknote">The aperture saves with the run as an annotation, so reopening a saved analysis shows the same circle and readout without recomputing anything.</div>
 
-  <h2><span class="num">18</span>Tab restructure: Ray Trace &amp; Analysis + Workspace declutter <span class="tagpill draft">PROPOSAL — awaiting Ryker's reaction</span></h2>
-  <p class="screennote">Three screens for one change (spec §N). The top bar becomes <strong>Workspace · Ray Trace · Heliostat Shape · Analysis</strong> everywhere from here on. <strong>Decided already:</strong> the tab split itself, and that fidelity + Run live in both Workspace and Ray Trace as one shared state, not two settings (§N). <strong>Proposed here for your reaction:</strong> exactly what the Workspace loses to Ray Trace (18b) — nothing is deleted, everything drawn as "moved" is one tab away.</p>
+  <h2><span class="num">18</span>Tab restructure: Design · 3D View · Heliostat Shape · Analysis <span class="tagpill">FINAL — decided 2026-08-26, drawn for confirmation</span></h2>
+  <p class="screennote">Three screens for one change (spec §N), evolved through a second round today. The top bar becomes <strong>Design · 3D View · Heliostat Shape · Analysis</strong> everywhere from here on, and the app <strong>opens on 3D View</strong>. The morning's Ray Trace tab is superseded: the Workspace itself splits into an authoring tab (Design) and an observing/simulating tab (3D View), with the instant-trace instruments living beside the 3D scene. <strong>Nothing below is a proposal</strong> — the tab split, the four names, the opening tab, and every instrument's home are decided (§N); these three screens are drawn for a final look before build, and the old "Workspace declutter" question is dissolved, not answered — the Workspace name itself ceases to exist.</p>
 
-  <p class="screennote"><strong>18a — the new tab bar + Ray Trace tab.</strong> Everything about the current instant's trace, assembled in one place: a compact fidelity + Run row (M11, condensed), the irradiance map with the Receiver/Secondary selector, N/E/S/W compass edges (§M rider), the M17 analysis aperture, a "drape on 3D receiver" toggle (M16), the M15 plan-view power coloring as a side panel — its decided home — a single-heliostat footprint viewer, and FEA export. Map dominant, two columns, nothing crowded.</p>
+  <p class="screennote"><strong>18a — Design.</strong> The authoring tab: the full four-stage sidebar (Heliostat, Field, Receiver &amp; Tower, Sun — unchanged from the old Workspace sidebar) beside a precision 2D canvas with an explicit <strong>Plan view / Elevation</strong> toggle, shown here on Plan view with the zoom-reset chip visible. The toggle replaces the old expand-a-stage auto-morph, which retires; both views keep the zoom/pan already shipped (M3/M4). Edits apply live to the shared model, exactly as before.</p>
   <div class="stage"><div class="mock"><template shadowrootmode="open"><style>
     :host { display: block; margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 14px; color: #1f2933; background: #f7f8fa; }
     a { color: #45739e; }
@@ -1400,173 +1400,6 @@
     .topbar .right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
     .btn { padding: 7px 12px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; }
     .btn.primary { background: #45739e; border-color: #345a80; color: #ffffff; font-weight: 600; }
-    .subject { display: flex; align-items: center; gap: 8px; padding: 10px 20px; background: #ffffff; border-bottom: 1px solid #d8dee5; color: #64748b; font-size: 12.5px; }
-    .subject strong { color: #1f2933; font-weight: 600; }
-    .raytracebar { display: flex; align-items: center; gap: 12px; padding: 9px 20px; background: #ffffff; border-bottom: 1px solid #d8dee5; height: 66px; box-sizing: border-box; }
-    .fcardrow { display: flex; gap: 8px; flex: 0 0 auto; }
-    .fc { border: 1.5px solid #d8dee5; border-radius: 8px; padding: 6px 11px; min-width: 152px; }
-    .fc.active { border-color: #45739e; background: #f2f7fd; }
-    .fcname { font-size: 12px; font-weight: 650; display: flex; align-items: center; gap: 6px; }
-    .fcname .radio { width: 8px; height: 8px; border-radius: 50%; border: 1.3px solid #9db3c4; flex: 0 0 auto; }
-    .fc.active .fcname .radio { border-color: #45739e; background: #45739e; }
-    .fcsub { font-size: 10px; color: #64748b; margin-top: 2px; }
-    .stamp { color: #64748b; font-size: 11.5px; margin-left: auto; }
-    .content { flex: 1 1 auto; min-height: 0; display: flex; gap: 18px; padding: 16px 20px; overflow: hidden; }
-    .panel { background: #ffffff; border: 1px solid #d8dee5; border-radius: 10px; padding: 14px 16px; }
-    .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: #64748b; margin: 0; font-weight: 600; }
-    .left { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
-    .right { flex: 0 0 300px; display: flex; flex-direction: column; gap: 14px; }
-    .maphead { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
-    .surfaceseg { display: flex; gap: 6px; }
-    .surfaceseg button { padding: 6px 11px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 11.5px; }
-    .surfaceseg button.active { background: #45739e; border-color: #345a80; color: #ffffff; }
-    .toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: #1f2933; background: #f2f7fd; border: 1px solid #bcd6f2; border-radius: 20px; padding: 4px 10px 4px 4px; white-space: nowrap; }
-    .toggle .knob { width: 24px; height: 13px; border-radius: 8px; background: #45739e; position: relative; flex: 0 0 auto; }
-    .toggle .knob::after { content: ""; position: absolute; top: 1.5px; right: 1.5px; width: 10px; height: 10px; border-radius: 50%; background: #ffffff; }
-    .frame { flex: 1 1 auto; min-height: 0; border: 1px solid #d8dee5; border-radius: 8px; background: #ffffff; overflow: hidden; }
-    .exportrow { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
-    .exporthint { color: #64748b; font-size: 11px; }
-    .sidehead { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-    .sidehead .chip2 { font-size: 10.5px; color: #64748b; margin-left: auto; }
-    .legend { margin-top: 8px; }
-    .legend .lbar { height: 8px; border-radius: 4px; }
-    .legend .lends { display: flex; justify-content: space-between; font-size: 10px; color: #64748b; margin-top: 3px; font-variant-numeric: tabular-nums; }
-    .fpsel { font-size: 11.5px; color: #64748b; margin-left: auto; }
-    .fpframe { border: 1px solid #d8dee5; border-radius: 8px; overflow: hidden; height: 118px; margin-top: 8px; }
-    .miniexport { font-size: 11px; margin-top: 8px; display: inline-block; }
-  </style><div style="width: 1440px; height: 900px; display: flex; flex-direction: column; background: #f7f8fa; overflow: hidden">
-
-  <div class="topbar">
-    <div style="width: 26px; height: 26px; border: 1.5px dashed #45739e; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: #45739e; font-size: 11px; font-weight: 700">C</div>
-    <h1>Coddington</h1>
-    <span class="tag">Manuscript baseline — axicon</span>
-    <div class="apptabs"><div class="tab">Workspace</div><div class="tab active">Ray Trace</div><div class="tab">Heliostat Shape</div><div class="tab">Analysis</div></div>
-    <div class="right"><div class="btn">Library</div><span class="tag">Saved</span></div>
-  </div>
-
-  <div class="subject">
-    Ray-tracing the current project:
-    <strong>Axicon 27 m / 20° / 14 m</strong> · <strong>643 heliostats</strong> · timestep <strong>12:30 solar</strong>
-    <a style="margin-left: auto; font-size: 12px">change in Workspace →</a>
-  </div>
-
-  <div class="raytracebar">
-    <div class="fcardrow">
-      <div class="fc"><div class="fcname"><span class="radio"></span>Ultra fast</div><div class="fcsub">Explore layouts quickly</div></div>
-      <div class="fc active"><div class="fcname"><span class="radio"></span>Fast accurate</div><div class="fcsub">Compare a few options</div></div>
-      <div class="fc"><div class="fcname"><span class="radio"></span>Monte Carlo</div><div class="fcsub">Precision, all error sources</div></div>
-    </div>
-    <div class="btn primary">Run trace</div>
-    <div class="stamp">traced 12:38:04 · fast accurate</div>
-  </div>
-
-  <div class="content">
-    <div class="left">
-      <div class="panel" style="flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column">
-        <div class="maphead">
-          <h2 style="margin: 0">Irradiance map — 12:30 solar</h2>
-          <div style="display: flex; align-items: center; gap: 10px; margin-left: auto">
-            <div class="toggle"><span class="knob"></span>Drape on 3D receiver</div>
-            <div class="surfaceseg"><button class="active">Receiver</button><button>Secondary</button></div>
-          </div>
-        </div>
-        <div class="frame">
-          <svg viewBox="0 0 460 320" width="100%" height="100%">
-            <defs>
-              <radialGradient id="magma18a" cx="0.5" cy="0.48" r="0.75">
-                <stop offset="0" stop-color="#fcfdbf"></stop>
-                <stop offset="0.28" stop-color="#fe9f6d"></stop>
-                <stop offset="0.52" stop-color="#de4968"></stop>
-                <stop offset="0.74" stop-color="#8c2981"></stop>
-                <stop offset="0.9" stop-color="#3b0f70"></stop>
-                <stop offset="1" stop-color="#000004"></stop>
-              </radialGradient>
-            </defs>
-            <rect x="34" y="24" width="380" height="272" fill="url(#magma18a)"></rect>
-            <rect x="34" y="24" width="380" height="272" fill="none" stroke="#33455c" stroke-width="1"></rect>
-            <circle cx="224" cy="160" r="52" fill="none" stroke="#ffffff" stroke-width="2" stroke-dasharray="7 5"></circle>
-            <circle cx="224" cy="160" r="52" fill="none" stroke="#0b5fd0" stroke-width="1" stroke-dasharray="7 5"></circle>
-            <rect x="272" y="156" width="8" height="8" fill="#ffffff" stroke="#0b5fd0" stroke-width="1.3"></rect>
-            <rect x="418" y="24" width="14" height="272" fill="url(#magma18a)" stroke="#33455c" stroke-width="0.8"></rect>
-            <text x="435" y="32" font-size="9.5" fill="#64748b">380</text>
-            <text x="435" y="300" font-size="9.5" fill="#64748b">0</text>
-            <g transform="translate(178, 96)">
-              <rect x="0" y="0" width="70" height="20" rx="5" fill="#ffffff" stroke="#d8dee5"></rect>
-              <text x="35" y="14" font-size="10.5" fill="#1f2933" text-anchor="middle" font-weight="600">r = 3.80 m</text>
-            </g>
-            <g font-size="10" font-weight="700" fill="#1f2933">
-              <rect x="210" y="30" width="28" height="16" rx="3" fill="rgba(255,255,255,0.78)"></rect>
-              <text x="224" y="42" text-anchor="middle">N</text>
-              <rect x="210" y="274" width="28" height="16" rx="3" fill="rgba(255,255,255,0.78)"></rect>
-              <text x="224" y="286" text-anchor="middle">S</text>
-              <rect x="380" y="152" width="24" height="16" rx="3" fill="rgba(255,255,255,0.78)"></rect>
-              <text x="392" y="164" text-anchor="middle">E</text>
-              <rect x="42" y="152" width="24" height="16" rx="3" fill="rgba(255,255,255,0.78)"></rect>
-              <text x="54" y="164" text-anchor="middle">W</text>
-            </g>
-            <text x="224" y="313" text-anchor="middle" font-size="10" fill="#64748b">compass edges (§M rider) · dashed circle: M17 analysis aperture</text>
-          </svg>
-        </div>
-        <div class="exportrow">
-          <div class="btn primary">Export CSV for FEA</div>
-          <span class="exporthint">x, y, flux (secondary adds an absorbed column) · meters / W·m⁻² · targets ANSYS External Data</span>
-        </div>
-      </div>
-    </div>
-
-    <div class="right">
-      <div class="panel">
-        <div class="sidehead"><h2 style="margin: 0">Plan view — power</h2><span class="chip2">its home now</span></div>
-        <svg viewBox="0 0 260 190" width="100%" height="150">
-          <rect width="260" height="190" fill="#fdfdfe"></rect>
-          <g stroke="#33455c" stroke-width="0.7">
-            <circle cx="168" cy="95" r="5.5" fill="#fcfdbf"></circle><circle cx="150" cy="80" r="5.5" fill="#fcfdbf"></circle><circle cx="185" cy="75" r="5.5" fill="#fcfdbf"></circle><circle cx="140" cy="112" r="5.5" fill="#fcfdbf"></circle>
-            <circle cx="205" cy="95" r="5" fill="#fe9f6d"></circle><circle cx="192" cy="128" r="5" fill="#fe9f6d"></circle><circle cx="150" cy="140" r="5" fill="#fe9f6d"></circle><circle cx="112" cy="112" r="5" fill="#fe9f6d"></circle><circle cx="118" cy="72" r="5" fill="#fe9f6d"></circle>
-            <circle cx="228" cy="95" r="4.5" fill="#de4968"></circle><circle cx="210" cy="150" r="4.5" fill="#de4968"></circle><circle cx="150" cy="163" r="4.5" fill="#de4968"></circle><circle cx="92" cy="128" r="4.5" fill="#de4968"></circle><circle cx="98" cy="55" r="4.5" fill="#de4968"></circle>
-            <circle cx="248" cy="95" r="4" fill="#3b0f70"></circle><circle cx="150" cy="180" r="4" fill="#3b0f70"></circle><circle cx="60" cy="112" r="4" fill="#12071f"></circle><circle cx="75" cy="42" r="4" fill="#3b0f70"></circle>
-          </g>
-          <circle cx="168" cy="95" r="6" fill="#7b8794" stroke="#33455c" stroke-width="1.2"></circle>
-        </svg>
-        <div class="legend">
-          <div class="lbar" style="background: linear-gradient(90deg, #12071f, #3b0f70, #8c2981, #de4968, #fe9f6d, #fcfdbf)"></div>
-          <div class="lends"><span>0.4 kW</span><span>19.8 kW</span></div>
-        </div>
-        <div style="color: #64748b; font-size: 10.5px; margin-top: 6px">M15's "Color by: power" — decided home per the §N/M15 rider.</div>
-      </div>
-
-      <div class="panel">
-        <div class="sidehead"><h2 style="margin: 0">Single-heliostat footprint</h2><span class="fpsel">H-214 ▾</span></div>
-        <div class="fpframe">
-          <svg viewBox="0 0 260 140" width="100%" height="100%">
-            <defs><radialGradient id="magma18afp" cx="0.5" cy="0.48" r="0.6"><stop offset="0" stop-color="#fcfdbf"></stop><stop offset="0.35" stop-color="#fe9f6d"></stop><stop offset="0.6" stop-color="#de4968"></stop><stop offset="0.85" stop-color="#3b0f70"></stop><stop offset="1" stop-color="#000004"></stop></radialGradient></defs>
-            <rect width="260" height="140" fill="#000004"></rect>
-            <ellipse cx="130" cy="70" rx="78" ry="46" fill="url(#magma18afp)"></ellipse>
-          </svg>
-        </div>
-        <a class="miniexport">Export CSV for FEA</a>
-      </div>
-    </div>
-  </div>
-
-</div></template></div></div>
-  <div class="checknote"><strong>New (§N):</strong> the top bar reads <strong>Workspace · Ray Trace · Heliostat Shape · Analysis</strong> from here on — Ray Trace is the new "what does the light do right now" home, carrying its own fidelity + Run, the same shared trace state Workspace shows too, not a second setting.</div>
-  <div class="checknote">Nothing here is new physics: fidelity/Run is M11 condensed, the map/selector/export is M9, the compass edges and aperture are the §M rider and M17, the drape toggle is M16, plan-view coloring is M15, footprint viewing is M15's drill-down. Ray Trace just gathers them into one instant's-worth-of-light screen.</div>
-  <div class="checknote">Map dominant, two columns, nothing crowded: the plan-view power panel and the single-heliostat footprint share a 300 px side column rather than competing with the map for width.</div>
-
-  <p class="screennote" style="margin-top: 32px"><strong>18b — the decluttered Workspace (PROPOSAL).</strong> Four stages, the live viewport, and corner rays are unchanged. The run bar shrinks to fidelity + Run + one summary line — the flux thumbnail, the full metrics strip, and the export link move to Ray Trace (18a). <strong>PROPOSAL — Ryker reacts to this drawing; nothing removed is lost, it all lives one tab away.</strong></p>
-  <div class="stage"><div class="mock"><template shadowrootmode="open"><style>
-    :host { display: block; margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 14px; color: #1f2933; background: #f7f8fa; }
-    a { color: #45739e; } a:hover { color: #345a80; }
-    .topbar { display: flex; align-items: center; gap: 10px; padding: 0 20px; height: 52px; background: #ffffff; border-bottom: 1px solid #d8dee5; }
-    .topbar h1 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: 0.02em; }
-    .tag { color: #64748b; font-size: 12px; }
-    .apptabs { display: flex; gap: 6px; margin-left: 28px; }
-    .apptabs .tab { padding: 7px 14px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; }
-    .apptabs .tab.active { background: #45739e; border-color: #345a80; color: #ffffff; }
-    .topbar .right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
-    .btn { padding: 7px 12px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; }
-    .btn.primary { background: #45739e; border-color: #345a80; color: #ffffff; font-weight: 600; }
-    .savestate { color: #64748b; font-size: 12px; display: flex; align-items: center; gap: 5px; }
     .shell { flex: 1 1 auto; min-height: 0; display: flex; }
     .sidebar { flex: 0 0 300px; background: #ffffff; border-right: 1px solid #d8dee5; overflow: hidden; display: flex; flex-direction: column; }
     .stage2 { border-bottom: 1px solid #d8dee5; padding: 8px 16px; }
@@ -1580,24 +1413,25 @@
     .frow { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
     .frow label { flex: 0 0 128px; color: #64748b; font-size: 12.5px; }
     .frow .val { flex: 1 1 auto; padding: 5px 8px; border: 1px solid #d8dee5; border-radius: 5px; background: #ffffff; font-size: 13px; font-variant-numeric: tabular-nums; }
-    .viewport { flex: 1 1 auto; position: relative; overflow: hidden; }
-    .chip { position: absolute; left: 14px; bottom: 14px; background: rgba(255,255,255,0.85); border: 1px solid #d8dee5; border-radius: 6px; padding: 5px 10px; font-size: 11.5px; color: #64748b; }
-    .runbar { display: flex; align-items: center; gap: 16px; padding: 12px 20px; background: #ffffff; border-top: 1px solid #d8dee5; height: 56px; box-sizing: border-box; }
-    .runseg { margin-bottom: 0; flex: 0 0 auto; }
-    .runseg button { flex: 0 0 auto; padding: 7px 12px; }
-    .summaryline { margin-left: auto; font-size: 12.5px; color: #64748b; }
-    .summaryline strong { color: #1f2933; }
+    .mainarea { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; }
+    .canvashead { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: #ffffff; border-bottom: 1px solid #d8dee5; }
+    .viewseg { display: flex; gap: 6px; }
+    .viewseg button { padding: 7px 14px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12px; }
+    .viewseg button.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .canvashint { color: #64748b; font-size: 11.5px; }
+    .viewport { flex: 1 1 auto; position: relative; overflow: hidden; background: #fdfdfe; }
+    .zoomchip { position: absolute; left: 14px; bottom: 14px; background: rgba(255,255,255,0.92); border: 1px solid #d8dee5; border-radius: 6px; padding: 6px 11px; font-size: 11.5px; color: #64748b; display: flex; align-items: center; gap: 8px; }
+    .zoomchip a { font-weight: 600; }
+    .zoombtns { position: absolute; right: 14px; top: 14px; display: flex; flex-direction: column; gap: 4px; }
+    .zoombtns button { width: 26px; height: 26px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 14px; line-height: 1; }
   </style><div style="width: 1440px; height: 900px; display: flex; flex-direction: column; background: #f7f8fa; overflow: hidden">
 
   <div class="topbar">
     <div style="width: 26px; height: 26px; border: 1.5px dashed #45739e; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: #45739e; font-size: 11px; font-weight: 700">C</div>
     <h1>Coddington</h1>
     <span class="tag">Manuscript baseline — axicon</span>
-    <div class="apptabs"><div class="tab active">Workspace</div><div class="tab">Ray Trace</div><div class="tab">Heliostat Shape</div><div class="tab">Analysis</div></div>
-    <div class="right">
-      <div class="btn">Library</div>
-      <span class="savestate">Saved</span>
-    </div>
+    <div class="apptabs"><div class="tab active">Design</div><div class="tab">3D View</div><div class="tab">Heliostat Shape</div><div class="tab">Analysis</div></div>
+    <div class="right"><div class="btn">Library</div><span class="tag">Saved</span></div>
   </div>
 
   <div class="shell">
@@ -1631,12 +1465,121 @@
       </div>
     </div>
 
-    <div class="viewport">      <svg viewBox="0 0 1140 738" width="100%" height="100%" preserveAspectRatio="xMidYMid slice">
+    <div class="mainarea">
+      <div class="canvashead">
+        <div class="viewseg"><button class="active">Plan view</button><button>Elevation</button></div>
+        <span class="canvashint">explicit switch — replaces the old expand-a-stage auto-morph, which retires</span>
+      </div>
+      <div class="viewport">
+        <svg viewBox="0 0 620 620" width="100%" height="100%" preserveAspectRatio="xMidYMid meet">
+          <rect width="620" height="620" fill="#fdfdfe"></rect>
+          <circle cx="310" cy="310" r="270" fill="none" stroke="rgba(110,130,150,0.18)" stroke-width="1" stroke-dasharray="3 5"></circle>
+          <text x="310" y="34" text-anchor="middle" font-size="12" fill="#64748b" font-weight="600">N ↑</text>
+          <g fill="rgba(196,218,238,0.96)" stroke="#33455c" stroke-width="0.8">
+            <circle cx="370" cy="310" r="6"></circle><circle cx="352.4" cy="352.4" r="6"></circle><circle cx="310" cy="370" r="6"></circle><circle cx="267.6" cy="352.4" r="6"></circle><circle cx="250" cy="310" r="6"></circle><circle cx="267.6" cy="267.6" r="6"></circle><circle cx="310" cy="250" r="6"></circle><circle cx="352.4" cy="267.6" r="6"></circle>
+            <circle cx="425" cy="310" r="5.5"></circle><circle cx="409.6" cy="367.5" r="5.5"></circle><circle cx="367.5" cy="409.6" r="5.5"></circle><circle cx="310" cy="425" r="5.5"></circle><circle cx="252.5" cy="409.6" r="5.5"></circle><circle cx="210.4" cy="367.5" r="5.5"></circle><circle cx="195" cy="310" r="5.5"></circle><circle cx="210.4" cy="252.5" r="5.5"></circle><circle cx="252.5" cy="210.4" r="5.5"></circle><circle cx="310" cy="195" r="5.5"></circle><circle cx="367.5" cy="210.4" r="5.5"></circle><circle cx="409.6" cy="252.5" r="5.5"></circle>
+            <circle cx="480" cy="310" r="5"></circle><circle cx="457.2" cy="395" r="5"></circle><circle cx="395" cy="457.2" r="5"></circle><circle cx="310" cy="480" r="5"></circle><circle cx="225" cy="457.2" r="5"></circle><circle cx="162.8" cy="395" r="5"></circle><circle cx="140" cy="310" r="5"></circle><circle cx="162.8" cy="225" r="5"></circle><circle cx="225" cy="162.8" r="5"></circle><circle cx="310" cy="140" r="5"></circle><circle cx="395" cy="162.8" r="5"></circle><circle cx="457.2" cy="225" r="5"></circle>
+          </g>
+          <circle cx="310" cy="310" r="7" fill="#7b8794" stroke="#33455c" stroke-width="1.3"></circle>
+          <text x="322" y="328" font-size="10.5" fill="#64748b">tower</text>
+        </svg>
+        <div class="zoombtns"><button>+</button><button>−</button></div>
+        <div class="zoomchip">100% · scroll to zoom, drag to pan · <a>Reset view</a></div>
+      </div>
+    </div>
+  </div>
+
+</div></template></div></div>
+  <div class="checknote"><strong>New (§N):</strong> the top bar reads <strong>Design · 3D View · Heliostat Shape · Analysis</strong> from here on. Design is the authoring tab — the same four-stage sidebar and the same edit-live-to-the-shared-model behavior as the old Workspace, just without the trace instruments (those live in 3D View now).</div>
+  <div class="checknote">The <strong>Plan view / Elevation</strong> segmented control is explicit and sticky — no more auto-morphing when a stage expands. Both views keep the zoom/pan already shipped (M3/M4); shown here on Plan, with the reset-view chip visible to hint it's there.</div>
+  <div class="checknote">Nothing about editing changes: heliostat, field, receiver/tower, and sun edits still apply live to the shared model. The split only separates authoring (Design) from observing/simulating (3D View) — it doesn't touch what can be edited or how.</div>
+
+  <p class="screennote" style="margin-top: 32px"><strong>18b — 3D View. The app opens here.</strong> The live 3D scene (M2's viewport, corner rays for scale) is dominant, with a condensed trace bar above it — three fidelity cards, Run, and a traced-at stamp (M11, condensed) — and a ~380 px results dock at right, M16's dock width: the irradiance map (Receiver/Secondary selector, N/E/S/W compass edges, the M17 aperture), the "Drape on 3D receiver" toggle — drawn <strong>ON</strong> here, with the receiver in the scene showing a small magma hot spot to prove the drape is live — the M15 plan-view power panel (compact), the single-heliostat footprint viewer, and FEA export. A floating inspector is drawn open on a clicked heliostat, plus a compact sun chip: click-to-edit and the sun chip stay in 3D View, while the full control surface lives in Design.</p>
+  <div class="stage"><div class="mock"><template shadowrootmode="open"><style>
+    :host { display: block; margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 14px; color: #1f2933; background: #f7f8fa; }
+    a { color: #45739e; } a:hover { color: #345a80; }
+    .topbar { display: flex; align-items: center; gap: 10px; padding: 0 20px; height: 52px; background: #ffffff; border-bottom: 1px solid #d8dee5; }
+    .topbar h1 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: 0.02em; }
+    .tag { color: #64748b; font-size: 12px; }
+    .apptabs { display: flex; gap: 6px; margin-left: 28px; }
+    .apptabs .tab { padding: 7px 14px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; }
+    .apptabs .tab.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .topbar .right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+    .btn { padding: 7px 12px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; }
+    .btn.primary { background: #45739e; border-color: #345a80; color: #ffffff; font-weight: 600; }
+    .openbadge { color: #0b5fd0; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; border: 1px solid #bcd6f2; background: #f2f7fd; border-radius: 5px; padding: 3px 8px; margin-left: 10px; }
+    .tracebar { display: flex; align-items: center; gap: 10px; padding: 8px 20px; background: #ffffff; border-bottom: 1px solid #d8dee5; height: 58px; box-sizing: border-box; }
+    .fcardrow { display: flex; gap: 6px; flex: 0 0 auto; }
+    .fc { border: 1.5px solid #d8dee5; border-radius: 7px; padding: 5px 9px; min-width: 118px; }
+    .fc.active { border-color: #45739e; background: #f2f7fd; }
+    .fcname { font-size: 11.5px; font-weight: 650; display: flex; align-items: center; gap: 5px; }
+    .fcname .radio { width: 7px; height: 7px; border-radius: 50%; border: 1.2px solid #9db3c4; flex: 0 0 auto; }
+    .fc.active .fcname .radio { border-color: #45739e; background: #45739e; }
+    .fcsub { font-size: 9.5px; color: #64748b; margin-top: 1px; }
+    .stamp { color: #64748b; font-size: 11.5px; margin-left: auto; }
+    .mainarea { flex: 1 1 auto; display: flex; min-width: 0; min-height: 0; }
+    .viewport { flex: 1 1 auto; position: relative; overflow: hidden; min-width: 0; }
+    .chip { position: absolute; left: 14px; bottom: 14px; background: rgba(255,255,255,0.85); border: 1px solid #d8dee5; border-radius: 6px; padding: 5px 10px; font-size: 11.5px; color: #64748b; }
+    .sunchip { position: absolute; right: 14px; top: 14px; background: rgba(255,255,255,0.92); border: 1px solid #d8dee5; border-radius: 6px; padding: 6px 11px; font-size: 11.5px; color: #1f2933; font-weight: 600; }
+    .posinspector { position: absolute; background: rgba(255,255,255,0.98); border: 1px solid #d8dee5; border-radius: 8px; box-shadow: 0 6px 18px rgba(31,41,51,0.14); padding: 8px 11px; font-size: 11.5px; }
+    .posinspector .pihead { font-weight: 650; margin-bottom: 3px; display: flex; align-items: center; gap: 6px; }
+    .posinspector .pisub { color: #0b5fd0; font-weight: 600; font-size: 9.5px; text-transform: uppercase; }
+    .posinspector .pirow { color: #64748b; font-variant-numeric: tabular-nums; }
+    .posinspector .pirow strong { color: #1f2933; }
+    .dock { flex: 0 0 380px; border-left: 1px solid #d8dee5; background: #ffffff; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
+    .dockpanel { border: 1px solid #d8dee5; border-radius: 8px; padding: 10px 12px; flex: 0 0 auto; }
+    .dockpanel h2 { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em; color: #64748b; margin: 0; font-weight: 600; }
+    .maphead { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+    .surfaceseg { display: flex; gap: 5px; }
+    .surfaceseg button { padding: 5px 9px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 10.5px; }
+    .surfaceseg button.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 10.5px; color: #1f2933; background: #f2f7fd; border: 1px solid #bcd6f2; border-radius: 20px; padding: 3px 9px 3px 3px; white-space: nowrap; }
+    .toggle .knob { width: 22px; height: 12px; border-radius: 7px; background: #45739e; position: relative; flex: 0 0 auto; }
+    .toggle .knob::after { content: ""; position: absolute; top: 1.5px; right: 1.5px; width: 9px; height: 9px; border-radius: 50%; background: #ffffff; }
+    .frame { border: 1px solid #d8dee5; border-radius: 7px; overflow: hidden; }
+    .legend { margin-top: 6px; }
+    .legend .lbar { height: 7px; border-radius: 4px; }
+    .legend .lends { display: flex; justify-content: space-between; font-size: 9.5px; color: #64748b; margin-top: 3px; font-variant-numeric: tabular-nums; }
+    .fpsel { font-size: 10.5px; color: #64748b; margin-left: auto; }
+    .sidehead { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    .fpframe { border: 1px solid #d8dee5; border-radius: 7px; overflow: hidden; height: 92px; }
+    .exportrow { display: flex; align-items: center; gap: 8px; }
+    .exporthint { color: #64748b; font-size: 9.5px; }
+  </style><div style="width: 1440px; height: 900px; display: flex; flex-direction: column; background: #f7f8fa; overflow: hidden">
+
+  <div class="topbar">
+    <div style="width: 26px; height: 26px; border: 1.5px dashed #45739e; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: #45739e; font-size: 11px; font-weight: 700">C</div>
+    <h1>Coddington</h1>
+    <span class="tag">Manuscript baseline — axicon</span>
+    <div class="apptabs"><div class="tab">Design</div><div class="tab active">3D View</div><div class="tab">Heliostat Shape</div><div class="tab">Analysis</div></div>
+    <span class="openbadge">opens here</span>
+    <div class="right"><div class="btn">Library</div><span class="tag">Saved</span></div>
+  </div>
+
+  <div class="tracebar">
+    <div class="fcardrow">
+      <div class="fc"><div class="fcname"><span class="radio"></span>Ultra fast</div><div class="fcsub">Explore layouts quickly</div></div>
+      <div class="fc active"><div class="fcname"><span class="radio"></span>Fast accurate</div><div class="fcsub">Compare a few options</div></div>
+      <div class="fc"><div class="fcname"><span class="radio"></span>Monte Carlo</div><div class="fcsub">Precision, all error sources</div></div>
+    </div>
+    <div class="btn primary">Run trace</div>
+    <div class="stamp">traced 12:38:04 · fast accurate</div>
+  </div>
+
+  <div class="mainarea">
+    <div class="viewport">
+      <svg viewBox="0 0 1140 738" width="100%" height="100%" preserveAspectRatio="xMidYMid slice">
         <defs>
           <linearGradient id="sky18b" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0" stop-color="#f4f7fb"></stop>
             <stop offset="1" stop-color="#dbe4ee"></stop>
           </linearGradient>
+          <radialGradient id="hotspot18b" cx="0.5" cy="0.5" r="0.6">
+            <stop offset="0" stop-color="#fcfdbf"></stop>
+            <stop offset="0.4" stop-color="#fe9f6d"></stop>
+            <stop offset="0.7" stop-color="#de4968" stop-opacity="0.85"></stop>
+            <stop offset="1" stop-color="#8c2981" stop-opacity="0"></stop>
+          </radialGradient>
         </defs>
         <rect width="1140" height="738" fill="url(#sky18b)"></rect>
 
@@ -1673,6 +1616,7 @@
         <ellipse cx="570" cy="150" rx="115" ry="20" fill="rgba(126,158,196,0.18)" stroke="rgba(52,90,128,0.55)" stroke-width="1.5"></ellipse>
 
         <path d="M534 466 L606 466 L626 486 L554 486 Z" fill="rgba(217,123,41,0.55)" stroke="#a8551a" stroke-width="1.5"></path>
+        <ellipse cx="580" cy="476" rx="34" ry="10" fill="url(#hotspot18b)"></ellipse>
 
         <g fill="rgba(196,218,238,0.96)" stroke="#33455c" stroke-width="1.2">
           <path d="M130 560 L250 552 L262 606 L142 616 Z"></path>
@@ -1712,21 +1656,90 @@
         </g>
       </svg>
       <div class="chip">Corner chief rays — viewing aid, no shading · 643 heliostats</div>
+      <div class="sunchip">☀ Az 165.2° · El 61.4°</div>
+      <div class="posinspector" style="left: 205px; top: 372px">
+        <div class="pihead">H-214 <span class="pisub">selected</span></div>
+        <div class="pirow">x <strong>42.61 m</strong> · y <strong>7.30 m</strong></div>
+      </div>
+    </div>
+
+    <div class="dock">
+      <div class="dockpanel">
+        <div class="maphead">
+          <h2>Irradiance map</h2>
+          <div class="surfaceseg" style="margin-left: auto"><button class="active">Receiver</button><button>Secondary</button></div>
+        </div>
+        <div class="frame" style="height: 176px; margin-top: 8px">
+          <svg viewBox="0 0 300 210" width="100%" height="100%">
+            <defs>
+              <radialGradient id="magma18bdock" cx="0.5" cy="0.48" r="0.75">
+                <stop offset="0" stop-color="#fcfdbf"></stop>
+                <stop offset="0.28" stop-color="#fe9f6d"></stop>
+                <stop offset="0.52" stop-color="#de4968"></stop>
+                <stop offset="0.74" stop-color="#8c2981"></stop>
+                <stop offset="0.9" stop-color="#3b0f70"></stop>
+                <stop offset="1" stop-color="#000004"></stop>
+              </radialGradient>
+            </defs>
+            <rect x="18" y="14" width="230" height="182" fill="url(#magma18bdock)"></rect>
+            <rect x="18" y="14" width="230" height="182" fill="none" stroke="#33455c" stroke-width="1"></rect>
+            <circle cx="133" cy="105" r="34" fill="none" stroke="#ffffff" stroke-width="1.6" stroke-dasharray="6 4"></circle>
+            <circle cx="133" cy="105" r="34" fill="none" stroke="#0b5fd0" stroke-width="0.9" stroke-dasharray="6 4"></circle>
+            <rect x="264" y="14" width="10" height="182" fill="url(#magma18bdock)" stroke="#33455c" stroke-width="0.7"></rect>
+            <g font-size="9" font-weight="700" fill="#1f2933">
+              <rect x="122" y="18" width="22" height="13" rx="3" fill="rgba(255,255,255,0.78)"></rect><text x="133" y="27" text-anchor="middle">N</text>
+              <rect x="122" y="180" width="22" height="13" rx="3" fill="rgba(255,255,255,0.78)"></rect><text x="133" y="189" text-anchor="middle">S</text>
+              <rect x="228" y="99" width="20" height="13" rx="3" fill="rgba(255,255,255,0.78)"></rect><text x="238" y="108" text-anchor="middle">E</text>
+              <rect x="20" y="99" width="20" height="13" rx="3" fill="rgba(255,255,255,0.78)"></rect><text x="30" y="108" text-anchor="middle">W</text>
+            </g>
+            <text x="133" y="203" text-anchor="middle" font-size="8.5" fill="#64748b">compass edges · dashed circle: M17 aperture</text>
+          </svg>
+        </div>
+        <div style="margin-top: 8px"><div class="toggle"><span class="knob"></span>Drape on 3D receiver</div></div>
+      </div>
+
+      <div class="dockpanel">
+        <div class="sidehead"><h2>Plan view — power</h2></div>
+        <svg viewBox="0 0 260 190" width="100%" height="128">
+          <rect width="260" height="190" fill="#fdfdfe"></rect>
+          <g stroke="#33455c" stroke-width="0.7">
+            <circle cx="168" cy="95" r="5.5" fill="#fcfdbf"></circle><circle cx="150" cy="80" r="5.5" fill="#fcfdbf"></circle><circle cx="185" cy="75" r="5.5" fill="#fcfdbf"></circle><circle cx="140" cy="112" r="5.5" fill="#fcfdbf"></circle>
+            <circle cx="205" cy="95" r="5" fill="#fe9f6d"></circle><circle cx="192" cy="128" r="5" fill="#fe9f6d"></circle><circle cx="150" cy="140" r="5" fill="#fe9f6d"></circle><circle cx="112" cy="112" r="5" fill="#fe9f6d"></circle><circle cx="118" cy="72" r="5" fill="#fe9f6d"></circle>
+            <circle cx="228" cy="95" r="4.5" fill="#de4968"></circle><circle cx="210" cy="150" r="4.5" fill="#de4968"></circle><circle cx="150" cy="163" r="4.5" fill="#de4968"></circle><circle cx="92" cy="128" r="4.5" fill="#de4968"></circle><circle cx="98" cy="55" r="4.5" fill="#de4968"></circle>
+            <circle cx="248" cy="95" r="4" fill="#3b0f70"></circle><circle cx="150" cy="180" r="4" fill="#3b0f70"></circle><circle cx="60" cy="112" r="4" fill="#12071f"></circle><circle cx="75" cy="42" r="4" fill="#3b0f70"></circle>
+          </g>
+          <circle cx="168" cy="95" r="6" fill="#7b8794" stroke="#33455c" stroke-width="1.2"></circle>
+        </svg>
+        <div class="legend">
+          <div class="lbar" style="background: linear-gradient(90deg, #12071f, #3b0f70, #8c2981, #de4968, #fe9f6d, #fcfdbf)"></div>
+          <div class="lends"><span>0.4 kW</span><span>19.8 kW</span></div>
+        </div>
+      </div>
+
+      <div class="dockpanel">
+        <div class="sidehead"><h2>Single-heliostat footprint</h2><span class="fpsel">H-214 ▾</span></div>
+        <div class="fpframe">
+          <svg viewBox="0 0 260 140" width="100%" height="100%">
+            <defs><radialGradient id="magma18bfp" cx="0.5" cy="0.48" r="0.6"><stop offset="0" stop-color="#fcfdbf"></stop><stop offset="0.35" stop-color="#fe9f6d"></stop><stop offset="0.6" stop-color="#de4968"></stop><stop offset="0.85" stop-color="#3b0f70"></stop><stop offset="1" stop-color="#000004"></stop></radialGradient></defs>
+            <rect width="260" height="140" fill="#000004"></rect>
+            <ellipse cx="130" cy="70" rx="78" ry="46" fill="url(#magma18bfp)"></ellipse>
+          </svg>
+        </div>
+      </div>
+
+      <div class="exportrow">
+        <div class="btn primary">Export CSV for FEA</div>
+        <span class="exporthint">x, y, flux (+absorbed) · meters / W·m⁻²</span>
+      </div>
     </div>
   </div>
 
-  <div class="runbar">
-    <div class="seg runseg"><button>Ultra fast</button><button class="active">Fast accurate</button><button>Monte Carlo</button></div>
-    <div class="btn primary">Run trace</div>
-    <div class="summaryline"><strong>11.6 MW</strong> · <strong>97.9 %</strong> intercept · <a>open in Ray Trace →</a></div>
-  </div>
-
 </div></template></div></div>
-  <div class="checknote"><strong>PROPOSAL:</strong> Ryker reacts to this drawing; nothing removed is lost, it all lives one tab away in Ray Trace (18a). The four stages, the live viewport, and corner rays are untouched — only the run bar shrinks.</div>
-  <div class="checknote">Kept: fidelity segment, Run, and a single result line — the same shared trace state Ray Trace also shows (§N), so nothing here is a second, separate setting.</div>
-  <div class="checknote">Moved to Ray Trace: the flux thumbnail, the peak/mean flux and intercept metrics strip, and the "Export flux CSV" link — all still one click away via "open in Ray Trace →".</div>
+  <div class="checknote"><strong>New (§N):</strong> the app now opens here — the plant is live in 3D from the first frame, the signed-off vision preserved. The trace bar (fidelity + Run + traced-at stamp) is the same shared state Design's Run button also touches, condensed to fit above the dominant 3D scene.</div>
+  <div class="checknote">The results dock is the decided home for every per-instant result: irradiance map with Receiver/Secondary + compass edges + the M17 aperture (M9/§M rider/M17), the drape toggle now shown ON with the receiver's own small hot spot in the scene (M16), plan-view power coloring (M15.1, compact), single-heliostat footprint (M15.2), and FEA export (§D) — all in a ~380 px column, M16's dock width.</div>
+  <div class="checknote">Click-to-edit keeps working in 3D View — click a heliostat, the receiver, or the sun arrow for a floating inspector (H-214 shown, in meters per §H) and a compact sun chip — but the full control surface (typed values, segmented modes, perturbations) lives one tab away in Design.</div>
 
-  <p class="screennote" style="margin-top: 32px"><strong>18c — Analysis with the split applied.</strong> Day sweep, year estimate, and the energy plot are unchanged. The timestep table keeps its inline irradiance map for fast scrubbing — decided, not moved (§N) — now with compass labels and an "Open in Ray Trace →" link, and the M15 drill-down row (mini plan → field map → one heliostat's footprint) stays here too. Saved runs unchanged.</p>
+  <p class="screennote" style="margin-top: 32px"><strong>18c — Analysis with the split applied.</strong> Day sweep, year estimate, and the energy plot are unchanged. The timestep table keeps its inline irradiance map for fast scrubbing — decided, not moved (§N) — now with compass labels and an "Open in 3D View →" link, and the M15 drill-down row (mini plan → field map → one heliostat's footprint) stays here too. Saved runs unchanged.</p>
   <div class="stage"><div class="mock"><template shadowrootmode="open"><style>
     :host { display: block; margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 14px; color: #1f2933; background: #f7f8fa; }
     a { color: #45739e; } a:hover { color: #345a80; }
@@ -1772,8 +1785,8 @@
     <h1>Coddington</h1>
     <span class="tag">Manuscript baseline — axicon</span>
     <div class="apptabs">
-      <div class="tab">Workspace</div>
-      <div class="tab">Ray Trace</div>
+      <div class="tab">Design</div>
+      <div class="tab">3D View</div>
       <div class="tab">Heliostat Shape</div>
       <div class="tab active">Analysis</div>
     </div>
@@ -1786,7 +1799,7 @@
   <div class="subject">
     Analyzing the current project:
     <strong>Axicon 27 m / 20° / 14 m</strong> · <strong>643 heliostats</strong> (radial staggered 30–90 m) · <strong>Manuscript 5 × 3 m, twisting</strong>
-    <a style="margin-left: auto; font-size: 12px">change in Workspace →</a>
+    <a style="margin-left: auto; font-size: 12px">change in Design →</a>
   </div>
 
   <div class="content">
@@ -1884,7 +1897,7 @@
             </g>
             <text x="10" y="180" font-size="9" fill="#ffffff" opacity="0.85">peak 612 kW/m² · receiver window 4 × 4 m</text>
           </svg>
-          <a class="maplink">Open in Ray Trace →</a>
+          <a class="maplink">Open in 3D View →</a>
         </div>
         <div style="color: #64748b; font-size: 11.5px; margin-top: 8px">Click any timestep to see its map — stays inline for fast scrubbing (§N), now with compass edges (§M rider).</div>
       </div>
@@ -1928,14 +1941,14 @@
   <div class="dcaption">The M15 drill-down stays in Analysis (§N): pick a heliostat from the mini plan and see its own footprint at this timestep — the same on-demand single-heliostat trace, nothing new stored.</div>
 
 </div></template></div></div>
-  <div class="checknote"><strong>Decided (§N):</strong> the timestep irradiance map stays inline beside the table for fast scrubbing — it does not move to Ray Trace. It gains the compass edges (§M rider) and an "Open in Ray Trace →" link for the richer viewers (drape, aperture, FEA export) one click deeper.</div>
+  <div class="checknote"><strong>Decided (§N):</strong> the timestep irradiance map stays inline beside the table for fast scrubbing — it does not move to 3D View. It gains the compass edges (§M rider) and an "Open in 3D View →" link for the richer viewers (drape, aperture, FEA export) one click deeper.</div>
   <div class="checknote">The M15 drill-down (mini plan → field map → one heliostat's footprint) stays in Analysis too — same on-demand single-heliostat trace, same "nothing new stored" mechanism as M15.</div>
-  <div class="checknote">Day sweep, year estimate, the energy plot, and saved runs are unchanged from earlier Analysis mockups — only the timestep map gains compass labels and the deep link, and the drill-down row is added beneath.</div>
+  <div class="checknote">Day sweep, year estimate, the energy plot, and saved runs are unchanged from earlier Analysis mockups — only the timestep map gains compass labels and the deep link, and the drill-down row is added beneath. The tab bar is the only other change: Design · 3D View · Heliostat Shape · Analysis, Analysis active.</div>
 
 
   <section class="text">
     <h2>Decisions these mockups encode</h2>
-    <p class="lede" style="margin: 0 0 14px 0"><strong>Sections A–L, and mockups M8–M13, were signed off by Ryker on 2026-08-26.</strong> §M/§N and mockups M14–M18 below are new since that sign-off: M14 mockups a spec section (§L) Ryker already signed off, drawn here for a final look at the screen itself; M15–M17 illustrate §M, which has not been reviewed and carries no approval yet; M18 illustrates §N — its tab split is decided, but the Workspace declutter (18b) is a proposal awaiting reaction.</p>
+    <p class="lede" style="margin: 0 0 14px 0"><strong>Sections A–L, and mockups M8–M13, were signed off by Ryker on 2026-08-26.</strong> §M/§N and mockups M14–M18 below are new since that sign-off: M14 mockups a spec section (§L) Ryker already signed off, drawn here for a final look at the screen itself; M15–M17 illustrate §M, which has not been reviewed and carries no approval yet; M18 illustrates §N's tab restructure — <strong>FINAL, decided 2026-08-26</strong> — drawn as three screens for a final look before build.</p>
     <ul>
       <li><strong>Fidelity in plain language</strong> — the picker states intent (§A), not algorithm; each mode's tooltip discloses its honest trade-off.</li>
       <li><strong>Ultra fast day sweeps interpolate</strong> shading/blocking between exact anchor timesteps (~1–2 % budget at low sun); single-instant traces stay exact (§B).</li>
@@ -1952,8 +1965,7 @@
       <li><strong>Plan-view power coloring &amp; sweep drill-down</strong> (M15, §M.1–M.2, draft) — heliostat dots can color by delivered power with a legend, dimming when stale like other results; any sweep timestep can drill down to one heliostat's own footprint, computed on demand from the same mechanism the field maps already use.</li>
       <li><strong>Irradiance draped on the 3D receiver</strong> (M16, §M.3, draft) — after a trace, the flux map drapes onto the receiver's real surface (flat, cylinder, or frustum), replacing the plain material until stale; the 2D map panel remains the quantitative view.</li>
       <li><strong>Analysis aperture</strong> (M17, §M.4, draft) — a draggable, resizable circle on any irradiance map reads power within, % of collected, avg flux, and avg concentration straight from the stored map, plus an encircled-power curve; pure post-processing, saved with the run as an annotation, and the trace/intercept/collected totals never change.</li>
-      <li><strong>Tab restructure — decided</strong> (M18a/18c, §N) — the top bar splits into Workspace · Ray Trace · Heliostat Shape · Analysis; Ray Trace is the new "what does the light do right now" home (fidelity + Run + progress, irradiance maps with the §M-rider compass edges, the drape toggle, plan-view power coloring, footprint viewing, the analysis aperture, FEA exports); Analysis keeps its inline timestep map for fast scrubbing plus an "Open in Ray Trace" link, and the M15 drill-down stays there too.</li>
-      <li><strong>Workspace declutter — PROPOSAL</strong> (M18b, §N) — not decided in prose: the Workspace keeps its four stages, live viewport, corner rays, and Run + fidelity (the same shared state Ray Trace shows), but the run bar's flux thumbnail, full metrics strip, and export link are drawn moving to Ray Trace, replaced by one summary line. Ryker's reaction decides what actually leaves.</li>
+      <li><strong>Tab restructure — FINAL</strong> (M18a/18b/18c, §N) — the top bar splits into <strong>Design · 3D View · Heliostat Shape · Analysis</strong>, and the app <strong>opens on 3D View</strong>. Design is the authoring tab: the full four-stage sidebar beside a 2D canvas with an explicit Plan view/Elevation toggle. 3D View is the new "what does the light do right now" home, live from the first frame: the dominant 3D scene, a condensed trace bar (fidelity + Run + stamp), and a results dock (irradiance maps with the §M-rider compass edges, the drape toggle, plan-view power coloring, footprint viewing, the analysis aperture, FEA exports) — plus click-to-edit and a sun chip, with full controls staying in Design. Analysis keeps its inline timestep map for fast scrubbing plus an "Open in 3D View" link, and the M15 drill-down stays there too. The old Workspace declutter question is dissolved — the Workspace name ceases to exist.</li>
     </ul>
     <h2>Open questions — all resolved 2026-08-25</h2>
     <ul class="qs">
@@ -1976,9 +1988,10 @@
       <li>Plan-view power coloring, the "Color by" toggle, the legend, and the sweep drill-down to a single heliostat's footprint (M15) are right</li>
       <li>Irradiance draping on the 3D receiver, and its relationship to the 2D quantitative panel (M16), read the way you'd want</li>
       <li>Analysis aperture readout numbers, the encircled-power curve, and "saves as an annotation, never touches the trace" (M17) are right</li>
-      <li>The new four-tab bar and the Ray Trace tab's assembly of fidelity/Run, the map with compass edges and aperture, the drape toggle, plan-view power coloring, footprint viewing, and FEA export (18a) are right</li>
-      <li>The decluttered Workspace run bar (18b) — fidelity + Run + the one-line summary, with the rest moved to Ray Trace — is what you want, or tell us what stays</li>
-      <li>The Analysis tab's inline timestep map with compass edges and its "Open in Ray Trace" link, and the M15 drill-down staying put (18c), are right</li>
+      <li>The new four-tab bar — Design · 3D View · Heliostat Shape · Analysis — and the Design tab's sidebar plus explicit Plan view/Elevation toggle (18a) match what you signed off on for §N</li>
+      <li>3D View opening on app launch, its condensed trace bar, and the results dock's assembly of the map with compass edges and aperture, the drape toggle (shown ON with the receiver's hot spot), plan-view power coloring, footprint viewing, and FEA export (18b) are right</li>
+      <li>The floating click-to-edit inspector and sun chip in 3D View (18b), with full controls staying in Design, is the split you want</li>
+      <li>The Analysis tab's inline timestep map with compass edges and its "Open in 3D View" link, and the M15 drill-down staying put (18c), are right</li>
       <li>Spec <code>docs/ui-spec-v0.2.md</code> read and approved, including §M and §N</li>
     </ul>
   </section>
