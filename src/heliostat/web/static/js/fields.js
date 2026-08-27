@@ -230,6 +230,19 @@ export const RECEIVER_FIELD_TABLE = {
     { key: "receiver_z_mm", label: "Receiver height (mm)", path: opticsPath("receiver_z_mm") },
     { key: "window_half_u_mm", label: "Window ½ w (mm)", path: opticsPath("window_half_u_mm") },
     { key: "window_half_v_mm", label: "Window ½ h (mm)", path: opticsPath("window_half_v_mm") },
+    // Spec §C: default 0.90, the value already in use, now a visible input
+    // (docs/ui-spec-v0.2.md §K.3) instead of an assumed constant. A plain
+    // 0-1 fraction, matching AxiconOptics.secondary_reflectance's own wire
+    // units exactly -- no percent conversion layer, unlike design.errors'
+    // reflectance_pct (see store.js's DEFAULT_DOC comment).
+    {
+      key: "secondary_reflectance",
+      label: "Secondary reflectance (R)",
+      path: opticsPath("secondary_reflectance"),
+      min: 0,
+      max: 1,
+      step: 0.01,
+    },
   ],
   cassegrain: [
     { key: "vertex_z_mm", label: "Secondary vertex height (mm)", path: opticsPath("vertex_z_mm") },
@@ -238,6 +251,15 @@ export const RECEIVER_FIELD_TABLE = {
     { key: "aperture_radius_mm", label: "Aperture radius (mm)", path: opticsPath("aperture_radius_mm") },
     { key: "window_half_u_mm", label: "Window ½ w (mm)", path: opticsPath("window_half_u_mm") },
     { key: "window_half_v_mm", label: "Window ½ h (mm)", path: opticsPath("window_half_v_mm") },
+    // See axicon's identical field above -- CassegrainOptics.secondary_reflectance.
+    {
+      key: "secondary_reflectance",
+      label: "Secondary reflectance (R)",
+      path: opticsPath("secondary_reflectance"),
+      min: 0,
+      max: 1,
+      step: 0.01,
+    },
   ],
 };
 

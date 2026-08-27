@@ -70,6 +70,11 @@ const DEFAULT_DOC = {
       receiver_z_mm: 7000,
       window_half_u_mm: 2000,
       window_half_v_mm: 2000,
+      // Spec §C: fraction of secondary-incident power the secondary itself
+      // reflects back out; 1 - this is the absorbed-heat readout's own
+      // fraction. 0.90 matches AxiconOptics.secondary_reflectance's own
+      // default (docs/secondary-irradiance-plan.md).
+      secondary_reflectance: 0.9,
     },
     cassegrain: {
       vertex_z_mm: 26993.999446877,
@@ -78,6 +83,9 @@ const DEFAULT_DOC = {
       aperture_radius_mm: 14000,
       window_half_u_mm: 2000,
       window_half_v_mm: 2000,
+      // See AxiconOptics's identical field above -- CassegrainOptics.
+      // secondary_reflectance shares the same 0.90 default.
+      secondary_reflectance: 0.9,
     },
   },
   field: {
@@ -162,6 +170,13 @@ const DEFAULT_UI = {
   // deterministic median-radius heliostat from the live field.
   tab: "workspace",
   shapeHeliostatId: null,
+  // Spec §C / mockup M9: Receiver | Secondary selector shown wherever a
+  // trace flux map is on screen (run bar's flux overlay, Analysis tab's
+  // timestep map) -- one shared preference rather than a copy per view, so
+  // picking "Secondary" in one place is what you meant everywhere else too.
+  // Only ever meaningful for axicon/cassegrain; a prime-focus doc simply
+  // has nothing to show for it (see fluxSecondaryAvailable helpers).
+  fluxSurface: "receiver",
 };
 
 function createStore() {

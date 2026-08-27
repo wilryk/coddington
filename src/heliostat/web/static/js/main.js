@@ -162,6 +162,22 @@ const fluxCompassE = document.getElementById("flux-compass-e");
 const fluxCompassW = document.getElementById("flux-compass-w");
 const fluxCompassAxis = document.getElementById("flux-compass-axis");
 
+// Spec §C / mockup M9: Receiver | Secondary map selector + absorbed-heat
+// readout, both living inside the same overlay the receiver map already
+// opens into (js/tabs/analysis.js's own timestep panel is the other place
+// mockup M9 draws this -- see that module's own fluxSurface handling).
+const fluxSurfaceSeg = document.getElementById("flux-surfaceseg");
+const fluxSurfaceReceiverBtn = document.getElementById("flux-surface-receiver");
+const fluxSurfaceSecondaryBtn = document.getElementById("flux-surface-secondary");
+const fluxSecondaryCanvas = document.getElementById("flux-secondary-canvas");
+const fluxSecondaryCaption = document.getElementById("flux-secondary-caption");
+const fluxSecondaryReadout = document.getElementById("flux-secondary-readout");
+const fluxSecIncident = document.getElementById("flux-sec-incident");
+const fluxSecAbsorbedLbl = document.getElementById("flux-sec-absorbed-lbl");
+const fluxSecAbsorbed = document.getElementById("flux-sec-absorbed");
+const fluxSecPeakAbsorbed = document.getElementById("flux-sec-peakabsorbed");
+const fluxSecFidelity = document.getElementById("flux-sec-fidelity");
+
 // Field-trace progress and its cancel control, deliberately NOT gated by
 // ui.tab (unlike #runbar's contents -- see renderTabs) -- a field trace is a
 // background job that can run for minutes, so it must stay visible and
@@ -247,6 +263,11 @@ function renderAllPanels() {
   renderTraceBar();
   renderTabs();
   renderRefreshPill();
+  // Spec §C: repaints the flux overlay's Receiver | Secondary selector and
+  // readout -- a no-op while the overlay is closed (paintFluxOverlay's own
+  // guard), so toggling ui.fluxSurface or a fresh trace landing while it is
+  // open both show up live.
+  paintFluxOverlay();
 
   renderViewportMode();
 }
@@ -661,26 +682,173 @@ function exportFluxFeaCsv() {
 // guessable "seam-is-south" reading.
 const CYLINDER_AXIS_COMPASS = ["N", "W", "S", "E", "N"];
 
+// -- flux overlay: Receiver | Secondary (spec §C, mockup M9) ---------------
+
+function fmtPower(w) {
+  if (w == null || !Number.isFinite(w)) return "—";
+  if (Math.abs(w) >= 1e6) return (w / 1e6).toFixed(2) + " MW";
+  return (w / 1e3).toFixed(1) + " kW";
+}
+
+function fmtFlux(kwM2) {
+  if (kwM2 == null || !Number.isFinite(kwM2)) return "—";
+  if (Math.abs(kwM2) >= 1000) return (kwM2 / 1000).toFixed(2) + " MW/m²";
+  return kwM2.toFixed(1) + " kW/m²";
+}
+
+// docs/secondary-irradiance-plan.md: "UI must say coarse in cone modes,
+// exact in Monte Carlo wherever the secondary map shows" -- stated in
+// plain text next to the readout, not tucked into a tooltip.
+function secondaryFidelityNote(fidelity) {
+  if (fidelity === "exact") {
+    return "Exact fidelity — Monte Carlo histograms every ray that actually struck the secondary.";
+  }
+  return "Coarse fidelity — this cone mode deposits each mirror's flux at its own chief ray's secondary hit, not a full footprint. Switch to Monte Carlo for an exact per-ray map.";
+}
+
+// Same compact magma approximation as scene3d.js's fluxGridTexture (kept as
+// its own copy here rather than a shared import -- this file draws to a
+// plain 2D canvas for a modal, not a THREE.CanvasTexture for the 3D scene,
+// and the app's own idiom is a small per-file copy over a shared util
+// module; see that file's own comment for why these five stops are close
+// enough to matplotlib's real 256-entry table).
+const SECONDARY_MAGMA_STOPS = [
+  [0.0, [0, 0, 4]],
+  [0.2, [43, 17, 84]],
+  [0.4, [120, 28, 109]],
+  [0.6, [196, 60, 79]],
+  [0.8, [251, 135, 97]],
+  [1.0, [252, 253, 191]],
+];
+function secondaryMagmaColor(t) {
+  const x = Math.min(1, Math.max(0, t));
+  for (let i = 1; i < SECONDARY_MAGMA_STOPS.length; i++) {
+    const [t0, c0] = SECONDARY_MAGMA_STOPS[i - 1];
+    const [t1, c1] = SECONDARY_MAGMA_STOPS[i];
+    if (x <= t1 || i === SECONDARY_MAGMA_STOPS.length - 1) {
+      const f = t1 > t0 ? (x - t0) / (t1 - t0) : 0;
+      return [
+        Math.round(c0[0] + (c1[0] - c0[0]) * f),
+        Math.round(c0[1] + (c1[1] - c0[1]) * f),
+        Math.round(c0[2] + (c1[2] - c0[2]) * f),
+      ];
+    }
+  }
+  return SECONDARY_MAGMA_STOPS[SECONDARY_MAGMA_STOPS.length - 1][1];
+}
+
+// Paints app.py's _flux_grid_payload straight onto a 2D canvas -- there is
+// no server-rendered PNG for the secondary (only the opt-in raw grid, spec
+// §C), so this is the client's own rendering of it. `values` is row-major,
+// row 0 = v_min (the bottom of the map, matplotlib's own origin="lower"
+// convention _render_flux_png uses for the receiver PNG) -- canvas row 0 is
+// its TOP, so row 0 of `values` is drawn into the canvas's LAST row,
+// exactly mirroring scene3d.js's fluxGridTexture flip.
+function paintSecondaryCanvas(canvas, grid) {
+  const { n_u, n_v, values } = grid;
+  let max = 0;
+  for (const v of values) if (v != null && v > max) max = v;
+  canvas.width = n_u;
+  canvas.height = n_v;
+  const ctx2d = canvas.getContext("2d");
+  const img = ctx2d.createImageData(n_u, n_v);
+  for (let row = 0; row < n_v; row++) {
+    const canvasRow = n_v - 1 - row;
+    for (let col = 0; col < n_u; col++) {
+      const val = values[row * n_u + col];
+      const [r, g, b] = secondaryMagmaColor(max > 0 && val != null ? val / max : 0);
+      const idx = (canvasRow * n_u + col) * 4;
+      img.data[idx] = r;
+      img.data[idx + 1] = g;
+      img.data[idx + 2] = b;
+      img.data[idx + 3] = 255;
+    }
+  }
+  ctx2d.putImageData(img, 0, 0);
+}
+
+// Repaints the overlay's Receiver | Secondary selector and body against
+// whatever ui.traceResult/ui.fluxSurface currently say -- called both when
+// the overlay is opened and from renderAllPanels (guarded on visibility)
+// so toggling the shared ui.fluxSurface preference, or a fresh trace
+// landing while the overlay happens to be open, both repaint it live.
+function paintFluxOverlay() {
+  if (fluxOverlay.hidden) return;
+  const data = store.get("ui.traceResult");
+  if (!data) return;
+  const secondary = data.secondary;
+  const optics = store.get("doc.optics");
+  const hasSecondaryOptics = optics === "axicon" || optics === "cassegrain";
+  const available = !!(secondary && secondary.flux_grid);
+
+  fluxSurfaceSecondaryBtn.classList.toggle("disabled", !available);
+  fluxSurfaceSecondaryBtn.title = available
+    ? ""
+    : hasSecondaryOptics
+      ? "This trace carried no secondary flux map — retrace to get one."
+      : "Only axicon and Cassegrain layouts have a secondary flux map.";
+
+  const requested = store.get("ui.fluxSurface");
+  const showSecondary = requested === "secondary" && available;
+  fluxSurfaceReceiverBtn.classList.toggle("active", !showSecondary);
+  fluxSurfaceSecondaryBtn.classList.toggle("active", showSecondary);
+
+  if (showSecondary) {
+    fluxOverlayImg.hidden = true;
+    fluxCompassN.hidden = true;
+    fluxCompassS.hidden = true;
+    fluxCompassE.hidden = true;
+    fluxCompassW.hidden = true;
+    fluxCompassAxis.hidden = true;
+
+    fluxSecondaryCanvas.hidden = false;
+    paintSecondaryCanvas(fluxSecondaryCanvas, secondary.flux_grid);
+    fluxSecondaryCaption.hidden = false;
+    fluxSecondaryCaption.textContent = `incident flux on secondary, kW/m² · same colormap & units as the receiver map · peak ${fmtFlux(secondary.peak_flux_kw_m2)}`;
+
+    fluxSecondaryReadout.hidden = false;
+    fluxSecIncident.textContent = fmtPower(secondary.power_w);
+    const rPct = (secondary.secondary_reflectance * 100).toFixed(1);
+    fluxSecAbsorbedLbl.textContent = `absorbed (R = ${rPct} %)`;
+    fluxSecAbsorbed.textContent = fmtPower(secondary.absorbed_power_w);
+    fluxSecPeakAbsorbed.textContent = fmtFlux(secondary.peak_absorbed_kw_m2);
+    fluxSecFidelity.textContent = secondaryFidelityNote(secondary.fidelity);
+  } else {
+    fluxOverlayImg.hidden = false;
+    fluxSecondaryCanvas.hidden = true;
+    fluxSecondaryCaption.hidden = true;
+    fluxSecondaryReadout.hidden = true;
+
+    const kind = data.scene && data.scene.receiver ? data.scene.receiver.kind : null;
+    const isFlat = kind === "flat";
+    const isCurved = kind === "cylinder" || kind === "frustum";
+    fluxCompassN.hidden = !isFlat;
+    fluxCompassS.hidden = !isFlat;
+    fluxCompassE.hidden = !isFlat;
+    fluxCompassW.hidden = !isFlat;
+    fluxCompassAxis.hidden = !isCurved;
+    if (isCurved && !fluxCompassAxis.childElementCount) {
+      for (const letter of CYLINDER_AXIS_COMPASS) {
+        const span = document.createElement("span");
+        span.textContent = letter;
+        fluxCompassAxis.appendChild(span);
+      }
+    }
+  }
+}
+
+fluxSurfaceReceiverBtn.addEventListener("click", () => store.set("ui.fluxSurface", "receiver"));
+fluxSurfaceSecondaryBtn.addEventListener("click", () => {
+  if (fluxSurfaceSecondaryBtn.classList.contains("disabled")) return;
+  store.set("ui.fluxSurface", "secondary");
+});
+
 function openFluxOverlay() {
   const data = store.get("ui.traceResult");
   if (!data || !data.flux_png) return;
   fluxOverlayImg.src = "data:image/png;base64," + data.flux_png;
-  const kind = data.scene && data.scene.receiver ? data.scene.receiver.kind : null;
-  const isFlat = kind === "flat";
-  const isCurved = kind === "cylinder" || kind === "frustum";
-  fluxCompassN.hidden = !isFlat;
-  fluxCompassS.hidden = !isFlat;
-  fluxCompassE.hidden = !isFlat;
-  fluxCompassW.hidden = !isFlat;
-  fluxCompassAxis.hidden = !isCurved;
-  if (isCurved && !fluxCompassAxis.childElementCount) {
-    for (const letter of CYLINDER_AXIS_COMPASS) {
-      const span = document.createElement("span");
-      span.textContent = letter;
-      fluxCompassAxis.appendChild(span);
-    }
-  }
   fluxOverlay.hidden = false;
+  paintFluxOverlay();
 }
 
 function closeFluxOverlay() {

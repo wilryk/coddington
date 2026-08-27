@@ -492,6 +492,15 @@ export function buildTraceRequest(doc, ui) {
     // want the rendered PNG (buildFluxCsvRequest below builds its own,
     // separate body and does not set this) never pay for it.
     include_flux_grid: true,
+    // Spec §C: the secondary's own irradiance map + absorbed-heat readout
+    // (mockup M9's Receiver | Secondary selector). Declared on every
+    // TraceRequest-family model (heliostat.web.app's _TraceRequestBase), so
+    // this is safe to always ask for -- a no-op response field for
+    // prime_focus (server test: test_include_secondary_flux_is_absent_for_
+    // prime_focus) and for a day/year sweep, which does not read it at all.
+    // No new ray tracing either way (docs/secondary-irradiance-plan.md):
+    // it reuses hits the trace already computed.
+    include_secondary_flux: true,
   };
   if (ui.fidelity === "monte_carlo" && ui.mcRays) body.n_rays = ui.mcRays;
   if (doc.field.mode === "field") {

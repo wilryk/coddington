@@ -110,22 +110,69 @@
   <div id="flux-overlay" class="overlay" hidden>
     <div class="overlay-panel">
       <button type="button" class="overlay-close" id="flux-overlay-close" aria-label="Close">&times;</button>
-      <!-- v0.2 §M compass rider: N/E/S/W on a flat window's edges, quiet
-           annotations matching .tabcontent .caption's style -- main.js's
-           openFluxOverlay() shows/hides these against the traced
-           receiver's kind. -->
-      <div class="flux-map-frame" id="flux-map-frame">
-        <img id="flux-overlay-img" alt="Flux map" />
-        <span class="compass-label compass-n" id="flux-compass-n" hidden>N</span>
-        <span class="compass-label compass-s" id="flux-compass-s" hidden>S</span>
-        <span class="compass-label compass-e" id="flux-compass-e" hidden>E</span>
-        <span class="compass-label compass-w" id="flux-compass-w" hidden>W</span>
+      <!-- Spec §C / mockup M9: Receiver | Secondary map selector -- only
+           enabled while the current optics has a secondary flux map
+           (axicon/Cassegrain trace with a "secondary" response block);
+           main.js's paintFluxOverlay() toggles it and its disabled/tooltip
+           state. -->
+      <div class="overlay-head">
+        <div class="seg" id="flux-surfaceseg">
+          <button type="button" id="flux-surface-receiver">Receiver</button>
+          <button type="button" id="flux-surface-secondary">Secondary</button>
+        </div>
       </div>
-      <!-- Unwrapped cylinder/frustum maps instead: the u-axis labelled in
-           compass terms, seam to seam (main.js fills this with N . W . S .
-           E . N -- see its own comment for the az convention that order
-           comes from). -->
-      <div class="compass-axis" id="flux-compass-axis" hidden></div>
+      <div class="overlay-body">
+        <div class="overlay-mapcol">
+          <!-- v0.2 §M compass rider: N/E/S/W on a flat window's edges, quiet
+               annotations matching .tabcontent .caption's style -- main.js's
+               openFluxOverlay() shows/hides these against the traced
+               receiver's kind. Receiver-map only -- the secondary has no
+               compass convention of its own (§C's u/v is arc length/radius,
+               not north-seam azimuth). -->
+          <div class="flux-map-frame" id="flux-map-frame">
+            <img id="flux-overlay-img" alt="Flux map" />
+            <!-- Secondary map: no server-rendered PNG (opt-in flux_grid
+                 only, app.py's _secondary_payload) -- painted client-side,
+                 same magma ramp/orientation as scene3d.js's receiver drape
+                 texture (see main.js's paintSecondaryCanvas). -->
+            <canvas id="flux-secondary-canvas" hidden></canvas>
+            <span class="compass-label compass-n" id="flux-compass-n" hidden>N</span>
+            <span class="compass-label compass-s" id="flux-compass-s" hidden>S</span>
+            <span class="compass-label compass-e" id="flux-compass-e" hidden>E</span>
+            <span class="compass-label compass-w" id="flux-compass-w" hidden>W</span>
+          </div>
+          <!-- Unwrapped cylinder/frustum maps instead: the u-axis labelled in
+               compass terms, seam to seam (main.js fills this with N . W . S .
+               E . N -- see its own comment for the az convention that order
+               comes from). -->
+          <div class="compass-axis" id="flux-compass-axis" hidden></div>
+          <div class="caption" id="flux-secondary-caption" hidden></div>
+        </div>
+        <!-- Spec §C: absorbed-heat readout, shown beside the secondary map
+             only (the receiver map already has its own peak/mean/intercept
+             trio in the run bar's results strip) -- incident power, absorbed
+             power at the trace's own secondary_reflectance, peak absorbed
+             flux density, and the fidelity disclosure (coarse in cone
+             modes, exact in Monte Carlo) stated in plain text, not a
+             tooltip. -->
+        <div class="readout" id="flux-secondary-readout" hidden>
+          <h3>Secondary readout</h3>
+          <div class="rmetric">
+            <div class="rlbl">incident</div>
+            <div class="rnum" id="flux-sec-incident">—</div>
+          </div>
+          <div class="rmetric">
+            <div class="rlbl" id="flux-sec-absorbed-lbl">absorbed</div>
+            <div class="rnum" id="flux-sec-absorbed">—</div>
+          </div>
+          <div class="rmetric">
+            <div class="rlbl">peak absorbed</div>
+            <div class="rnum" id="flux-sec-peakabsorbed">—</div>
+          </div>
+          <div class="rformula">absorbed = (1 − R) × incident</div>
+          <div class="rfidelity" id="flux-sec-fidelity"></div>
+        </div>
+      </div>
     </div>
   </div>
 

@@ -96,6 +96,14 @@ let fluxPngBase64 = null;
 // server-side (has_flux_map) -- a real URL for the <img>, not a fetch at all.
 let fluxSrcUrl = null;
 let fluxPeakKwM2 = null;
+// Spec §C: the current step's "secondary" response block (app.py's
+// _secondary_payload), when there is one -- only ever set from a live
+// re-trace (the cache/fetch branch of scheduleFluxFetch below), because
+// that is the only path whose response body this module actually sees. A
+// step served from the sweep's own stored PNG (fluxSrcUrl) or a reopened
+// saved run's flux_pngs never carries one -- see scheduleFluxFetch's own
+// comment on each of those branches.
+let fluxSecondary = null;
 let fluxLoading = false;
 let fluxError = null;
 let fluxTimer = null;
@@ -671,6 +679,7 @@ function scheduleFluxFetch() {
     fluxPngBase64 = null;
     fluxSrcUrl = null;
     fluxPeakKwM2 = null;
+    fluxSecondary = null;
     fluxError = null;
     fluxLoading = false;
     paintIfVisible();
@@ -678,11 +687,15 @@ function scheduleFluxFetch() {
   }
   // A reopened saved run has no live job to serve a map from -- its maps
   // travel with the saved document itself instead (see SavedRunDocument).
+  // SavedRunDocument keeps PNG bytes only, so a reopened run's secondary
+  // map (if any) is gone the same way -- Secondary shows disabled with a
+  // tooltip for it, same as any other secondary-less step.
   if (reopenedDayFluxPngs) {
     const png = reopenedDayFluxPngs[String(selectedStepIndex)];
     fluxPngBase64 = png || null;
     fluxSrcUrl = null;
     fluxPeakKwM2 = null;
+    fluxSecondary = null;
     fluxError = png ? null : "This saved run kept no irradiance map for that timestep.";
     fluxLoading = false;
     paintIfVisible();
@@ -690,10 +703,14 @@ function scheduleFluxFetch() {
   }
   // The sweep already traced and rendered this timestep -- serve its own
   // map straight from the server, instantly, instead of re-tracing it.
+  // /api/day/* was not extended for spec §C (docs/secondary-irradiance-
+  // plan.md's build order stopped at the single/field trace endpoints), so
+  // this stored PNG carries no secondary data either -- same as above.
   if (step.has_flux_map && resultJobId != null) {
     fluxPngBase64 = null;
     fluxSrcUrl = dayFluxUrl(resultJobId, selectedStepIndex);
     fluxPeakKwM2 = null; // the row's own peak_flux_kw_m2 covers the caption
+    fluxSecondary = null;
     fluxError = null;
     fluxLoading = false;
     paintIfVisible();
@@ -707,6 +724,7 @@ function scheduleFluxFetch() {
   if (cached) {
     fluxPngBase64 = cached.png;
     fluxPeakKwM2 = cached.peak;
+    fluxSecondary = cached.secondary || null;
     fluxError = null;
     fluxLoading = false;
     paintIfVisible();
@@ -728,8 +746,15 @@ function scheduleFluxFetch() {
         fluxLoading = false;
         fluxPngBase64 = data.flux_png || null;
         fluxPeakKwM2 = data.peak_flux_kw_m2 != null ? data.peak_flux_kw_m2 : null;
+        // Spec §C: buildTraceRequest (via fluxRequestFor) always asks for
+        // this -- present whenever the current optics has a secondary flux
+        // map (axicon/Cassegrain), null otherwise (app.py's
+        // _secondary_maps_from_result).
+        fluxSecondary = data.secondary || null;
         fluxError = fluxPngBase64 ? null : "No flux map came back for this timestep.";
-        if (fluxPngBase64) fluxCache.set(cacheKey, { png: fluxPngBase64, peak: fluxPeakKwM2 });
+        if (fluxPngBase64) {
+          fluxCache.set(cacheKey, { png: fluxPngBase64, peak: fluxPeakKwM2, secondary: fluxSecondary });
+        }
         paintIfVisible();
       })
       .catch((err) => {
@@ -2302,20 +2327,92 @@ function build(container) {
   // -- irradiance map for the selected timestep -----------------------------
   const fluxPanel = document.createElement("div");
   fluxPanel.className = "panel an-fluxpanel";
+  const fluxHead = document.createElement("div");
+  fluxHead.className = "an-fluxhead";
   const fluxH2 = document.createElement("h2");
   fluxH2.textContent = "Irradiance map";
-  fluxPanel.appendChild(fluxH2);
+  fluxHead.appendChild(fluxH2);
+  // Spec §C / mockup M9: Receiver | Secondary selector -- only meaningfully
+  // switchable when the currently-shown map came from a live single/field
+  // trace that carried a "secondary" block (api.js's buildTraceRequest
+  // always asks for one via include_secondary_flux). A step served from
+  // the sweep's own stored PNG (fluxSrcUrl, the common case -- see
+  // scheduleFluxFetch) has no raw grid behind it at all, so Secondary stays
+  // disabled with a tooltip for that step instead of silently doing
+  // nothing -- paintFluxPanel below decides which message applies.
+  const fluxSurfaceSeg = document.createElement("div");
+  fluxSurfaceSeg.className = "seg an-surfaceseg";
+  const fluxSurfaceReceiverBtn = segButton(fluxSurfaceSeg, "Receiver", true, () =>
+    store.set("ui.fluxSurface", "receiver")
+  );
+  const fluxSurfaceSecondaryBtn = segButton(fluxSurfaceSeg, "Secondary", false, () => {
+    if (fluxSurfaceSecondaryBtn.classList.contains("disabled")) return;
+    store.set("ui.fluxSurface", "secondary");
+  });
+  fluxHead.appendChild(fluxSurfaceSeg);
+  fluxPanel.appendChild(fluxHead);
+
+  const fluxMapBody = document.createElement("div");
+  fluxMapBody.className = "an-mapbody";
   const fluxFrame = document.createElement("div");
   fluxFrame.className = "frame";
   const fluxImg = document.createElement("img");
   fluxImg.alt = "Irradiance map for the selected timestep";
   fluxImg.hidden = true;
+  // No server-rendered PNG exists for the secondary map (only the opt-in
+  // raw flux_grid, app.py's _secondary_payload) -- painted client-side onto
+  // this canvas, same magma ramp/orientation as js/scene3d.js's receiver
+  // drape texture (see paintSecondaryFluxCanvas below).
+  const fluxSecondaryCanvas = document.createElement("canvas");
+  fluxSecondaryCanvas.className = "an-secondarycanvas";
+  fluxSecondaryCanvas.hidden = true;
   const fluxPlaceholder = document.createElement("p");
   fluxPlaceholder.className = "placeholder";
   fluxPlaceholder.textContent = "Click a timestep to render its irradiance map.";
   fluxFrame.appendChild(fluxImg);
+  fluxFrame.appendChild(fluxSecondaryCanvas);
   fluxFrame.appendChild(fluxPlaceholder);
-  fluxPanel.appendChild(fluxFrame);
+  fluxMapBody.appendChild(fluxFrame);
+
+  // Absorbed-heat readout (spec §C) -- shown beside the secondary map only,
+  // same rmetric/rformula idiom as the aperture readout below and mockup
+  // M9's own layout.
+  const fluxSecondaryReadout = document.createElement("div");
+  fluxSecondaryReadout.className = "readout an-secondaryreadout";
+  fluxSecondaryReadout.hidden = true;
+  const fluxSecReadoutH3 = document.createElement("h3");
+  fluxSecReadoutH3.textContent = "Secondary readout";
+  fluxSecondaryReadout.appendChild(fluxSecReadoutH3);
+  function secRow(label) {
+    const row = document.createElement("div");
+    row.className = "rmetric";
+    const lbl = document.createElement("div");
+    lbl.className = "rlbl";
+    lbl.textContent = label;
+    const num = document.createElement("div");
+    num.className = "rnum";
+    row.appendChild(lbl);
+    row.appendChild(num);
+    fluxSecondaryReadout.appendChild(row);
+    return { lbl, num };
+  }
+  const secIncidentRow = secRow("incident");
+  const secAbsorbedRow = secRow("absorbed");
+  const secPeakAbsorbedRow = secRow("peak absorbed");
+  const fluxSecFormula = document.createElement("div");
+  fluxSecFormula.className = "rformula";
+  fluxSecFormula.textContent = "absorbed = (1 − R) × incident";
+  fluxSecondaryReadout.appendChild(fluxSecFormula);
+  // docs/secondary-irradiance-plan.md: "UI must say coarse in cone modes,
+  // exact in Monte Carlo wherever the secondary map shows" -- visible text,
+  // not a tooltip.
+  const fluxSecFidelity = document.createElement("div");
+  fluxSecFidelity.className = "rfidelity";
+  fluxSecondaryReadout.appendChild(fluxSecFidelity);
+  fluxMapBody.appendChild(fluxSecondaryReadout);
+
+  fluxPanel.appendChild(fluxMapBody);
+
   const fluxCaption = document.createElement("div");
   fluxCaption.className = "caption";
   fluxPanel.appendChild(fluxCaption);
@@ -2556,6 +2653,14 @@ function build(container) {
     tbody,
     tsEmpty,
     tsWrap,
+    fluxSurfaceReceiverBtn,
+    fluxSurfaceSecondaryBtn,
+    fluxSecondaryCanvas,
+    fluxSecondaryReadout,
+    secIncidentRow,
+    secAbsorbedRow,
+    secPeakAbsorbedRow,
+    fluxSecFidelity,
     fluxImg,
     fluxPlaceholder,
     fluxCaption,
@@ -2747,44 +2852,148 @@ function paintTimestepsTable() {
   if (steps.length) renderTimestepsRows(steps);
 }
 
+// docs/secondary-irradiance-plan.md: "UI must say coarse in cone modes,
+// exact in Monte Carlo wherever the secondary map shows" -- visible text,
+// not a tooltip. Same wording as js/main.js's identical helper for the run
+// bar's flux overlay (mockup M9 draws this disclosure in both places).
+function secondaryFidelityNote(fidelity) {
+  if (fidelity === "exact") {
+    return "Exact fidelity — Monte Carlo histograms every ray that actually struck the secondary.";
+  }
+  return "Coarse fidelity — this cone mode deposits each mirror's flux at its own chief ray's secondary hit, not a full footprint. Switch to Monte Carlo for an exact per-ray map.";
+}
+
+// Same compact magma approximation js/scene3d.js's fluxGridTexture and
+// js/main.js's flux-overlay painter both use (see either's own comment for
+// why these five stops are close enough to matplotlib's real table) -- its
+// own copy here rather than a shared import, matching this app's existing
+// per-file duplication idiom (this module already keeps its own
+// APERTURE_MAGMA_STOPS/magmaColor above for the same reason).
+const SECONDARY_FLUX_MAGMA_STOPS = [
+  [0.0, 0, 0, 4],
+  [0.2, 43, 17, 84],
+  [0.4, 120, 28, 109],
+  [0.6, 196, 60, 79],
+  [0.8, 251, 135, 97],
+  [1.0, 252, 253, 191],
+];
+function secondaryFluxMagmaColor(t) {
+  const x = Math.max(0, Math.min(1, t));
+  for (let i = 1; i < SECONDARY_FLUX_MAGMA_STOPS.length; i++) {
+    const [t0, r0, g0, b0] = SECONDARY_FLUX_MAGMA_STOPS[i - 1];
+    const [t1, r1, g1, b1] = SECONDARY_FLUX_MAGMA_STOPS[i];
+    if (x <= t1 || i === SECONDARY_FLUX_MAGMA_STOPS.length - 1) {
+      const f = t1 > t0 ? (x - t0) / (t1 - t0) : 0;
+      return [Math.round(r0 + (r1 - r0) * f), Math.round(g0 + (g1 - g0) * f), Math.round(b0 + (b1 - b0) * f)];
+    }
+  }
+  return [0, 0, 4];
+}
+
+// Paints app.py's _flux_grid_payload straight onto a 2D canvas -- there is
+// no server-rendered PNG for the secondary map (only the opt-in raw grid,
+// spec §C), unlike the receiver's own flux_png. `values` is row-major, row
+// 0 = v_min (the bottom of the map, matplotlib's own origin="lower"
+// convention _render_flux_png uses) -- canvas row 0 is its TOP, so row 0 of
+// `values` is drawn into the canvas's LAST row (same flip as scene3d.js's
+// fluxGridTexture).
+function paintSecondaryFluxCanvas(canvas, grid) {
+  const { n_u, n_v, values } = grid;
+  let max = 0;
+  for (const v of values) if (v != null && v > max) max = v;
+  canvas.width = n_u;
+  canvas.height = n_v;
+  const ctx2d = canvas.getContext("2d");
+  const img = ctx2d.createImageData(n_u, n_v);
+  for (let row = 0; row < n_v; row++) {
+    const canvasRow = n_v - 1 - row;
+    for (let col = 0; col < n_u; col++) {
+      const val = values[row * n_u + col];
+      const [r, g, b] = secondaryFluxMagmaColor(max > 0 && val != null ? val / max : 0);
+      const idx = (canvasRow * n_u + col) * 4;
+      img.data[idx] = r;
+      img.data[idx + 1] = g;
+      img.data[idx + 2] = b;
+      img.data[idx + 3] = 255;
+    }
+  }
+  ctx2d.putImageData(img, 0, 0);
+}
+
+// Repaints the Receiver | Secondary selector against whether THIS step's
+// currently-loaded map actually carries a secondary block, and returns
+// whether the secondary map should be the one shown. Secondary stays
+// disabled (with a tooltip explaining why) for prime_focus, for a step
+// still loading/erroring, and for the common case of a sweep-stored PNG or
+// a reopened saved run -- neither carries the raw grid the client-side
+// paint needs (see scheduleFluxFetch's own comments on those branches).
+function paintFluxSurfaceSelector() {
+  const doc = store.get("doc");
+  const hasSecondaryOptics = doc.optics === "axicon" || doc.optics === "cassegrain";
+  const available = !!(fluxSecondary && fluxSecondary.flux_grid);
+  els.fluxSurfaceSecondaryBtn.classList.toggle("disabled", !available);
+  let tip = "";
+  if (!available) {
+    if (!hasSecondaryOptics) tip = "Only axicon and Cassegrain layouts have a secondary flux map.";
+    else if (fluxSrcUrl || reopenedDayFluxPngs) {
+      tip = "This stored sweep step carries no secondary flux data — only a freshly-traced map does.";
+    } else tip = "This trace carried no secondary flux map.";
+  }
+  els.fluxSurfaceSecondaryBtn.title = tip;
+  const requested = store.get("ui.fluxSurface");
+  const showSecondary = requested === "secondary" && available;
+  els.fluxSurfaceReceiverBtn.classList.toggle("active", !showSecondary);
+  els.fluxSurfaceSecondaryBtn.classList.toggle("active", showSecondary);
+  return showSecondary;
+}
+
 function paintFluxPanel() {
   const steps = dayResult && dayResult.steps;
   const step = steps && selectedStepIndex != null ? steps[selectedStepIndex] : null;
+  const showSecondary = paintFluxSurfaceSelector();
 
-  if (!step) {
+  function showPlaceholder(text) {
     els.fluxImg.hidden = true;
+    els.fluxSecondaryCanvas.hidden = true;
+    els.fluxSecondaryReadout.hidden = true;
     els.fluxPlaceholder.hidden = false;
-    els.fluxPlaceholder.textContent = "Click a timestep to render its irradiance map.";
+    els.fluxPlaceholder.textContent = text;
     els.fluxCaption.textContent = "";
     els.fluxCompass.textContent = "";
     els.fluxFeaCsv.hidden = true;
-    return;
   }
 
-  if (fluxLoading) {
+  if (!step) return showPlaceholder("Click a timestep to render its irradiance map.");
+  if (fluxLoading) return showPlaceholder("Rendering…");
+  if (fluxError) return showPlaceholder(fluxError);
+  if (!(fluxSrcUrl || fluxPngBase64)) return showPlaceholder("Click a timestep to render its irradiance map.");
+
+  els.fluxPlaceholder.hidden = true;
+
+  if (showSecondary) {
     els.fluxImg.hidden = true;
-    els.fluxPlaceholder.hidden = false;
-    els.fluxPlaceholder.textContent = "Rendering…";
-    els.fluxCaption.textContent = "";
+    els.fluxSecondaryCanvas.hidden = false;
+    paintSecondaryFluxCanvas(els.fluxSecondaryCanvas, fluxSecondary.flux_grid);
+    els.fluxCaption.textContent = `incident flux on secondary, kW/m² · same colormap & units as the receiver map · peak ${fmtFlux(fluxSecondary.peak_flux_kw_m2)}`;
+    // No compass convention for the secondary (§C's u/v is arc length/
+    // radius, not north-seam azimuth) -- receiver-only, see compassCaptionFor.
     els.fluxCompass.textContent = "";
+    els.fluxSecondaryReadout.hidden = false;
+    els.secIncidentRow.num.textContent = fmtPower(fluxSecondary.power_w);
+    const rPct = (fluxSecondary.secondary_reflectance * 100).toFixed(1);
+    els.secAbsorbedRow.lbl.textContent = `absorbed (R = ${rPct} %)`;
+    els.secAbsorbedRow.num.textContent = fmtPower(fluxSecondary.absorbed_power_w);
+    els.secPeakAbsorbedRow.num.textContent = fmtFlux(fluxSecondary.peak_absorbed_kw_m2);
+    els.fluxSecFidelity.textContent = secondaryFidelityNote(fluxSecondary.fidelity);
+    // No secondary CSV export wired here -- the day-sweep endpoints
+    // (§D's dayFluxFeaCsvUrl) were not extended for spec §C; the run bar's
+    // own single-trace export (js/main.js) is the supported path for now.
     els.fluxFeaCsv.hidden = true;
-    return;
-  }
-
-  if (fluxError) {
-    els.fluxImg.hidden = true;
-    els.fluxPlaceholder.hidden = false;
-    els.fluxPlaceholder.textContent = fluxError;
-    els.fluxCaption.textContent = "";
-    els.fluxCompass.textContent = "";
-    els.fluxFeaCsv.hidden = true;
-    return;
-  }
-
-  if (fluxSrcUrl || fluxPngBase64) {
+  } else {
     els.fluxImg.src = fluxSrcUrl || "data:image/png;base64," + fluxPngBase64;
     els.fluxImg.hidden = false;
-    els.fluxPlaceholder.hidden = true;
+    els.fluxSecondaryCanvas.hidden = true;
+    els.fluxSecondaryReadout.hidden = true;
     els.fluxCaption.textContent = `${fmtHHMM(step.hour)} solar · peak ${fmtFlux(fluxPeakKwM2 != null ? fluxPeakKwM2 : step.peak_flux_kw_m2)}`;
     // Compass rider (§M) -- see compassCaptionFor.
     els.fluxCompass.textContent = compassCaptionFor(store.get("doc"));
@@ -2797,13 +3006,6 @@ function paintFluxPanel() {
     } else {
       els.fluxFeaCsv.hidden = true;
     }
-  } else {
-    els.fluxImg.hidden = true;
-    els.fluxPlaceholder.hidden = false;
-    els.fluxPlaceholder.textContent = "Click a timestep to render its irradiance map.";
-    els.fluxCaption.textContent = "";
-    els.fluxCompass.textContent = "";
-    els.fluxFeaCsv.hidden = true;
   }
 }
 
