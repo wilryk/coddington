@@ -101,7 +101,7 @@ from .metrics import spot_metrics
 from .solar import build_time_grid
 from .store import RunStore, TimestepResult, flux_scale
 from .trace import mc as _mc
-from .trace.cone import sunshape_kernel, trace_heliostat_cone
+from .trace.cone import grid_for_density, sunshape_kernel, trace_heliostat_cone
 from .trace.mc import trace_heliostat
 from .trace.modes import MODES, TraceMode
 
@@ -239,7 +239,15 @@ def _build_cfg(
     if trace_mode.backend == "mc":
         rays_per_heliostat = n_rays or trace_mode.n_rays
     else:
-        gx, gy = trace_mode.cone_kwargs.get("grid", (20, 12))
+        cone_grid = trace_mode.cone_kwargs.get("grid", (20, 12))
+        if cone_grid is None:
+            # Density-derived grid (ultra_fast) -- resolve against this
+            # field's own mirror dimensions, same derivation the tracer
+            # itself uses (heliostat.trace.cone.grid_for_density).
+            density = trace_mode.cone_kwargs["density"]
+            gx, gy = grid_for_density(density, mirror_w / 1000.0, mirror_h / 1000.0)
+        else:
+            gx, gy = cone_grid
         rays_per_heliostat = gx * gy  # informational only -- not a ray budget
 
     return SimpleNamespace(

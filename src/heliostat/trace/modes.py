@@ -45,7 +45,27 @@ class TraceMode:
 
 
 ULTRA_FAST = TraceMode(
-    "ultra_fast", backend="cone", cone_kwargs={"order": 1, "grid": (20, 12), "mask_nodes": 16}
+    "ultra_fast",
+    backend="cone",
+    # grid=None + density resolves the mirror-sample grid from the mirror's
+    # own aperture bbox (12 samples/m^2, aspect-matched) instead of the
+    # hardcoded (20, 12) fixed to the manuscript's 5m x 3m mirror -- see
+    # heliostat.trace.cone.grid_for_density and
+    # scripts/coeff_prototype/REPORT.md SS7 (0.073% field-total error vs the
+    # hardcoded grid, on the full 643-heliostat field).
+    # deposit_method="bspline" accumulates onto a coarse control grid and
+    # upsamples once instead of depositing every sample onto the fine flux
+    # grid directly -- see heliostat.trace.bspline_deposit and REPORT.md
+    # SS0-6 (3.36x end-to-end speedup at field scale, power conserved to
+    # 0.04-0.29%). fast_accurate below keeps the fixed (20, 12) grid and
+    # exact binned deposit, both untouched.
+    cone_kwargs={
+        "order": 1,
+        "grid": None,
+        "density": 12.0,
+        "mask_nodes": 16,
+        "deposit_method": "bspline",
+    },
 )
 FAST_ACCURATE = TraceMode(
     "fast_accurate", backend="cone", cone_kwargs={"order": 2, "grid": (20, 12), "mask_nodes": 16}

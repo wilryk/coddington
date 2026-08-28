@@ -2246,11 +2246,14 @@ def _trace_core(
         # A deliberately flat mirror (explicit cant_focal_mm=0 on a
         # grid/flower design -- see _design_is_flat) has no focusing figure
         # at all, so the cone backend's per-sample kernels never overlap: at
-        # the mode's normal 20x12 sampling grid that shows up as a
-        # comb/ripple artifact across the flux map (owner-reported). Denser
-        # sampling closes the gaps between kernels; only worth the extra cost
-        # for this deliberately-flat case, so it is not the mode's own
-        # default.
+        # the mode's normal sampling grid (20x12 fixed for fast_accurate,
+        # density-derived -- 17x10 on the manuscript mirror -- for
+        # ultra_fast) that shows up as a comb/ripple artifact across the flux
+        # map (owner-reported). Denser sampling closes the gaps between
+        # kernels; only worth the extra cost for this deliberately-flat case,
+        # so it is not either mode's own default. An explicit tuple here
+        # overrides both a fixed grid and a grid=None/density pair (the
+        # tracer only resolves density when grid is exactly None).
         cone_kwargs["grid"] = (40, 24)
     result = {
         "backend": "cone",

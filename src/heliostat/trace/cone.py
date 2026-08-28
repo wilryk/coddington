@@ -33,6 +33,8 @@ not with luck.
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 from ..geometry.receiver import Receiver
@@ -47,6 +49,7 @@ from ..geometry.secondary import (
     secondary_uv_extent,
 )
 from ..geometry.shading import _blocked_mask
+from .bspline_deposit import control_grid_edges, evaluate_bspline
 from .kernels import RadialKernel, deposit
 from .mc import (
     MIRROR_HALF_X_MM,
@@ -68,6 +71,14 @@ WINDOW_MARGIN_FLOOR_MM = 5.0  # absolute floor for a near-zero reach
 SECONDARY_MARGIN_FRAC = 0.01  # relative cushion on the secondary aperture
 SECONDARY_MARGIN_FLOOR_MM = 20.0  # absolute floor for a small aperture
 RING_PROBES = 12  # boundary directions probed per sample for the rim check
+
+# deposit_method="bspline" (see trace_heliostat_cone's docstring):
+# control_grid=None derives a coarse accumulation grid this many times
+# smaller than flux_grid, per axis (scripts/coeff_prototype/REPORT.md's own
+# 32x32-vs-128x128 benchmark is a 4x coarsening), clamped to a minimum so a
+# very small flux_grid still gets a usable control grid.
+CONTROL_GRID_COARSEN = 4
+CONTROL_GRID_MIN = 8
 
 #: Test-only escape hatch: forces every sample through the full node raster,
 #: bypassing the skip test below, so a test can compare "skip enabled" against
@@ -230,6 +241,32 @@ def sunshape_kernel(
     return kernel.convolve_gaussian(broadening) if broadening > 0 else kernel
 
 
+def grid_for_density(
+    density_per_m2: float, width_m: float, height_m: float, min_n: int = 2
+) -> tuple[int, int]:
+    """``(n_x, n_y)`` mirror-sample grid for ``density_per_m2`` samples/m^2
+    over a ``width_m x height_m`` aperture bounding box, aspect-matched to
+    that bbox.
+
+    Requiring both ``n_x * n_y == density * width_m * height_m`` (the
+    requested sample count) and ``n_x / n_y == width_m / height_m`` (aspect
+    matched to the bbox) simultaneously gives, by substitution, ``n_x ==
+    width_m * sqrt(density)`` and ``n_y == height_m * sqrt(density)`` -- each
+    axis independently its own physical length times ``sqrt(density)``,
+    rounded (floored at ``min_n`` per axis). On the manuscript's 5m x 3m
+    mirror at ``density=12.0`` this gives exactly ``(17, 10)``; at the old
+    hardcoded grid's own implied density (``16.0``) it reproduces ``(20,
+    12)`` exactly. See ``scripts/coeff_prototype/REPORT.md`` SS7 for the
+    sparsity sweep (full 643-heliostat field) that picked density=12.0 as
+    the sparsest rung holding field-total error under ~0.1% vs the
+    hardcoded grid.
+    """
+    s = math.sqrt(density_per_m2)
+    n_x = max(min_n, round(width_m * s))
+    n_y = max(min_n, round(height_m * s))
+    return n_x, n_y
+
+
 def trace_heliostat_cone(
     x_mm: float,
     y_mm: float,
@@ -243,7 +280,8 @@ def trace_heliostat_cone(
     secondary: Secondary,
     receiver: Receiver,
     kernel: RadialKernel,
-    grid: tuple[int, int] = (20, 12),
+    grid: tuple[int, int] | None = (20, 12),
+    density: float | None = None,
     flux_grid: tuple[int, int] = (128, 128),
     delta_rad: float = 2.0e-4,
     order: int = 1,
@@ -253,6 +291,8 @@ def trace_heliostat_cone(
     design=None,
     return_secondary_flux: bool = False,
     secondary_flux_grid: tuple[int, int] = (128, 128),
+    deposit_method: str = "binned",
+    control_grid: tuple[int, int] | None = None,
 ) -> dict:
     """Cone-optics trace of one heliostat at one instant.
 
@@ -264,6 +304,36 @@ def trace_heliostat_cone(
     window), ``incident_power_w`` (cosine-weighted power arriving on the
     mirror), and a counter chain ``samples / valid / blocked / unresolved``
     over mirror sample cells.
+
+    ``grid`` is the mirror-surface sample grid, ``(n_x, n_y)``. Passing
+    ``grid=None`` instead resolves it from ``density`` (samples/m^2, required
+    in that case) via :func:`grid_for_density`, aspect-matched to the
+    mirror's own aperture bbox (``MIRROR_HALF_X_MM``/``MIRROR_HALF_Y_MM`` for
+    a plain rectangle, ``design.bbox`` for a custom design) rather than a
+    fixed tuple baked to the manuscript's 5m x 3m mirror. This is how the
+    ``ultra_fast`` mode (:mod:`heliostat.trace.modes`) samples; every other
+    caller keeps passing an explicit ``grid`` tuple and is unaffected.
+
+    ``deposit_method`` selects how sample kernels are laid down onto the
+    receiver window. ``"binned"`` (default) deposits every sample directly
+    onto the fine ``flux_grid`` via :func:`heliostat.trace.kernels.deposit`
+    -- exact per :mod:`heliostat.trace.kernels`'s own analysis, cost scales
+    with footprint size on the fine grid. ``"bspline"`` instead accumulates
+    onto a coarse ``control_grid`` spanning the same window -- "binning with
+    smooth bins," the *same* ``deposit`` call, just far fewer cells per
+    footprint -- then upsamples once, at the end, via a fixed cubic-B-spline
+    interpolation matrix onto the requested ``flux_grid``; see
+    :mod:`heliostat.trace.bspline_deposit` for the accumulate/evaluate math
+    and the cylinder-seam periodicity note. ``control_grid=None`` (default)
+    derives it as ``flux_grid`` coarsened ``CONTROL_GRID_COARSEN`` (4x) per
+    axis rather than a fixed tuple: a curved receiver's adaptive
+    ``flux_grid`` (``_receiver_flux_grid`` in the web layer scales ``n_u``
+    up to 448 for a wide cylinder) needs a proportionally wider control grid
+    too, or the fixed 32x32 the prototype benchmarked at flat 128x128 becomes
+    a far coarser-than-intended ~14x coarsening instead of 4x, badly
+    under-resolving peak flux. This is how the ``ultra_fast`` mode
+    (:mod:`heliostat.trace.modes`) deposits; ``fast_accurate`` and Monte
+    Carlo keep exact binned deposit.
 
     ``delta_rad`` is the finite-difference probe angle; it must be small
     against the optics' scale of nonlinearity but large enough that
@@ -314,6 +384,8 @@ def trace_heliostat_cone(
     """
     if order not in (1, 2):
         raise ValueError(f"order must be 1 or 2, got {order!r}")
+    if deposit_method not in ("binned", "bspline"):
+        raise ValueError(f"deposit_method must be 'binned' or 'bspline', got {deposit_method!r}")
     # The order-2 deposit spreads each sample by a Hessian of the map from
     # ray angle to surface position. That map folds on a curved receiver,
     # and a fold drives the deposit's density factor through zero: the cap
@@ -334,8 +406,22 @@ def trace_heliostat_cone(
 
     n, u, v = _mirror_frame(rot_az_deg, rot_el_deg)
 
-    # Mirror-surface sample grid: cell centres, area-weighted.
-    n_x, n_y = grid
+    # Mirror-surface sample grid: cell centres, area-weighted. `grid=None`
+    # resolves to a density-derived grid instead of a fixed tuple -- see
+    # `grid_for_density` and the docstring above.
+    if grid is None:
+        if density is None:
+            raise ValueError("grid=None requires density (samples/m^2) to resolve a grid")
+        if design is None:
+            bbox_width_m = 2.0 * MIRROR_HALF_X_MM / 1000.0
+            bbox_height_m = 2.0 * MIRROR_HALF_Y_MM / 1000.0
+        else:
+            bbox_du0, bbox_du1, bbox_dv0, bbox_dv1 = design.bbox
+            bbox_width_m = (bbox_du1 - bbox_du0) / 1000.0
+            bbox_height_m = (bbox_dv1 - bbox_dv0) / 1000.0
+        n_x, n_y = grid_for_density(density, bbox_width_m, bbox_height_m)
+    else:
+        n_x, n_y = grid
     if design is None:
         gx = (np.arange(n_x) + 0.5) / n_x * 2.0 * MIRROR_HALF_X_MM - MIRROR_HALF_X_MM
         gy = (np.arange(n_y) + 0.5) / n_y * 2.0 * MIRROR_HALF_Y_MM - MIRROR_HALF_Y_MM
@@ -655,8 +741,32 @@ def trace_heliostat_cone(
     n_u, n_v = flux_grid
     u_edges = np.linspace(u0, u1, n_u + 1)
     v_edges = np.linspace(v0, v1, n_v + 1)
-    out = np.zeros((n_v, n_u))
     bin_area_mm2 = (u_edges[1] - u_edges[0]) * (v_edges[1] - v_edges[0])
+
+    # `deposit_method="bspline"` accumulates onto a coarse control grid
+    # instead of the fine flux grid, upsampling once at the end -- see
+    # bspline_deposit.py. `accum_*` alias the fine grid unchanged when
+    # deposit_method="binned" (the default and fast_accurate/MC's only
+    # option), so that path is untouched, bit-for-bit, by this branch.
+    use_bspline = deposit_method == "bspline"
+    if use_bspline:
+        if control_grid is None:
+            # Proportional to flux_grid, not a fixed tuple -- see docstring:
+            # a curved receiver's adaptive (wide) flux_grid needs a
+            # proportionally wider control grid to keep the same
+            # coarsening factor the prototype benchmarked.
+            n_cu = max(CONTROL_GRID_MIN, round(n_u / CONTROL_GRID_COARSEN))
+            n_cv = max(CONTROL_GRID_MIN, round(n_v / CONTROL_GRID_COARSEN))
+            control_grid = (n_cu, n_cv)
+        accum_u_edges, accum_v_edges = control_grid_edges(u_edges, v_edges, control_grid)
+    else:
+        accum_u_edges, accum_v_edges = u_edges, v_edges
+    accum_n_u = accum_u_edges.size - 1
+    accum_n_v = accum_v_edges.size - 1
+    accum_du = accum_u_edges[1] - accum_u_edges[0]
+    accum_dv = accum_v_edges[1] - accum_v_edges[0]
+    accum_bin_area_mm2 = accum_du * accum_dv
+    out = np.zeros((accum_n_v, accum_n_u))
 
     n_valid = n_masked = n_blocked = n_node_fallback = 0
     for idx in range(m):
@@ -670,8 +780,8 @@ def trace_heliostat_cone(
                 hess_i = hess_all[idx]
             deposit(
                 out,
-                u_edges,
-                v_edges,
+                accum_u_edges,
+                accum_v_edges,
                 uv[:, 0, idx],
                 jac_all[idx],
                 float(weights[idx]),
@@ -693,10 +803,24 @@ def trace_heliostat_cone(
             # kernel-weighted. Locally granular, but these slivers carry
             # little power and would otherwise be dropped entirely.
             ok_j = node_ok[idx]
-            share = weights[idx] * w_nodes[ok_j] / w_sum / bin_area_mm2
-            iu = np.clip(((uv_nodes[0, idx, ok_j] - u0) // (u_edges[1] - u_edges[0])), 0, n_u - 1)
-            iv = np.clip(((uv_nodes[1, idx, ok_j] - v0) // (v_edges[1] - v_edges[0])), 0, n_v - 1)
-            np.add.at(out, (iv.astype(np.intp), iu.astype(np.intp)), share)
+            share = weights[idx] * w_nodes[ok_j] / w_sum / accum_bin_area_mm2
+            iu_raw = (uv_nodes[0, idx, ok_j] - accum_u_edges[0]) // accum_du
+            iv = np.clip(
+                (uv_nodes[1, idx, ok_j] - accum_v_edges[0]) // accum_dv, 0, accum_n_v - 1
+            ).astype(np.intp)
+            if use_bspline and wrap_u:
+                # Periodic accumulation grid: a node landing just past the
+                # wrap column continues at column 0, matching `deposit`'s own
+                # wrap_u handling for the masked/full-pass branch above.
+                # Clipping here instead (as the coeff-prototype's own
+                # node-fallback path did) silently piles that mass onto the
+                # last column -- the non-periodic-clamping bug behind the
+                # prototype's measured +3.7% cylinder-seam peak-flux error
+                # (REPORT.md SS3.4); this branch is the fix.
+                iu = (iu_raw.astype(np.intp)) % accum_n_u
+            else:
+                iu = np.clip(iu_raw, 0, accum_n_u - 1).astype(np.intp)
+            np.add.at(out, (iv, iu), share)
             n_node_fallback += 1
 
     counters["valid"] = n_valid
@@ -704,6 +828,14 @@ def trace_heliostat_cone(
     counters["blocked"] = n_blocked
     counters["node_fallback"] = n_node_fallback
     counters["unresolved"] = 0  # retained for counter-invariant compatibility
+
+    if use_bspline:
+        # Upsample the coarse control grid onto the fine flux grid, once,
+        # via the fixed cubic-B-spline matrices -- everything downstream
+        # (power_w, flux, true-area correction) reads `out` on the fine grid
+        # exactly as the binned path leaves it, so no other code path below
+        # needs to know which deposit method ran.
+        out = evaluate_bspline(out, accum_u_edges, accum_v_edges, u_edges, v_edges, wrap_u)
 
     secondary_extra: dict = {}
     if want_sec:
