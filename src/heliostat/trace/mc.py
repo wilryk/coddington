@@ -212,6 +212,8 @@ def trace_heliostat(
     slope_error_mrad: float = 0.0,
     specularity_mrad: float = 0.0,
     error_map: "ErrorMap | None" = None,
+    pointing_error_mrad: float = 0.0,
+    pointing_rng: "np.random.Generator | None" = None,
 ) -> dict:
     """Trace one heliostat at one instant; return receiver hits and loss counts.
 
@@ -278,6 +280,54 @@ def trace_heliostat(
     draw from ``rng``, so a run's random-number sequence is unchanged
     whenever both are left at zero.
 
+    ``pointing_error_mrad`` (docs/ui-spec-v0.2.md §F) is the TRACKER's
+    aiming inaccuracy -- "the whole mirror points slightly off its
+    commanded direction" -- as opposed to ``slope_error_mrad``'s per-ray
+    surface roughness: ONE shared 2-axis Gaussian offset is drawn for the
+    WHOLE call (this module's docstring already frames a call as "one
+    heliostat, one instant") and added to every ray's/facet's mirror
+    normal alike, right after ``slope_error_mrad``/``error_map`` and
+    before reflection -- quasi-static per instant, and redrawn only when
+    the caller reseeds (or passes a fresh ``pointing_rng``) for a new one.
+
+    The resolved spec convention (§F) is that the quoted
+    ``pointing_error_mrad`` is the RMS angular deviation of the REFLECTED
+    BEAM, not of the mirror tilt that produces it -- no separate
+    factor-of-two is applied to the user's number anywhere (unlike
+    ``slope_error_mrad``, which IS the mirror-tilt RMS and picks up its
+    factor of two implicitly, from the reflection law itself). Reflection
+    doubles a normal tilt into the ray's deflection regardless of what
+    perturbed the normal (see the ``dot *= 2.0`` step below, shared by
+    every perturbation on this normal) -- so to land the REFLECTED beam's
+    RMS exactly on the quoted number, the MIRROR tilt this function draws
+    must be HALF of it: ``sigma_rad = (pointing_error_mrad / 2) * 1e-3``
+    per axis, doubled straight back to ``pointing_error_mrad`` by the same
+    reflection law that already doubles ``slope_error_mrad``. Bookkeeping,
+    end to end: draw sigma (mrad, per axis) = pointing_error_mrad / 2 ->
+    normal tilt (rad, per axis) = sigma * 1e-3 -> reflection doubles a
+    normal tilt into ray deflection -> realised beam deflection (rad, per
+    axis) = 2 * sigma * 1e-3 = pointing_error_mrad * 1e-3, i.e. exactly the
+    quoted number back in radians. The cone backend's
+    ``sunshape_kernel(pointing_error_mrad=...)`` folds in the SAME
+    ``pointing_error_mrad`` with no doubling of its own, for exactly this
+    reason -- see that function's docstring.
+
+    ``pointing_rng``, if given, draws the pointing offset from a SEPARATE
+    generator instead of ``rng`` -- for a caller that must redraw the
+    offset every timestep while keeping ``rng`` (and therefore ray
+    sampling, ``slope_error_mrad``, ``specularity_mrad``) on the SAME seed
+    across timesteps, preserving an existing per-heliostat reproducibility
+    guarantee unrelated to pointing error (the web app's day/year sweep:
+    see ``heliostat.web.app._trace_instant_metrics``). ``None`` (default)
+    draws from ``rng`` like every other error term here -- correct and
+    sufficient for a single-instant call (a single-heliostat trace, or a
+    field trace), where a fresh call already IS a fresh instant, so
+    whatever seed the caller used for ``rng`` already answers "reproducible
+    from the seed, redrawn for a new instant." Zero ``pointing_error_mrad``
+    draws nothing from either generator -- bit-identical to before this
+    parameter existed, exactly like ``slope_error_mrad``/``specularity_mrad``
+    at zero.
+
     ``error_map`` (docs/ui-spec-v0.2.md §E) is a measured/FEA
     :class:`~heliostat.geometry.errormap.ErrorMap`, applied ON TOP OF
     whichever analytic figure ran and BEFORE ``slope_error_mrad`` --
@@ -323,6 +373,19 @@ def trace_heliostat(
     s = _sun_vector(solar_az_deg, solar_el_deg)
     helio = np.array([x_mm, y_mm, 0.0])
     n, u, v = _mirror_frame(rot_az_deg, rot_el_deg)
+
+    # §F pointing error: ONE shared whole-mirror tilt for this entire call,
+    # drawn here (before any per-ray draws, so its position in the stream
+    # never depends on n_rays or how many rays survive later) and added to
+    # every ray's/facet's normal below -- see the docstring above for the
+    # /2 bookkeeping and why this consumes `pointing_rng` (falling back to
+    # `rng`) rather than a per-ray draw.
+    pointing_delta = None
+    if pointing_error_mrad:
+        prng = pointing_rng if pointing_rng is not None else rng
+        sigma_rad = (pointing_error_mrad * 0.5) * 1.0e-3
+        off_u, off_v = prng.normal(0.0, sigma_rad, 2)
+        pointing_delta = u * off_u + v * off_v
 
     # Source disk basis: any orthonormal pair perpendicular to the sun
     # vector works -- positions are uniform and the angular law is
@@ -392,6 +455,9 @@ def trace_heliostat(
             normal /= np.linalg.norm(normal, axis=0)
         if slope_error_mrad:
             normal = _perturb_unit(normal, u, v, slope_error_mrad * 1.0e-3, rng)
+        if pointing_delta is not None:
+            normal = normal + pointing_delta[:, None]
+            normal /= np.linalg.norm(normal, axis=0)
         # In-place reflection: d -= 2 (d.n) n, no fresh (3, M) temporaries.
         dot = np.einsum("ij,ij->j", d, normal)
         dot *= 2.0
@@ -454,6 +520,9 @@ def trace_heliostat(
                 nrm /= np.linalg.norm(nrm, axis=0)
             if slope_error_mrad:
                 nrm = _perturb_unit(nrm, fu, fv, slope_error_mrad * 1.0e-3, rng)
+            if pointing_delta is not None:
+                nrm = nrm + pointing_delta[:, None]
+                nrm /= np.linalg.norm(nrm, axis=0)
             normal[:, grp] = nrm
         dot = np.einsum("ij,ij->j", d, normal)
         dot *= 2.0

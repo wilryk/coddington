@@ -201,7 +201,7 @@ def _secondary_ring_clears(
 def sunshape_kernel(
     source_model: str = "super_gauss",
     slope_error_mrad: float = 0.0,
-    tracking_error_mrad: float = 0.0,
+    pointing_error_mrad: float = 0.0,
     specularity_mrad: float = 0.0,
 ) -> RadialKernel:
     """The angular kernel for a named sunshape, optionally error-broadened.
@@ -212,6 +212,26 @@ def sunshape_kernel(
     coating scatter of the reflected ray itself, so it carries no such
     doubling -- the same distinction (and the same two error sources) the
     Monte Carlo backend's ``trace_heliostat`` applies per-ray.
+
+    ``pointing_error_mrad`` (docs/ui-spec-v0.2.md §F) is the tracker's
+    aiming inaccuracy, folded in as a third broadening term alongside the
+    two above -- "the annual energy hit of a sloppy tracker shows up at
+    every fidelity" (spec §F), even though at cone fidelity there is no
+    per-instant "misses left/misses right" character to show, only its
+    long-run, ensemble-averaged effect as an added broadening (equivalent,
+    in variance, to convolving the base kernel with the same Gaussian that
+    Monte Carlo's many independent per-timestep offsets would average out
+    to over many instants -- see ``heliostat.trace.mc.trace_heliostat``'s
+    own ``pointing_error_mrad`` docstring for that MC side). By the
+    resolved spec convention, ``pointing_error_mrad`` is already the RMS
+    angular deviation of the REFLECTED beam, not the mirror tilt that
+    produces it -- so unlike ``slope_error_mrad`` (a mirror-tilt RMS that
+    the reflection law doubles), it carries NO factor of two here: it
+    enters the ``hypot`` below exactly as given, the same convention
+    ``specularity_mrad`` already uses (also a reflected-beam-frame
+    quantity). Getting this backwards -- doubling ``pointing_error_mrad``
+    the way ``slope_error_mrad`` is doubled -- would silently broaden the
+    cone spot by 2x what a matching Monte Carlo trace realises.
     """
     if source_model == "super_gauss":
         sig = SUPER_GAUSS_SIGMA_RAD
@@ -236,7 +256,7 @@ def sunshape_kernel(
         raise ValueError(f"unknown source_model {source_model!r}")
 
     broadening = (
-        np.hypot(np.hypot(2.0 * slope_error_mrad, specularity_mrad), tracking_error_mrad) * 1e-3
+        np.hypot(np.hypot(2.0 * slope_error_mrad, specularity_mrad), pointing_error_mrad) * 1e-3
     )
     return kernel.convolve_gaussian(broadening) if broadening > 0 else kernel
 

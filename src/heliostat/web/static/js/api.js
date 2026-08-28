@@ -319,8 +319,15 @@ export function expandCustomVertices(vertices, mirror) {
 // into doc.design.errors when loading, instead of letting them land as
 // stray keys in doc.designParams. error_map (docs/ui-spec-v0.2.md §E) rides
 // the same way, verbatim (an object or null) -- there is no percent/unit
-// conversion for it, unlike the other three.
-export const DESIGN_ERROR_KEYS = ["slope_error_mrad", "specularity_mrad", "reflectance", "error_map"];
+// conversion for it, unlike the others. pointing_error_mrad (§F) rides like
+// slope_error_mrad/specularity_mrad -- a plain mrad number, no conversion.
+export const DESIGN_ERROR_KEYS = [
+  "slope_error_mrad",
+  "specularity_mrad",
+  "reflectance",
+  "pointing_error_mrad",
+  "error_map",
+];
 
 export function errorsFromDesignDocument(d) {
   return {
@@ -331,6 +338,9 @@ export function errorsFromDesignDocument(d) {
     // fresh-document 90% default, or an old project would trace 10% dimmer
     // than it used to.
     reflectance_pct: (d && d.reflectance != null ? d.reflectance : 1.0) * 100,
+    // Absent means the document predates §F -- 0 mrad (a perfect tracker)
+    // reproduces its old, pointing-error-free trace exactly.
+    pointing_error_mrad: d && d.pointing_error_mrad != null ? d.pointing_error_mrad : 0,
     error_map: (d && d.error_map) || null,
   };
 }
@@ -346,6 +356,7 @@ export function currentDesignPayload(doc) {
     slope_error_mrad: errors.slope_error_mrad || 0,
     specularity_mrad: errors.specularity_mrad || 0,
     reflectance: (errors.reflectance_pct != null ? errors.reflectance_pct : 90) / 100,
+    pointing_error_mrad: errors.pointing_error_mrad || 0,
     error_map: errors.error_map || null,
   };
   if (type === "custom") {

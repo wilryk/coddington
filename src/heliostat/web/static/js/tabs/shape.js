@@ -41,7 +41,7 @@ import {
 // in fields.js's shared descriptor tables the way the sidebar-shared ones
 // do.
 // docs/ui-spec-v0.2.md §G: the optical-error glossary wording is signed off
-// verbatim -- these three tooltips must not be reworded.
+// verbatim -- these four tooltips must not be reworded.
 const ERROR_FIELDS = [
   {
     key: "slope_error_mrad",
@@ -71,6 +71,19 @@ const ERROR_FIELDS = [
     max: 100,
     step: 0.5,
     tooltip: "Fraction of incident sunlight the mirror reflects; scales collected power directly.",
+  },
+  // docs/ui-spec-v0.2.md §F (resolved 2026-08-25): the quoted number is the
+  // RMS angular deviation of the REFLECTED BEAM -- no factor-of-two on
+  // reflection is applied to it, unlike slope error above. Label and
+  // tooltip wording are signed off verbatim, same as the other three.
+  {
+    key: "pointing_error_mrad",
+    label: "Pointing error (mrad RMS, on the reflected beam)",
+    path: "doc.design.errors.pointing_error_mrad",
+    min: 0,
+    step: 0.1,
+    tooltip:
+      "The tracker's aiming inaccuracy: the whole mirror points slightly off its commanded direction. Quasi-static per instant, not surface roughness.",
   },
 ];
 
@@ -833,7 +846,7 @@ function build(container) {
   errorHint.className = "hint";
   errorHint.style.marginLeft = "0";
   errorHint.textContent =
-    "Applied by every fidelity: slope and specularity broaden the spot, reflectance scales the power collected.";
+    "Applied by every fidelity: slope, specularity, and pointing error broaden the spot, reflectance scales the power collected.";
   controls.appendChild(errorHint);
 
   // docs/ui-spec-v0.2.md §E: "Measured error map -- Import CSV…" -- a real
@@ -1414,6 +1427,7 @@ function renderDesignControls(doc, previewHeliostat) {
   setVal(els.errorInputs.slope_error_mrad, errors.slope_error_mrad);
   setVal(els.errorInputs.specularity_mrad, errors.specularity_mrad);
   setVal(els.errorInputs.reflectance_pct, errors.reflectance_pct);
+  setVal(els.errorInputs.pointing_error_mrad, errors.pointing_error_mrad);
   renderErrorMapSection(doc);
 }
 

@@ -880,9 +880,24 @@ class _DesignBase(_StrictModel):
     ``incident_power_w`` -- power arriving on the mirror, before the bounce
     -- never carries it.
 
-    ``error_map`` (docs/ui-spec-v0.2.md §E) is a fourth, independent optical
+    ``pointing_error_mrad`` (docs/ui-spec-v0.2.md §F) is a fourth optical
+    error, orthogonal to the three above in a different way: it is the
+    TRACKER's aiming inaccuracy (the whole mirror points slightly off its
+    commanded direction), not a property of the mirror's own surface or
+    coating. By the resolved spec convention it is quoted as the RMS
+    angular deviation of the REFLECTED beam, so -- unlike
+    ``slope_error_mrad``, a mirror-tilt RMS the reflection law doubles --
+    no factor of two is applied to it anywhere; see
+    :func:`heliostat.trace.mc.trace_heliostat`'s own docstring for the
+    mirror-tilt-vs-beam-RMS bookkeeping this implies, and
+    :func:`heliostat.trace.cone.sunshape_kernel`'s for the matching
+    no-doubling fold at cone fidelity. Default ``0`` for the same reason
+    every other error field is -- an old request/design that has never
+    heard of this field traces exactly as it always has.
+
+    ``error_map`` (docs/ui-spec-v0.2.md §E) is a fifth, independent optical
     error -- a MEASURED deformation grid (FEA or deflectometry) rather than
-    a statistical description like the three above -- applied on top of
+    a statistical description like the others above -- applied on top of
     whichever analytic figure ``surface`` chose, in MONTE CARLO ONLY. See
     the field's own comment for its shape and :func:`_build_error_map` for
     how it reaches the tracer.
@@ -892,6 +907,7 @@ class _DesignBase(_StrictModel):
     slope_error_mrad: float = Field(default=0.0, ge=0)
     specularity_mrad: float = Field(default=0.0, ge=0)
     reflectance: float = Field(default=1.0, gt=0, le=1)
+    pointing_error_mrad: float = Field(default=0.0, ge=0)
     #: docs/ui-spec-v0.2.md §E: a measured/FEA sag-deviation grid, applied
     #: on top of the analytic figure above in MONTE CARLO ONLY (cone modes
     #: ignore it -- see heliostat.trace.mc.trace_heliostat's own
@@ -2232,6 +2248,8 @@ def _trace_core(
     specularity_mrad: float = 0.0,
     reflectance: float = 1.0,
     error_map: ErrorMap | None = None,
+    pointing_error_mrad: float = 0.0,
+    pointing_rng: np.random.Generator | None = None,
     return_secondary_flux: bool = False,
 ) -> dict:
     """Trace ONE heliostat -- the exact call both endpoints make.
@@ -2262,6 +2280,21 @@ def _trace_core(
     receives it, by construction, so a map attached to a design is
     bit-identical-inert at every cone fidelity, exactly as the spec
     requires.
+
+    ``pointing_error_mrad`` (§F) is the design's fourth optical-error
+    field, forwarded into whichever backend ran exactly like
+    ``slope_error_mrad``/``specularity_mrad`` are -- into
+    :func:`~heliostat.trace.mc.trace_heliostat` for MC, into
+    :func:`~heliostat.trace.cone.sunshape_kernel` for cone (see that
+    function's docstring for why it carries no factor of two there, unlike
+    ``slope_error_mrad``). ``pointing_rng``, MC only, lets a caller that
+    loops over many timesteps at a fixed per-heliostat seed (the day/year
+    sweep's :func:`_trace_instant_metrics`) redraw the pointing offset each
+    timestep without touching that seed -- see
+    :func:`~heliostat.trace.mc.trace_heliostat`'s own docstring; ``None``
+    (default) draws the offset from ``mc_seed`` like every other MC error
+    term, correct for a single-instant caller (single-heliostat trace,
+    field trace).
 
     ``return_secondary_flux`` (spec §C, default ``False`` so an existing
     caller is unaffected) additionally traces the secondary's own incident
@@ -2305,6 +2338,8 @@ def _trace_core(
                 slope_error_mrad=slope_error_mrad,
                 specularity_mrad=specularity_mrad,
                 error_map=error_map,
+                pointing_error_mrad=pointing_error_mrad,
+                pointing_rng=pointing_rng,
             ),
         }
         if reflectance != 1.0:
@@ -2319,7 +2354,10 @@ def _trace_core(
         return result
 
     kernel = sunshape_kernel(
-        "super_gauss", slope_error_mrad=slope_error_mrad, specularity_mrad=specularity_mrad
+        "super_gauss",
+        slope_error_mrad=slope_error_mrad,
+        specularity_mrad=specularity_mrad,
+        pointing_error_mrad=pointing_error_mrad,
     )
     cone_kwargs = dict(mode.cone_kwargs)
     # Same rule every flux-map consumer bins against (_flux_edges) -- a
@@ -2494,6 +2532,7 @@ def _field_trace_task(task: tuple) -> tuple[int, dict]:
         slope_error_mrad,
         specularity_mrad,
         reflectance,
+        pointing_error_mrad,
         error_map,
         return_secondary_flux,
     ) = task
@@ -2513,6 +2552,7 @@ def _field_trace_task(task: tuple) -> tuple[int, dict]:
         specularity_mrad=specularity_mrad,
         reflectance=reflectance,
         error_map=error_map,
+        pointing_error_mrad=pointing_error_mrad,
         return_secondary_flux=return_secondary_flux,
     )
     return index, result
@@ -2558,6 +2598,7 @@ def _trace_field_heliostats(
     bin_area_m2: np.ndarray,
     *,
     error_map: ErrorMap | None = None,
+    pointing_error_mrad: float = 0.0,
     workers: int = 1,
     should_cancel: Callable[[], bool] | None = None,
     on_progress: Callable[[int, float], None] | None = None,
@@ -2713,6 +2754,7 @@ def _trace_field_heliostats(
                     specularity_mrad=specularity_mrad,
                     reflectance=reflectance,
                     error_map=error_map,
+                    pointing_error_mrad=pointing_error_mrad,
                     return_secondary_flux=return_secondary_flux,
                 )
             except Exception as exc:  # noqa: BLE001 - isolated per heliostat, see record_failure
@@ -2761,6 +2803,7 @@ def _trace_field_heliostats(
                     slope_error_mrad,
                     specularity_mrad,
                     reflectance,
+                    pointing_error_mrad,
                     error_map,
                     return_secondary_flux,
                 ),
@@ -2962,6 +3005,7 @@ def _trace_instant_metrics(
     solar_el_deg: float,
     want_flux: bool = False,
     should_cancel: Callable[[], bool] | None = None,
+    step_key: int | None = None,
 ) -> dict:
     """Power and spot metrics at one instant, for one heliostat or a field.
 
@@ -2974,6 +3018,29 @@ def _trace_instant_metrics(
     for the grid back too, under ``flux``/``u_edges``/``v_edges``, so a
     caller that already paid for this trace can render a PNG from it instead
     of tracing the timestep again.
+
+    ``step_key`` is this call's own timestep discriminator inside a day/year
+    sweep -- the caller's own loop index (int, distinct per timestep and
+    stable given the same run) is sufficient, and is fed straight to
+    :class:`numpy.random.SeedSequence` below, so it must be an int (or
+    ``None``). Every
+    timestep here traces each heliostat at the SAME ``mc_seed``
+    (``FIELD_MC_SEED``, the heliostat's own id, no timestep) on purpose -- a
+    day-sweep step is required to reproduce a direct ``/api/trace``/
+    ``/api/field/trace`` call made at that step's own exact sun angles (see
+    ``tests/test_web.py::test_day_flux_png_matches_a_direct_field_trace``),
+    which only holds if that seed never varies by timestep. §F's pointing
+    error, though, must be redrawn every timestep (quasi-static per
+    instant) -- squarely in tension with reusing that same seed. Resolved
+    by keeping the two on separate generators: ``mc_seed`` (and therefore
+    ray sampling, ``slope_error_mrad``, ``specularity_mrad``) is untouched,
+    while the pointing offset draws from its OWN generator, seeded by
+    ``(FIELD_MC_SEED, heliostat_id, step_key)`` and passed as
+    :func:`_trace_core`'s ``pointing_rng`` -- see
+    :func:`~heliostat.trace.mc.trace_heliostat`'s own docstring for why
+    that parameter exists. ``step_key=None`` (a caller outside a
+    timestep loop) falls back to drawing the offset from ``mc_seed`` like
+    every other MC error term, same as a single-instant caller elsewhere.
     """
     optics_params = resolve_optics_params(req.optics, req.optics_params)
     secondary, receiver = _geometry_for(req.optics, optics_params)
@@ -3014,6 +3081,13 @@ def _trace_instant_metrics(
         # hang. Reading a threading.Event costs nothing next to a trace.
         if should_cancel is not None and should_cancel():
             raise _TraceCancelled
+        pointing_rng = (
+            np.random.default_rng(
+                np.random.SeedSequence((FIELD_MC_SEED, int(ids[i]), step_key))
+            )
+            if step_key is not None
+            else None
+        )
         result = _trace_core(
             designs[i],
             float(xy_mm[i, 0]),
@@ -3030,6 +3104,8 @@ def _trace_instant_metrics(
             specularity_mrad=req.design.specularity_mrad,
             reflectance=req.design.reflectance,
             error_map=error_map,
+            pointing_error_mrad=req.design.pointing_error_mrad,
+            pointing_rng=pointing_rng,
         )
         eta = float(eta_union[i])
         if result["backend"] == "mc":
@@ -3100,6 +3176,7 @@ def _flux_grid_for(
         specularity_mrad=body.design.specularity_mrad,
         reflectance=body.design.reflectance,
         error_map=_build_error_map(body.design),
+        pointing_error_mrad=body.design.pointing_error_mrad,
     )
     if result["backend"] == "mc":
         flux, u_edges, v_edges, _rms, _cen = _mc_flux_and_metrics(
@@ -3153,6 +3230,7 @@ def _secondary_flux_grid_for(
         specularity_mrad=body.design.specularity_mrad,
         reflectance=body.design.reflectance,
         error_map=_build_error_map(body.design),
+        pointing_error_mrad=body.design.pointing_error_mrad,
         return_secondary_flux=True,
     )
     secondary_maps = _secondary_maps_from_result(result, secondary)
@@ -4327,6 +4405,7 @@ def create_app():
                         step.solar_el_deg,
                         want_flux=want_flux,
                         should_cancel=job.cancelled,
+                        step_key=index,
                     )
                 except _TraceCancelled:
                     break
@@ -4574,7 +4653,11 @@ def create_app():
                 job.detail = f"{step.date:%Y-%m-%d} {step.hour:.2f}h ({step.solar_el_deg:.1f}° elevation)"
                 try:
                     metrics = _trace_instant_metrics(
-                        body, step.solar_az_deg, step.solar_el_deg, should_cancel=job.cancelled
+                        body,
+                        step.solar_az_deg,
+                        step.solar_el_deg,
+                        should_cancel=job.cancelled,
+                        step_key=index,
                     )
                 except _TraceCancelled:
                     break
@@ -5023,6 +5106,7 @@ def create_app():
             specularity_mrad=body.design.specularity_mrad,
             reflectance=body.design.reflectance,
             error_map=_build_error_map(body.design),
+            pointing_error_mrad=body.design.pointing_error_mrad,
             return_secondary_flux=body.include_secondary_flux,
         )
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
@@ -5219,6 +5303,7 @@ def create_app():
             v_edges,
             bin_area_m2,
             error_map=_build_error_map(body.design),
+            pointing_error_mrad=body.design.pointing_error_mrad,
             workers=body.workers or 1,
             return_secondary_flux=body.include_secondary_flux,
         )
@@ -5389,6 +5474,7 @@ def create_app():
                     v_edges,
                     bin_area_m2,
                     error_map=_build_error_map(body.design),
+                    pointing_error_mrad=body.design.pointing_error_mrad,
                     workers=workers,
                     should_cancel=job.cancelled,
                     on_progress=on_progress,
