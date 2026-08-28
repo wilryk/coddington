@@ -155,7 +155,18 @@ let saveSaved = false;
 // computeSketchProjection), read by the window-level drag listeners below.
 let dragState = null; // { index, u, v } | null
 let sketchProj = null;
-let locatorProj = null;
+// v0.2 followups item 3: the heliostat locator and the sag map swap places
+// on click -- locatorProjSmall/Big are the two live hit-test projections
+// (see computeLocatorMarkup/renderLocators), locatorExpanded is which
+// arrangement is showing. Ephemeral view-only toggle, same idiom as
+// popoverOpen/showServerRenderForCustom above.
+let locatorProjSmall = null;
+let locatorProjBig = null;
+let locatorExpanded = false;
+// Whether the sag preview currently holds a real image (vs. placeholder/
+// error) -- setSagImageBlob/setSagError keep this in sync; applySwapVisibility
+// reads it so toggling the swap never has to guess the fetch state.
+let sagHasImage = false;
 
 // Re-render hook set at the top of render() so async callbacks (a preview
 // fetch landing, a save-as completing) and drag handlers can trigger a
@@ -1029,8 +1040,22 @@ function build(container) {
   locatorSvg.setAttribute("width", "84");
   locatorSvg.setAttribute("height", "56");
   locatorSvg.setAttribute("viewBox", "0 0 84 56");
+  locatorSvg.title = "Click to pick a heliostat, or to enlarge the picker";
+  // v0.2 followups item 3: the sag-map's own small stand-in, shown here in
+  // the header once the locator has swapped into the big frame below --
+  // same object URL as the full-size els.sagImg (see setSagImageBlob), just
+  // a second <img> so both sizes stay genuinely live with no extra fetch.
+  const sagThumbWrap = document.createElement("div");
+  sagThumbWrap.className = "locator sagthumb";
+  sagThumbWrap.hidden = true;
+  sagThumbWrap.title = "Click to show the sag map";
+  const sagThumbImg = document.createElement("img");
+  sagThumbImg.alt = "Sag map";
+  sagThumbImg.hidden = true;
+  sagThumbWrap.appendChild(sagThumbImg);
   sagHead.appendChild(sagH2);
   sagHead.appendChild(locatorSvg);
+  sagHead.appendChild(sagThumbWrap);
   sagPanel.appendChild(sagHead);
   const sagFrame = document.createElement("div");
   sagFrame.className = "frame";
@@ -1040,8 +1065,17 @@ function build(container) {
   const sagPlaceholder = document.createElement("p");
   sagPlaceholder.className = "placeholder";
   sagPlaceholder.hidden = true;
+  // The locator, enlarged to fill this frame while swapped -- picking a
+  // heliostat here works exactly like the small header locator (same
+  // computeLocatorMarkup/proj machinery, see renderLocators), just with far
+  // more room between heliostats to click precisely.
+  const locatorSvgBig = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  locatorSvgBig.setAttribute("class", "locator-big");
+  locatorSvgBig.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  setSvgHidden(locatorSvgBig, true);
   sagFrame.appendChild(sagImg);
   sagFrame.appendChild(sagPlaceholder);
+  sagFrame.appendChild(locatorSvgBig);
   // docs/ui-spec-v0.2.md §D / mockup M10: an "Export CSV for FEA" button
   // sits in the map's own corner -- .frame is already position:relative, so
   // this overlays it rather than crowding the header row. Hidden until a sag
@@ -1101,25 +1135,35 @@ function build(container) {
   sagPanel.appendChild(sagCaption2);
   sagPanel.appendChild(sagExportErrEl);
 
+  // Small header locator: pick as before, and (v0.2 followups item 3) also
+  // swap it into the big frame below so a follow-up pick can be precise --
+  // the tiny header box stays a real picker in its own right, this just adds
+  // the enlarge-on-click on top of it.
   locatorSvg.addEventListener("click", (e) => {
     const geometry = (lastCtx && lastCtx.geometry) || null;
     const heliostats = (geometry && geometry.heliostats) || [];
-    if (!heliostats.length || !locatorProj) return;
-    const rect = locatorSvg.getBoundingClientRect();
-    const px = ((e.clientX - rect.left) / rect.width) * 84;
-    const py = ((e.clientY - rect.top) / rect.height) * 56;
-    const um = ((px - locatorProj.cx) / locatorProj.scale) * 1000;
-    const vm = (-(py - locatorProj.cy) / locatorProj.scale) * 1000;
-    let best = null;
-    let bestD = Infinity;
-    for (const h of heliostats) {
-      const d = Math.hypot(h.x_mm - um, h.y_mm - vm);
-      if (d < bestD) {
-        bestD = d;
-        best = h;
-      }
-    }
+    const best = pickLocatorHeliostat(locatorSvg, locatorProjSmall, 84, 56, e.clientX, e.clientY, heliostats);
     if (best) store.set("ui.shapeHeliostatId", best.id);
+    locatorExpanded = true;
+    rerender();
+  });
+
+  // The enlarged locator: same pick logic against its own (much bigger)
+  // projection -- stays swapped so a run of picks can all use the roomier
+  // target; only the small sag thumbnail below switches it back.
+  locatorSvgBig.addEventListener("click", (e) => {
+    const geometry = (lastCtx && lastCtx.geometry) || null;
+    const heliostats = (geometry && geometry.heliostats) || [];
+    const w = sagFrame.clientWidth || 1;
+    const h = sagFrame.clientHeight || 1;
+    const best = pickLocatorHeliostat(locatorSvgBig, locatorProjBig, w, h, e.clientX, e.clientY, heliostats);
+    if (best) store.set("ui.shapeHeliostatId", best.id);
+  });
+
+  // Click the small sag-map thumbnail to swap back to the normal layout.
+  sagThumbWrap.addEventListener("click", () => {
+    locatorExpanded = false;
+    rerender();
   });
 
   previews.appendChild(aperturePanel);
@@ -1184,6 +1228,9 @@ function build(container) {
     apertureCaption,
     sagH2,
     locatorSvg,
+    locatorSvgBig,
+    sagThumbWrap,
+    sagThumbImg,
     sagFrame,
     sagImg,
     sagPlaceholder,
@@ -1478,20 +1525,19 @@ function setSagImageBlob(result) {
   if (sagObjectUrl) URL.revokeObjectURL(sagObjectUrl);
   sagObjectUrl = URL.createObjectURL(result.blob);
   els.sagImg.src = sagObjectUrl;
-  els.sagImg.hidden = false;
-  els.sagPlaceholder.hidden = true;
+  // Same object URL, no extra fetch -- the header thumbnail (shown once the
+  // locator swaps into the big frame, see applySwapVisibility) stays exactly
+  // in sync with the full-size map.
+  els.sagThumbImg.src = sagObjectUrl;
   lastSagResult = result;
-  // A map actually rendered -- lastSagBody (set by renderSagPanel just
-  // before this fetch was scheduled) is now something worth exporting.
-  els.sagExportBtn.hidden = false;
+  sagHasImage = true;
+  applySwapVisibility();
 }
 
 function setSagError(err) {
-  els.sagImg.hidden = true;
-  els.sagPlaceholder.hidden = false;
   els.sagPlaceholder.textContent = (err && err.message) || "Could not render the sag map.";
-  // No map shown -- nothing for the export button to describe.
-  els.sagExportBtn.hidden = true;
+  sagHasImage = false;
+  applySwapVisibility();
 }
 
 function renderSagPanel(doc, previewHeliostat) {
@@ -1550,10 +1596,24 @@ function renderSagCaption(doc) {
   if (sagExportError) els.sagExportErrEl.textContent = sagExportError;
 }
 
-function renderLocator(ui, geometry, previewHeliostat) {
-  const heliostats = (geometry && geometry.heliostats) || [];
-  const w = 84;
-  const h = 56;
+// v0.2 followups item 3: unlike HTMLElement, SVGElement has no `hidden` IDL
+// property -- `svgEl.hidden = true` silently creates an inert JS expando
+// (readable back as true) instead of the "hidden" content attribute, so the
+// UA's `[hidden] { display: none }` rule never engages and the element stays
+// fully visible/interactive. locatorSvg/locatorSvgBig are real <svg>
+// elements (not the div-wrapped sagThumbWrap), so they need the attribute
+// toggled explicitly.
+function setSvgHidden(svgEl, hidden) {
+  if (hidden) svgEl.setAttribute("hidden", "");
+  else svgEl.removeAttribute("hidden");
+}
+
+// v0.2 followups item 3: shared by both locator sizes (small header box,
+// big swapped-in frame) -- one projection formula, so a pick lands on the
+// same heliostat regardless of which size is showing. dotScale keeps the
+// selection ring/dot a sane on-screen size at both scales (1 at the
+// original 84x56, larger once the locator fills the sag frame).
+function computeLocatorMarkup(heliostats, previewId, w, h, dotScale) {
   let maxR = 0;
   for (const hh of heliostats) {
     const r = Math.hypot(hh.x_mm, hh.y_mm) / 1000;
@@ -1563,22 +1623,84 @@ function renderLocator(ui, geometry, previewHeliostat) {
   const scale = Math.max((Math.min(w, h) / 2 - 6) / (maxR * 1.08), 0.001);
   const cx = w / 2;
   const cy = h / 2;
-  locatorProj = { scale, cx, cy };
-  const previewId = previewHeliostat ? previewHeliostat.id : null;
   let s = `<rect width="${w}" height="${h}" fill="#fdfdfe"></rect>`;
   for (const hh of heliostats) {
     const x = cx + (hh.x_mm / 1000) * scale;
     const y = cy - (hh.y_mm / 1000) * scale;
     const isSel = hh.id === previewId;
     if (isSel) {
-      s += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4" fill="none" stroke="#0b5fd0" stroke-width="1.4"></circle>`;
-      s += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="1.4" fill="#0b5fd0"></circle>`;
+      s += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${(4 * dotScale).toFixed(1)}" fill="none" stroke="#0b5fd0" stroke-width="${(1.4 * dotScale).toFixed(1)}"></circle>`;
+      s += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${(1.4 * dotScale).toFixed(1)}" fill="#0b5fd0"></circle>`;
     } else {
-      s += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="1" fill="#8aa5c2"></circle>`;
+      s += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${(1 * dotScale).toFixed(1)}" fill="#8aa5c2"></circle>`;
     }
   }
-  s += `<rect x="${(cx - 2).toFixed(1)}" y="${(cy - 2).toFixed(1)}" width="4" height="4" fill="rgba(217,123,41,0.8)"></rect>`;
-  els.locatorSvg.innerHTML = s;
+  s += `<rect x="${(cx - 2 * dotScale).toFixed(1)}" y="${(cy - 2 * dotScale).toFixed(1)}" width="${(4 * dotScale).toFixed(1)}" height="${(4 * dotScale).toFixed(1)}" fill="rgba(217,123,41,0.8)"></rect>`;
+  return { markup: s, proj: { scale, cx, cy } };
+}
+
+// Inverts a click on a locator SVG back to the nearest heliostat, using
+// that SVG's own on-screen box (getBoundingClientRect) mapped onto its own
+// w/h-sized coordinate space and proj -- the same math the pre-swap single
+// locator used, just parameterised so both sizes share it.
+function pickLocatorHeliostat(svgEl, proj, w, h, clientX, clientY, heliostats) {
+  if (!heliostats.length || !proj) return null;
+  const rect = svgEl.getBoundingClientRect();
+  if (!rect.width || !rect.height) return null;
+  const px = ((clientX - rect.left) / rect.width) * w;
+  const py = ((clientY - rect.top) / rect.height) * h;
+  const um = ((px - proj.cx) / proj.scale) * 1000;
+  const vm = (-(py - proj.cy) / proj.scale) * 1000;
+  let best = null;
+  let bestD = Infinity;
+  for (const hh of heliostats) {
+    const d = Math.hypot(hh.x_mm - um, hh.y_mm - vm);
+    if (d < bestD) {
+      bestD = d;
+      best = hh;
+    }
+  }
+  return best;
+}
+
+function renderLocators(ui, geometry, previewHeliostat) {
+  const heliostats = (geometry && geometry.heliostats) || [];
+  const previewId = previewHeliostat ? previewHeliostat.id : null;
+
+  // Small header locator -- always 84x56, unchanged from before the swap.
+  const smallW = 84;
+  const smallH = 56;
+  const small = computeLocatorMarkup(heliostats, previewId, smallW, smallH, 1);
+  els.locatorSvg.setAttribute("viewBox", `0 0 ${smallW} ${smallH}`);
+  els.locatorSvg.innerHTML = small.markup;
+  locatorProjSmall = small.proj;
+
+  // Big locator -- sized to whatever the sag frame's own box measures right
+  // now. Kept live every render (not just while expanded) so the instant it
+  // is swapped in it already reflects the current selection/geometry.
+  const bigW = Math.max(els.sagFrame.clientWidth || 1, 100);
+  const bigH = Math.max(els.sagFrame.clientHeight || 1, 100);
+  const dotScale = Math.max(Math.min(bigW, bigH) / smallH, 1);
+  const big = computeLocatorMarkup(heliostats, previewId, bigW, bigH, dotScale);
+  els.locatorSvgBig.setAttribute("viewBox", `0 0 ${bigW} ${bigH}`);
+  els.locatorSvgBig.innerHTML = big.markup;
+  locatorProjBig = big.proj;
+}
+
+// v0.2 followups item 3: reconciles the locator<->sag-map swap with
+// whatever the sag fetch machinery (setSagImageBlob/setSagError) already
+// knows about the current sag image, so toggling the swap never has to
+// guess -- it just re-applies sagHasImage under whichever arrangement is
+// showing. Safe to call any number of times per render.
+function applySwapVisibility() {
+  const expanded = locatorExpanded;
+  setSvgHidden(els.locatorSvg, expanded);
+  els.sagThumbWrap.hidden = !expanded;
+  els.sagThumbImg.hidden = !expanded || !sagHasImage;
+  setSvgHidden(els.locatorSvgBig, !expanded);
+  els.sagImg.hidden = expanded || !sagHasImage;
+  els.sagPlaceholder.hidden = expanded || sagHasImage;
+  els.sagExportBtn.hidden = expanded || !sagHasImage;
 }
 
 export function render(container, ctx) {
@@ -1594,6 +1716,7 @@ export function render(container, ctx) {
   renderEditbar(doc, ui, previewHeliostat);
   renderDesignControls(doc, previewHeliostat);
   renderAperturePreview(doc);
-  renderLocator(ui, geometry, previewHeliostat);
+  renderLocators(ui, geometry, previewHeliostat);
   renderSagPanel(doc, previewHeliostat);
+  applySwapVisibility();
 }

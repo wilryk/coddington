@@ -134,6 +134,11 @@ let dragState = null;
 
 function handlePointerDown(e) {
   if (e.button !== 0 || !lastProj) return;
+  // v0.2 followups item 1: same fix as ./plan.js's own handlePointerDown --
+  // preventDefault suppresses the native text-selection drag without
+  // cancelling the "click" compatibility event, so heliostat/shape
+  // click-to-select keeps working.
+  e.preventDefault();
   dragState = {
     startX: e.clientX,
     startY: e.clientY,

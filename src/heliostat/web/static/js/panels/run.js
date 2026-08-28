@@ -19,8 +19,11 @@ const FIDELITY = [
 const FIDELITY_TOOLTIPS = {
   ultra_fast:
     "Field design optimization — explore layouts and geometry quickly. Trades away exact shadowing/blocking during sweeps (interpolated between anchors) and a small map-detail residual.",
+  // v0.2 followups item 2: Fast accurate stays the slower reference-cone
+  // mode by owner decision -- its wording now says so, pointing individual-
+  // heliostat work here and full-field work at Ultra fast instead.
   fast_accurate:
-    "Compare a selected few options with confidence. Deterministic and noise-free, at roughly twice Ultra fast's cost.",
+    "Analyze a single heliostat with the highest peak-flux fidelity of any mode — deterministic and noise-free, but for full-field work, reach for Ultra fast instead.",
   monte_carlo:
     "Model the final design with precision, including all error sources. Noise falls as 1/√rays; the only mode that applies measured error maps and pointing error per ray.",
 };

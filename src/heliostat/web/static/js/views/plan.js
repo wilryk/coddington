@@ -124,6 +124,14 @@ let dragState = null; // { startX, startY, startPanX, startPanY, moved }
 
 function handlePointerDown(e) {
   if (e.button !== 0 || !lastProj) return;
+  // v0.2 followups item 1: without this, a click-drag pan starts the
+  // browser's native text selection (the pointerdown's default action) --
+  // it drags across whatever page text the cursor crosses, most visibly the
+  // sidebar. preventDefault on pointerdown suppresses that default action
+  // but, per the Pointer Events spec, explicitly does NOT cancel the
+  // "click" compatibility event -- so heliostat click-to-select
+  // (handleClick, wired to the SVG's own "click" listener) keeps working.
+  e.preventDefault();
   dragState = {
     startX: e.clientX,
     startY: e.clientY,
