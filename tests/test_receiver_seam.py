@@ -383,3 +383,65 @@ class TestSeamIsInvisibleInsideACavity:
             assert float(clipped["flux"].max()) == pytest.approx(
                 float(bare["flux"].max()), rel=1e-6
             ), f"bearing {bearing}: cavity peak differs from bare"
+
+
+class TestMonteCarloRefereesTheCavitySeam:
+    """Monte Carlo is an INDEPENDENT referee for the cavity seam fix: MC
+    rays are points, each landing in exactly one bin, so MC never needed
+    the wrap machinery and never had the seam bug -- agreement with it
+    validates the cone backend against exact geometry, not against a
+    second copy of the same code path.
+
+    Comparing the cone/MC collected-power ratio at the seam bearing to the
+    same ratio at a seam-free bearing cancels every normalisation
+    difference between the backends; pre-fix that double ratio was ~0.5
+    (the cone cavity lost the wrapped half of its spot), and any wrap
+    regression drags it off 1 again.
+    """
+
+    def _mc_power_w(self, receiver, x, y, solar_az, n_rays=200_000):
+        from heliostat.trace.mc import trace_heliostat
+
+        sol = solve_prime_focus_to_receiver(x, y, solar_az, _BASE_SOLAR_EL_DEG, receiver)
+        out = trace_heliostat(
+            x,
+            y,
+            sol.rot_az_deg,
+            sol.rot_el_deg,
+            sol.c3,
+            sol.c4,
+            sol.c5,
+            solar_az,
+            _BASE_SOLAR_EL_DEG,
+            _SECONDARY,
+            receiver,
+            n_rays,
+            np.random.default_rng(20260826),
+        )
+        return out["watts_per_ray"] * out["counters"]["in_window"]
+
+    def test_cone_to_mc_ratio_is_bearing_independent_for_the_cavity(self):
+        from heliostat.geometry.receiver import ApertureClippedReceiver, FlatWindowReceiver
+
+        cylinder = CylinderReceiver(center_z_mm=20000.0, radius_mm=3000.0, height_mm=6000.0)
+        cavity = ApertureClippedReceiver(
+            aperture=FlatWindowReceiver(
+                z_mm=20000.0, half_u_mm=1.0e6, half_v_mm=1.0e6, facing="down"
+            ),
+            inner=cylinder,
+        )
+
+        ratios = {}
+        for bearing in (0.0, 180.0):  # dead on the seam vs. as far from it as possible
+            x, y, solar_az = _rotated_case(bearing)
+            cone_power = _trace(cavity, x, y, solar_az)["power_w"]
+            mc_power = self._mc_power_w(cavity, x, y, solar_az)
+            assert mc_power > 0
+            ratios[bearing] = cone_power / mc_power
+
+        # 2% tolerance: MC shot noise at 2e5 rays plus genuine backend
+        # differences, both bearing-independent -- the seam deficit this
+        # guards against was a factor of ~2, not percent-scale.
+        assert ratios[0.0] == pytest.approx(ratios[180.0], rel=0.02), (
+            f"cone/MC ratio depends on seam proximity: {ratios}"
+        )
