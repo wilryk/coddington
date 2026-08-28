@@ -103,11 +103,31 @@ def evaluate_bspline(
     wrap_u: bool,
 ) -> np.ndarray:
     """Upsample a coarse accumulator to the fine grid via the fixed cubic
-    B-spline matrices. Power is approximately (not exactly) conserved by
-    construction -- see module docstring / REPORT.md for the measured
-    conservation error, which comes from the upsample, not from the (exact,
-    deposit-conserving) accumulation step.
+    B-spline matrices, then restore the two physical invariants the raw
+    spline breaks:
+
+    * **Nonnegativity** -- a cubic spline undershoots near sharp edges, so
+      the raw upsample carries small negative lobes. Flux is nonnegative;
+      downstream consumers (payloads, FEA CSV, drape) must never see a
+      negative bin. Clamped at zero.
+    * **Exact power conservation** -- the accumulation step conserves the
+      deposit exactly, but the raw upsample only approximately preserves
+      the integral (measured 0.04-0.29%, REPORT.md), and could land the
+      collected power a hair ABOVE incident -- the release-night violation
+      class at parts-per-billion scale. After clamping, the positive field
+      is rescaled uniformly so the fine-grid total equals the coarse
+      accumulator's deposited power exactly; the scale factor is within
+      ~1e-3 of 1, a shape-preserving correction far below the mode's own
+      accuracy.
     """
     m_u = _upsample_matrix(u_edges_coarse, u_edges_fine, periodic=wrap_u)
     m_v = _upsample_matrix(v_edges_coarse, v_edges_fine, periodic=False)
-    return m_v @ coarse @ m_u.T
+    fine = m_v @ coarse @ m_u.T
+    coarse_area = (u_edges_coarse[1] - u_edges_coarse[0]) * (v_edges_coarse[1] - v_edges_coarse[0])
+    fine_area = (u_edges_fine[1] - u_edges_fine[0]) * (v_edges_fine[1] - v_edges_fine[0])
+    target = float(coarse.sum()) * coarse_area / fine_area
+    np.clip(fine, 0.0, None, out=fine)
+    total = float(fine.sum())
+    if total > 0.0 and target > 0.0:
+        fine *= target / total
+    return fine

@@ -498,9 +498,17 @@ def test_scene_is_deterministic_and_does_not_disturb_the_trace(client, mode):
 # arrived, by 15 parts per million. It now lands exactly on the incident
 # power, which is the physical bound for a spot that all falls on the
 # receiver.
-PIN_DEFAULT_RECT_POWER_W = 8225.854187898512
-PIN_DEFAULT_RECT_RMS_MM = 505.26411781070186  # moved 3e-10 relative by the same fix
-PIN_DEFAULT_RECT_INCIDENT_W = 8225.854187898514
+# Re-pinned 2026-08-26 for the ultra_fast adoption (density-based 12/m2
+# sampling -> a (17, 10) grid on the default mirror, plus the B-spline
+# deposit): incident moved 1e-7 relative (170 area weights summed in a
+# different order than 240 -- same physical mirror area), rms moved 5e-4
+# relative (the sparser layout's spot statistics, inside the adoption's
+# measured 0.073% accuracy envelope), and power now equals incident
+# BITWISE -- the B-spline evaluation clamps its undershoot and rescales to
+# the deposit's exact total, so the full-pass bound holds exactly.
+PIN_DEFAULT_RECT_POWER_W = 8225.855000744928
+PIN_DEFAULT_RECT_RMS_MM = 505.51851375643406
+PIN_DEFAULT_RECT_INCIDENT_W = 8225.855000744928
 PIN_DEFAULT_RECT_SLANT_M = 96.32411487265273
 
 # Fields whose value must be identical between two requests that describe the
