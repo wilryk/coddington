@@ -600,6 +600,18 @@ class ApertureClippedReceiver(Receiver):
     def bin_areas_m2(self, grid: tuple[int, int]) -> np.ndarray:
         return self.inner.bin_areas_m2(grid)
 
+    @property
+    def u_period_mm(self) -> float | None:
+        """The inner surface's own periodicity. A cavity cylinder/frustum
+        still closes on itself -- its ``uv``/extent are the inner's, so the
+        seam machinery (wrapping flux deposit, wrapping window-membership
+        test, continuous azimuth unwrap) must engage exactly as it would
+        bare. Without this delegation the tracer saw ``None``, treated the
+        seam as a hard edge, and a spot straddling it behind the aperture
+        lost its wrapped share -- the release-night seam bug, cavity
+        edition."""
+        return getattr(self.inner, "u_period_mm", None)
+
     def to_manifest(self) -> dict:
         return {"kind": self.kind, "aperture": self.aperture.to_manifest(), "inner": self.inner.to_manifest()}
 

@@ -344,3 +344,42 @@ def test_frustum_aim_point_is_reachable_and_on_the_true_wall():
         assert np.allclose(
             mirror_pos + np.linalg.norm(aim - mirror_pos) * d, aim, atol=1e-3
         )
+
+
+class TestSeamIsInvisibleInsideACavity:
+    """The aperture-clipped (cavity) receiver forwards uv, extent and bin
+    areas to its inner surface -- and must forward `u_period_mm` too, or the
+    tracer sees no periodicity and treats the cavity cylinder's seam as a
+    hard edge: a spot straddling it behind the aperture loses its wrapped
+    share, the release-night seam bug in cavity form. An aperture so large
+    it clips nothing must be optically invisible: the cavity trace has to
+    match the bare cylinder at every bearing, seam included.
+    """
+
+    def _cavity(self, cylinder):
+        from heliostat.geometry.receiver import ApertureClippedReceiver, FlatWindowReceiver
+
+        return ApertureClippedReceiver(
+            aperture=FlatWindowReceiver(
+                z_mm=20000.0, half_u_mm=1.0e6, half_v_mm=1.0e6, facing="down"
+            ),
+            inner=cylinder,
+        )
+
+    def test_period_delegates_to_the_inner_surface(self):
+        cylinder = CylinderReceiver(center_z_mm=20000.0, radius_mm=3000.0, height_mm=6000.0)
+        assert self._cavity(cylinder).u_period_mm == cylinder.u_period_mm
+
+    def test_a_seam_heliostat_keeps_its_power_behind_a_clipless_aperture(self):
+        cylinder = CylinderReceiver(center_z_mm=20000.0, radius_mm=3000.0, height_mm=6000.0)
+        cavity = self._cavity(cylinder)
+        for bearing in (0.0, 1.0, 5.0, 180.0):
+            x, y, solar_az = _rotated_case(bearing)
+            bare = _trace(cylinder, x, y, solar_az)
+            clipped = _trace(cavity, x, y, solar_az)
+            assert clipped["power_w"] == pytest.approx(bare["power_w"], rel=1e-6), (
+                f"bearing {bearing}: cavity {clipped['power_w']} W vs bare {bare['power_w']} W"
+            )
+            assert float(clipped["flux"].max()) == pytest.approx(
+                float(bare["flux"].max()), rel=1e-6
+            ), f"bearing {bearing}: cavity peak differs from bare"
