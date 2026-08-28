@@ -445,3 +445,77 @@ class TestMonteCarloRefereesTheCavitySeam:
         assert ratios[0.0] == pytest.approx(ratios[180.0], rel=0.02), (
             f"cone/MC ratio depends on seam proximity: {ratios}"
         )
+
+
+class TestNodeFallbackWrapsAtTheSeam:
+    """Bearing invariance with the node-fallback path ENGAGED -- coverage
+    the rotation-invariance suite above lacked (its focused solves never
+    lose a chief ray, so the fallback branch went untested end to end).
+
+    The fallback's node landing points are azimuth-unwrapped for stencil
+    continuity, so a node's ``u`` can sit past the chart edge; the deposit
+    wraps its column modulo the count, like the main deposit's ``wrap_u``.
+    Honest scope note: on a bare surface of revolution the wrap-vs-clamp
+    distinction is measured kernel-tail negligible (~1e-11 of peak here) --
+    a chief near the seam always INTERSECTS the surface, so fallback fires
+    only at tangent-miss limbs where out-of-chart nodes carry the kernel's
+    outermost weights (instrumented: node columns -6..137 on this 128
+    chart at bearing 45, all tail nodes). This pin therefore BOUNDS any
+    fallback-placement wrongness below 1e-6 of peak across bearings rather
+    than discriminating the historical clamp; the case where clamping WAS
+    measurable (+3.7% seam peak) lived on the bspline path's coarse control
+    grid and is separately pinned in tests/test_bspline_deposit.py.
+    """
+
+    def _flat_mirror_trace(self, receiver, x, y, solar_az):
+        """A FLAT mirror throws a mirror-sized beam; against a narrow
+        cylinder the beam's edge band has chief rays that tangent-miss the
+        body while their sun cones still clip it -- the only geometry that
+        actually reaches the fallback path (a focused solve keeps every
+        chief on the wall, so rim spill lands in `masked` instead)."""
+        sol = solve_prime_focus_to_receiver(x, y, solar_az, _BASE_SOLAR_EL_DEG, receiver)
+        return trace_heliostat_cone(
+            x,
+            y,
+            sol.rot_az_deg,
+            sol.rot_el_deg,
+            0.0,
+            0.0,
+            0.0,
+            solar_az,
+            _BASE_SOLAR_EL_DEG,
+            _SECONDARY,
+            receiver,
+            _KERNEL,
+            order=1,
+        )
+
+    def test_fallback_mass_lands_in_the_wrapped_column(self):
+        # Bearings 45 vs 225: bearing 45's fallback band unwraps across the
+        # seam (instrumented) while the rigidly-identical 225 keeps its band
+        # mid-chart -- the maximal-contrast pair. 45 deg is exactly 16
+        # columns on this grid, so the rotation is an exact circular shift
+        # and sorted values must match bin for bin.
+        receiver = CylinderReceiver(center_z_mm=20000.0, radius_mm=1000.0, height_mm=6000.0)
+        fluxes = {}
+        for bearing in (45.0, 225.0):
+            x, y, solar_az = _rotated_case(bearing)
+            out = self._flat_mirror_trace(receiver, x, y, solar_az)
+            assert out["counters"]["node_fallback"] > 0, (
+                "geometry failed to engage the node-fallback path -- test is vacuous"
+            )
+            fluxes[bearing] = np.sort(out["flux"].ravel())
+
+        # Peak-scaled absolute tolerance: a per-element relative tolerance
+        # explodes on the map's near-zero bins. Measured agreement is
+        # ~2e-11 of peak; the bar leaves five orders of headroom while
+        # still catching any future fallback-placement wrongness at
+        # per-node-share scale.
+        peak = float(fluxes[45.0].max())
+        np.testing.assert_allclose(
+            fluxes[45.0],
+            fluxes[225.0],
+            rtol=0.0,
+            atol=1e-6 * peak,
+            err_msg="seam bearing's flux distribution differs from the seam-free bearing's",
+        )

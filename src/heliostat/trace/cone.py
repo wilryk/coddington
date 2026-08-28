@@ -808,15 +808,20 @@ def trace_heliostat_cone(
             iv = np.clip(
                 (uv_nodes[1, idx, ok_j] - accum_v_edges[0]) // accum_dv, 0, accum_n_v - 1
             ).astype(np.intp)
-            if use_bspline and wrap_u:
-                # Periodic accumulation grid: a node landing just past the
-                # wrap column continues at column 0, matching `deposit`'s own
-                # wrap_u handling for the masked/full-pass branch above.
-                # Clipping here instead (as the coeff-prototype's own
-                # node-fallback path did) silently piles that mass onto the
-                # last column -- the non-periodic-clamping bug behind the
-                # prototype's measured +3.7% cylinder-seam peak-flux error
-                # (REPORT.md SS3.4); this branch is the fix.
+            if wrap_u:
+                # Periodic accumulation grid: node landing points are
+                # azimuth-unwrapped for stencil continuity, so a node's ``u``
+                # can sit past the chart edge and its column continues at 0,
+                # matching `deposit`'s own wrap_u handling above. Clipping
+                # instead piles that mass onto the edge column. On the coarse
+                # control grid of the bspline path that was a measured +3.7%
+                # cylinder-seam peak error (coeff-prototype REPORT.md SS3.4).
+                # On the binned path the reachable misplacement is kernel-tail
+                # negligible (<~1e-10 of peak, measured): a chief ray near the
+                # seam always INTERSECTS a surface of revolution, so fallback
+                # only fires at tangent-miss limbs where the out-of-chart
+                # nodes carry only the kernel's outermost weights. Wrapped on
+                # both paths anyway -- same semantics, no reachable wrongness.
                 iu = (iu_raw.astype(np.intp)) % accum_n_u
             else:
                 iu = np.clip(iu_raw, 0, accum_n_u - 1).astype(np.intp)
