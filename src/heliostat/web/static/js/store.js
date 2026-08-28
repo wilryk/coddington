@@ -23,7 +23,9 @@ const DEFAULT_DOC = {
     surface: "twisting",
     // Reflectance is kept in the operator's usual unit (percent);
     // api.js's currentDesignPayload converts to the wire's 0-1 fraction.
-    errors: { slope_error_mrad: 0, specularity_mrad: 0, reflectance_pct: 90 },
+    // error_map (docs/ui-spec-v0.2.md §E) is null (no measured map) until
+    // an Import CSV… completes -- see js/tabs/shape.js.
+    errors: { slope_error_mrad: 0, specularity_mrad: 0, reflectance_pct: 90, error_map: null },
   },
   designParams: {
     rect: { width_mm: 5000, height_mm: 3000 },

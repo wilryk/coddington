@@ -108,6 +108,7 @@ from heliostat.geometry.design import (
     grid_facets,
     rect_heliostat,
 )
+from heliostat.geometry.errormap import ErrorMap, parse_error_map_csv
 from heliostat.geometry.heliostat import zernike_sag_and_slopes
 from heliostat.geometry.receiver import (
     ApertureClippedReceiver,
@@ -878,12 +879,72 @@ class _DesignBase(_StrictModel):
     ``power_w``/the flux map are unscaled unless a caller opts in, and
     ``incident_power_w`` -- power arriving on the mirror, before the bounce
     -- never carries it.
+
+    ``error_map`` (docs/ui-spec-v0.2.md §E) is a fourth, independent optical
+    error -- a MEASURED deformation grid (FEA or deflectometry) rather than
+    a statistical description like the three above -- applied on top of
+    whichever analytic figure ``surface`` chose, in MONTE CARLO ONLY. See
+    the field's own comment for its shape and :func:`_build_error_map` for
+    how it reaches the tracer.
     """
 
     surface: Literal["twisting", "spherical", "flat"] = "twisting"
     slope_error_mrad: float = Field(default=0.0, ge=0)
     specularity_mrad: float = Field(default=0.0, ge=0)
     reflectance: float = Field(default=1.0, gt=0, le=1)
+    #: docs/ui-spec-v0.2.md §E: a measured/FEA sag-deviation grid, applied
+    #: on top of the analytic figure above in MONTE CARLO ONLY (cone modes
+    #: ignore it -- see heliostat.trace.mc.trace_heliostat's own
+    #: error_map docstring). Shape is exactly what
+    #: /api/design/errormap/import returns under "grid":
+    #: {"x_m": [...], "y_m": [...], "dz_mm": [[...], ...]} -- the raw grid
+    #: only (gradients/RMS are cheap to recompute, see
+    #: heliostat.geometry.errormap.ErrorMap.from_storage_dict), so a client
+    #: never builds this by hand, only round-trips what the import endpoint
+    #: gave it. None (default) is "no map" -- an old request/design that
+    #: has never heard of this field traces exactly as it always has.
+    error_map: dict | None = None
+
+    @field_validator("error_map")
+    @classmethod
+    def _error_map_must_be_a_valid_grid(cls, v: dict | None) -> dict | None:
+        if v is None:
+            return None
+        if not isinstance(v, dict) or not {"x_m", "y_m", "dz_mm"} <= v.keys():
+            raise ValueError("error_map must be an object with 'x_m', 'y_m', 'dz_mm' (the shape /api/design/errormap/import returns under 'grid')")
+        try:
+            ErrorMap.from_storage_dict(v)
+        except (ValueError, KeyError, TypeError, IndexError) as exc:
+            raise ValueError(f"error_map: {exc}") from exc
+        return v
+
+
+class ErrorMapImportRequest(_StrictModel):
+    """§E's "Measured error map -- Import CSV..." request body.
+
+    JSON-embedded rather than multipart: this app has no file-upload
+    endpoint anywhere else and no ``python-multipart`` dependency to add
+    one, and a CSV is plain text anyway -- the client reads the file with
+    ``FileReader.readAsText`` and posts it as a string, same shape every
+    other request body here already takes.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    csv: str = Field(min_length=1)
+
+
+class ErrorMapStatsRequest(_StrictModel):
+    """Recompute an already-imported map's own chip stats (grid size,
+    coverage, implied RMS) from its stored grid -- used when a design
+    carrying an ``error_map`` loads from the Library or a project, where the
+    client has the grid but not the import response that first reported on
+    it (docs/ui-spec-v0.2.md §E's chip is not itself persisted -- only the
+    grid is, see ``_DesignBase.error_map``)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    grid: dict
 
 
 class RectParams(_DesignBase):
@@ -1893,6 +1954,23 @@ def _build_trace_design(
     return _faceted(params, Spherical("slant"), cant)
 
 
+def _build_error_map(params: RectParams | GridParams | FlowerParams | CustomParams) -> ErrorMap | None:
+    """§E: the design's own measured error map, ready for
+    :func:`heliostat.trace.mc.trace_heliostat`'s ``error_map`` argument.
+
+    ``None`` when the design carries none -- the common case, and bit-
+    identical to before this feature existed. ``_DesignBase``'s own
+    validator (:func:`_DesignBase._error_map_must_be_a_valid_grid`) already
+    proved ``params.error_map`` builds cleanly, so this cannot raise in
+    practice; rebuilding here (rather than caching the validator's own
+    object) keeps the request model a plain JSON-serialisable dict, not a
+    numpy-carrying object pydantic would have to special-case.
+    """
+    if params.error_map is None:
+        return None
+    return ErrorMap.from_storage_dict(params.error_map)
+
+
 def _design_is_flat(design: HeliostatDesign | None, c3: float, c4: float, c5: float) -> bool:
     """True when the trace's mirror carries no focusing figure at all.
 
@@ -2153,6 +2231,7 @@ def _trace_core(
     slope_error_mrad: float = 0.0,
     specularity_mrad: float = 0.0,
     reflectance: float = 1.0,
+    error_map: ErrorMap | None = None,
     return_secondary_flux: bool = False,
 ) -> dict:
     """Trace ONE heliostat -- the exact call both endpoints make.
@@ -2177,6 +2256,12 @@ def _trace_core(
     scalar on the REFLECTED result (power and flux), after the backend has
     already reported ``incident_power_w`` -- see the module's
     ``_DesignBase`` docstring for why that field never carries it.
+
+    ``error_map`` (§E, :func:`_build_error_map`) is forwarded to the MC
+    backend only -- the cone backend's ``sunshape_kernel`` call below never
+    receives it, by construction, so a map attached to a design is
+    bit-identical-inert at every cone fidelity, exactly as the spec
+    requires.
 
     ``return_secondary_flux`` (spec §C, default ``False`` so an existing
     caller is unaffected) additionally traces the secondary's own incident
@@ -2219,6 +2304,7 @@ def _trace_core(
                 design=design,
                 slope_error_mrad=slope_error_mrad,
                 specularity_mrad=specularity_mrad,
+                error_map=error_map,
             ),
         }
         if reflectance != 1.0:
@@ -2386,6 +2472,12 @@ def _field_trace_task(task: tuple) -> tuple[int, dict]:
     heliostat: the pool is reused across requests (see
     :func:`_acquire_field_pool`), so a worker cannot rely on state an
     initializer set for a previous, possibly different, field.
+
+    ``error_map`` (an :class:`~heliostat.geometry.errormap.ErrorMap`, or
+    ``None``) rides in the task tuple like everything else here -- it is a
+    plain dataclass of numpy arrays, which :mod:`pickle` (how
+    ``ProcessPoolExecutor`` ships a task to its worker) handles natively,
+    so no special-casing is needed to cross the process boundary.
     """
     (
         index,
@@ -2402,6 +2494,7 @@ def _field_trace_task(task: tuple) -> tuple[int, dict]:
         slope_error_mrad,
         specularity_mrad,
         reflectance,
+        error_map,
         return_secondary_flux,
     ) = task
     result = _trace_core(
@@ -2419,6 +2512,7 @@ def _field_trace_task(task: tuple) -> tuple[int, dict]:
         slope_error_mrad=slope_error_mrad,
         specularity_mrad=specularity_mrad,
         reflectance=reflectance,
+        error_map=error_map,
         return_secondary_flux=return_secondary_flux,
     )
     return index, result
@@ -2463,6 +2557,7 @@ def _trace_field_heliostats(
     v_edges: np.ndarray,
     bin_area_m2: np.ndarray,
     *,
+    error_map: ErrorMap | None = None,
     workers: int = 1,
     should_cancel: Callable[[], bool] | None = None,
     on_progress: Callable[[int, float], None] | None = None,
@@ -2617,6 +2712,7 @@ def _trace_field_heliostats(
                     slope_error_mrad=slope_error_mrad,
                     specularity_mrad=specularity_mrad,
                     reflectance=reflectance,
+                    error_map=error_map,
                     return_secondary_flux=return_secondary_flux,
                 )
             except Exception as exc:  # noqa: BLE001 - isolated per heliostat, see record_failure
@@ -2665,6 +2761,7 @@ def _trace_field_heliostats(
                     slope_error_mrad,
                     specularity_mrad,
                     reflectance,
+                    error_map,
                     return_secondary_flux,
                 ),
             )
@@ -2882,6 +2979,9 @@ def _trace_instant_metrics(
     secondary, receiver = _geometry_for(req.optics, optics_params)
     mode = req.trace_mode()
     u_edges, v_edges, bin_area_m2 = _flux_edges(receiver)
+    # Built once per call (not per heliostat/timestep below) -- the design's
+    # map does not vary across a field or a day sweep's timesteps.
+    error_map = _build_error_map(req.design)
 
     if req.layout is None:
         xy_mm = np.array([[req.heliostat_x_mm, req.heliostat_y_mm]], dtype=float)
@@ -2929,6 +3029,7 @@ def _trace_instant_metrics(
             slope_error_mrad=req.design.slope_error_mrad,
             specularity_mrad=req.design.specularity_mrad,
             reflectance=req.design.reflectance,
+            error_map=error_map,
         )
         eta = float(eta_union[i])
         if result["backend"] == "mc":
@@ -2998,6 +3099,7 @@ def _flux_grid_for(
         slope_error_mrad=body.design.slope_error_mrad,
         specularity_mrad=body.design.specularity_mrad,
         reflectance=body.design.reflectance,
+        error_map=_build_error_map(body.design),
     )
     if result["backend"] == "mc":
         flux, u_edges, v_edges, _rms, _cen = _mc_flux_and_metrics(
@@ -3050,6 +3152,7 @@ def _secondary_flux_grid_for(
         slope_error_mrad=body.design.slope_error_mrad,
         specularity_mrad=body.design.specularity_mrad,
         reflectance=body.design.reflectance,
+        error_map=_build_error_map(body.design),
         return_secondary_flux=True,
     )
     secondary_maps = _secondary_maps_from_result(result, secondary)
@@ -4822,6 +4925,48 @@ def create_app():
             },
         )
 
+    @app.post("/api/design/errormap/import")
+    def design_errormap_import(body: ErrorMapImportRequest) -> JSONResponse:
+        """§E: parse an uploaded §D-convention sag CSV into a measured
+        error map, reporting what was read (grid size, aperture coverage,
+        implied RMS slope) and the raw grid a client attaches verbatim to
+        ``_DesignBase.error_map`` for every subsequent request -- this
+        endpoint does not itself store anything; the app is stateless per
+        request, same as every other design field.
+        """
+        try:
+            error_map = parse_error_map_csv(body.csv)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"could not read error map CSV: {exc}") from exc
+
+        ny, nx = error_map.grid_shape
+        return JSONResponse(
+            {
+                "grid": error_map.to_storage_dict(),
+                "grid_size": {"nx": nx, "ny": ny},
+                "coverage_fraction": error_map.coverage_fraction,
+                "rms_slope_mrad": error_map.rms_slope_mrad,
+            }
+        )
+
+    @app.post("/api/design/errormap/stats")
+    def design_errormap_stats(body: ErrorMapStatsRequest) -> JSONResponse:
+        """Sibling of ``/api/design/errormap/import`` for a grid the client
+        already has (loaded from the Library/a project) rather than a fresh
+        CSV -- same three numbers, so the chip reads the same either way."""
+        try:
+            error_map = ErrorMap.from_storage_dict(body.grid)
+        except (ValueError, KeyError, TypeError, IndexError) as exc:
+            raise HTTPException(status_code=422, detail=f"could not read error map grid: {exc}") from exc
+        ny, nx = error_map.grid_shape
+        return JSONResponse(
+            {
+                "grid_size": {"nx": nx, "ny": ny},
+                "coverage_fraction": error_map.coverage_fraction,
+                "rms_slope_mrad": error_map.rms_slope_mrad,
+            }
+        )
+
     @app.post("/api/trace")
     def trace(body: TraceRequest) -> JSONResponse:
         if body.solar_el_deg <= 0:
@@ -4877,6 +5022,7 @@ def create_app():
             slope_error_mrad=body.design.slope_error_mrad,
             specularity_mrad=body.design.specularity_mrad,
             reflectance=body.design.reflectance,
+            error_map=_build_error_map(body.design),
             return_secondary_flux=body.include_secondary_flux,
         )
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
@@ -5072,6 +5218,7 @@ def create_app():
             u_edges,
             v_edges,
             bin_area_m2,
+            error_map=_build_error_map(body.design),
             workers=body.workers or 1,
             return_secondary_flux=body.include_secondary_flux,
         )
@@ -5241,6 +5388,7 @@ def create_app():
                     u_edges,
                     v_edges,
                     bin_area_m2,
+                    error_map=_build_error_map(body.design),
                     workers=workers,
                     should_cancel=job.cancelled,
                     on_progress=on_progress,

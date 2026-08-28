@@ -30,6 +30,8 @@ import {
   expandCustomVertices,
   postDesignPreview,
   postDesignSag,
+  postErrorMapImport,
+  postErrorMapStats,
   postSagFeaCsv,
   saveLibraryEntry,
 } from "../api.js";
@@ -107,6 +109,22 @@ let lastSagResult = null; // {contourIntervalMm, peakToValleyMm, slantRangeM} of
 let lastSagBody = null; // the TraceRequest-shaped body the shown sag map/export both come from
 let sagExportBusy = false;
 let sagExportError = null;
+
+// docs/ui-spec-v0.2.md §E: measured error-map import state. `errorMapStats`
+// caches the last {grid_size, coverage_fraction, rms_slope_mrad} the server
+// reported, keyed by the exact grid object it was computed from (`===` on
+// doc.design.errors.error_map, which only changes identity on an import,
+// a remove, or a fresh load -- never on an unrelated re-render), so a
+// design carrying an already-imported map doesn't refetch its own chip
+// every render, only once per map change (an import reports its own stats
+// inline; a load from the Library/a project has only the grid, so this
+// module fetches /design/errormap/stats for it once, see
+// ensureErrorMapStats below).
+let errorMapImportBusy = false;
+let errorMapImportError = null;
+let errorMapStatsGrid = null; // the error_map object the cached stats below describe
+let errorMapStats = null; // {grid_size, coverage_fraction, rms_slope_mrad} | null
+let errorMapStatsBusy = false;
 
 // Ephemeral view-only toggles -- these don't hold a value the user typed,
 // just which of two already-live views is showing.
@@ -818,6 +836,105 @@ function build(container) {
     "Applied by every fidelity: slope and specularity broaden the spot, reflectance scales the power collected.";
   controls.appendChild(errorHint);
 
+  // docs/ui-spec-v0.2.md §E: "Measured error map -- Import CSV…" -- a real
+  // deformation map (FEA/deflectometry), on top of the analytic figure
+  // above, Monte Carlo only. Static elements built once here; visibility
+  // and text are updated per render in renderDesignControls, same pattern
+  // as every other hint/chip in this tab.
+  const errorMapRow = document.createElement("div");
+  errorMapRow.className = "frow";
+  errorMapRow.style.marginTop = "6px";
+  const errorMapLabel = document.createElement("label");
+  errorMapLabel.textContent = "Measured error map";
+  errorMapLabel.title =
+    "A real deformation map (gravity sag, wind load, thermal) from FEA or deflectometry, applied on top of the figure above. Monte Carlo only -- cone modes ignore it.";
+  errorMapRow.appendChild(errorMapLabel);
+  const errorMapImportBtn = document.createElement("div");
+  errorMapImportBtn.className = "btn small";
+  errorMapImportBtn.textContent = "Import CSV…";
+  errorMapRow.appendChild(errorMapImportBtn);
+  const errorMapFileInput = document.createElement("input");
+  errorMapFileInput.type = "file";
+  errorMapFileInput.accept = ".csv,text/csv";
+  errorMapFileInput.hidden = true;
+  errorMapRow.appendChild(errorMapFileInput);
+  controls.appendChild(errorMapRow);
+
+  const errorMapChip = document.createElement("div");
+  errorMapChip.className = "errormapchip";
+  errorMapChip.hidden = true;
+  const errorMapBadge = document.createElement("span");
+  errorMapBadge.className = "badge import";
+  errorMapBadge.textContent = "Monte Carlo only";
+  errorMapBadge.title =
+    "Applied on top of the analytic figure in Monte Carlo traces only -- cone modes (Ultra fast, Fast accurate) ignore an attached map entirely.";
+  const errorMapStatsText = document.createElement("span");
+  errorMapStatsText.className = "errormapstats";
+  const errorMapRemoveBtn = document.createElement("span");
+  errorMapRemoveBtn.className = "btn small";
+  errorMapRemoveBtn.textContent = "Remove";
+  errorMapChip.appendChild(errorMapBadge);
+  errorMapChip.appendChild(errorMapStatsText);
+  errorMapChip.appendChild(errorMapRemoveBtn);
+  controls.appendChild(errorMapChip);
+
+  const errorMapErrEl = document.createElement("div");
+  errorMapErrEl.className = "fielderr";
+  errorMapErrEl.hidden = true;
+  controls.appendChild(errorMapErrEl);
+
+  function startErrorMapImport(file) {
+    if (!file) return;
+    errorMapImportBusy = true;
+    errorMapImportError = null;
+    rerender();
+    const reader = new FileReader();
+    reader.onload = () => {
+      postErrorMapImport(String(reader.result))
+        .then((data) => {
+          errorMapImportBusy = false;
+          store.set("doc.design.errors.error_map", data.grid);
+          // The import response already carries this map's own stats --
+          // cache them directly so the chip shows them on the very next
+          // render with no extra round trip to /errormap/stats.
+          errorMapStatsGrid = data.grid;
+          errorMapStats = {
+            grid_size: data.grid_size,
+            coverage_fraction: data.coverage_fraction,
+            rms_slope_mrad: data.rms_slope_mrad,
+          };
+          rerender();
+        })
+        .catch((err) => {
+          errorMapImportBusy = false;
+          errorMapImportError = (err && err.message) || "Could not import the error map CSV.";
+          rerender();
+        });
+    };
+    reader.onerror = () => {
+      errorMapImportBusy = false;
+      errorMapImportError = "Could not read the file.";
+      rerender();
+    };
+    reader.readAsText(file);
+  }
+  errorMapImportBtn.addEventListener("click", () => {
+    if (errorMapImportBusy) return;
+    errorMapFileInput.click();
+  });
+  errorMapFileInput.addEventListener("change", () => {
+    const file = errorMapFileInput.files && errorMapFileInput.files[0];
+    errorMapFileInput.value = ""; // allow re-selecting the same file later
+    startErrorMapImport(file);
+  });
+  errorMapRemoveBtn.addEventListener("click", () => {
+    store.set("doc.design.errors.error_map", null);
+    errorMapStatsGrid = null;
+    errorMapStats = null;
+    errorMapImportError = null;
+    rerender();
+  });
+
   // -- previews: aperture layout + sag map -----------------------------
   const previews = document.createElement("div");
   previews.className = "previews";
@@ -1039,6 +1156,12 @@ function build(container) {
     cantFocalInput,
     cantHint,
     errorInputs,
+    errorMapImportBtn,
+    errorMapFileInput,
+    errorMapChip,
+    errorMapStatsText,
+    errorMapRemoveBtn,
+    errorMapErrEl,
     apertureH2,
     apertureToggle,
     apertureFrame,
@@ -1141,6 +1264,47 @@ function renderEditbar(doc, ui, previewHeliostat) {
     els.saveErrEl.hidden = true;
     els.saveErrEl.className = "fielderr";
   }
+}
+
+// §E: a design loaded from the Library/a project carries an error_map grid
+// but not the import response that first reported on it -- fetch that
+// report once per distinct grid (identity-cached, see errorMapStatsGrid's
+// own comment) rather than on every render.
+function ensureErrorMapStats(map) {
+  if (map === errorMapStatsGrid || errorMapStatsBusy) return;
+  errorMapStatsBusy = true;
+  postErrorMapStats(map)
+    .then((data) => {
+      errorMapStatsBusy = false;
+      errorMapStatsGrid = map;
+      errorMapStats = data;
+      rerender();
+    })
+    .catch(() => {
+      errorMapStatsBusy = false;
+      // Best-effort background refresh -- the chip just shows "attached"
+      // with no numbers until this succeeds; not worth a second error UI.
+    });
+}
+
+function renderErrorMapSection(doc) {
+  const map = doc.design.errors.error_map;
+  els.errorMapImportBtn.textContent = errorMapImportBusy ? "Importing…" : "Import CSV…";
+  els.errorMapImportBtn.classList.toggle("disabled-link", errorMapImportBusy);
+  if (map) {
+    ensureErrorMapStats(map);
+    els.errorMapChip.hidden = false;
+    const stats = map === errorMapStatsGrid ? errorMapStats : null;
+    els.errorMapStatsText.textContent = stats
+      ? ` ${stats.grid_size.nx}×${stats.grid_size.ny} grid, ` +
+        `${(stats.coverage_fraction * 100).toFixed(0)}% aperture coverage, ` +
+        `${stats.rms_slope_mrad.toFixed(3)} mrad implied RMS slope`
+      : " loading grid stats…";
+  } else {
+    els.errorMapChip.hidden = true;
+  }
+  els.errorMapErrEl.hidden = !errorMapImportError;
+  els.errorMapErrEl.textContent = errorMapImportError || "";
 }
 
 function renderDesignControls(doc, previewHeliostat) {
@@ -1250,6 +1414,7 @@ function renderDesignControls(doc, previewHeliostat) {
   setVal(els.errorInputs.slope_error_mrad, errors.slope_error_mrad);
   setVal(els.errorInputs.specularity_mrad, errors.specularity_mrad);
   setVal(els.errorInputs.reflectance_pct, errors.reflectance_pct);
+  renderErrorMapSection(doc);
 }
 
 function setPreviewImageBlob(blob) {

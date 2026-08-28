@@ -326,6 +326,26 @@ input.val::-webkit-inner-spin-button {
   margin-top: 4px;
 }
 
+/* docs/ui-spec-v0.2.md §E: the "Measured error map" import chip -- grid
+   size / coverage / implied RMS next to the MC-only badge, in-flow (not
+   the absolute-positioned .chip used to overlay a preview image). */
+.errormapchip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin: 2px 0 8px 0;
+}
+.errormapstats {
+  flex: 1 1 auto;
+}
+
 .fielderr {
   color: var(--error-text);
   background: var(--error-bg);

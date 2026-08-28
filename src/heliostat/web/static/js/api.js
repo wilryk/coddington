@@ -311,14 +311,16 @@ export function expandCustomVertices(vertices, mirror) {
   return sketch.concat(mirrored);
 }
 
-// The three optical-error fields ride flat inside a design document/payload
-// (wire units: reflectance as a 0-1 fraction) while the store keeps them
-// under doc.design.errors with reflectance as a percent. These two exports
-// are the only place that mapping lives -- currentDesignPayload writes it
+// The optical-error fields ride flat inside a design document/payload (wire
+// units: reflectance as a 0-1 fraction) while the store keeps them under
+// doc.design.errors with reflectance as a percent. These two exports are
+// the only place that mapping lives -- currentDesignPayload writes it
 // outbound, and library.js/project.js use them to route the fields back
 // into doc.design.errors when loading, instead of letting them land as
-// stray keys in doc.designParams.
-export const DESIGN_ERROR_KEYS = ["slope_error_mrad", "specularity_mrad", "reflectance"];
+// stray keys in doc.designParams. error_map (docs/ui-spec-v0.2.md §E) rides
+// the same way, verbatim (an object or null) -- there is no percent/unit
+// conversion for it, unlike the other three.
+export const DESIGN_ERROR_KEYS = ["slope_error_mrad", "specularity_mrad", "reflectance", "error_map"];
 
 export function errorsFromDesignDocument(d) {
   return {
@@ -329,6 +331,7 @@ export function errorsFromDesignDocument(d) {
     // fresh-document 90% default, or an old project would trace 10% dimmer
     // than it used to.
     reflectance_pct: (d && d.reflectance != null ? d.reflectance : 1.0) * 100,
+    error_map: (d && d.error_map) || null,
   };
 }
 
@@ -343,6 +346,7 @@ export function currentDesignPayload(doc) {
     slope_error_mrad: errors.slope_error_mrad || 0,
     specularity_mrad: errors.specularity_mrad || 0,
     reflectance: (errors.reflectance_pct != null ? errors.reflectance_pct : 90) / 100,
+    error_map: errors.error_map || null,
   };
   if (type === "custom") {
     const custom = doc.designParams.custom || {};
@@ -618,6 +622,26 @@ export async function postDesignSag(body, signal, includeCant = true) {
 export function postSagFeaCsv(body, signal, includeCant = true) {
   const path = includeCant ? "/design/sag.csv" : "/design/sag.csv?cant=false";
   return postForBlob(path, body, signal).then((resp) => resp.blob());
+}
+
+// docs/ui-spec-v0.2.md §E: "Measured error map -- Import CSV..." -- posts
+// the raw CSV text (read client-side via FileReader.readAsText, since this
+// app has no multipart upload anywhere else) and gets back what the server
+// read: grid size, aperture coverage, the implied RMS slope error, and the
+// raw grid itself under `grid` -- store that verbatim as
+// doc.design.errors.error_map (see DESIGN_ERROR_KEYS below); it rides
+// through currentDesignPayload unchanged and is exactly what a client
+// hands back on the next trace/save, never rebuilt by hand.
+export function postErrorMapImport(csvText, signal) {
+  return postJSON("/design/errormap/import", { csv: csvText }, signal);
+}
+
+// Sibling of postErrorMapImport for a grid the client already has (loaded
+// from the Library or a project) rather than a fresh CSV -- same three
+// numbers back, so the chip in js/tabs/shape.js reads the same whichever
+// way the map arrived.
+export function postErrorMapStats(grid, signal) {
+  return postJSON("/design/errormap/stats", { grid }, signal);
 }
 
 // The sag map is always for ONE named heliostat (docs/ui-spec.md 3), never

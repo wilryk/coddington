@@ -27,6 +27,7 @@ from .samplers import SuperGaussSampler
 
 if TYPE_CHECKING:
     from ..geometry.design import HeliostatDesign
+    from ..geometry.errormap import ErrorMap
 
 # Source geometry: a 3500 mm-radius disk, 30 m from each heliostat along the
 # sun vector, emitting toward the mirror. Fixed for every run traced so far.
@@ -210,6 +211,7 @@ def trace_heliostat(
     design: "HeliostatDesign | None" = None,
     slope_error_mrad: float = 0.0,
     specularity_mrad: float = 0.0,
+    error_map: "ErrorMap | None" = None,
 ) -> dict:
     """Trace one heliostat at one instant; return receiver hits and loss counts.
 
@@ -275,6 +277,25 @@ def trace_heliostat(
     the actual outgoing ray rather than to the unperturbed normal). Both
     draw from ``rng``, so a run's random-number sequence is unchanged
     whenever both are left at zero.
+
+    ``error_map`` (docs/ui-spec-v0.2.md §E) is a measured/FEA
+    :class:`~heliostat.geometry.errormap.ErrorMap`, applied ON TOP OF
+    whichever analytic figure ran and BEFORE ``slope_error_mrad`` --
+    a deterministic per-ray tilt of the local surface normal, bilinear-
+    interpolated from the map's precomputed slope grids at each ray's own
+    mirror-point (heliostat aperture-frame ``x, y`` -- for a faceted design,
+    a facet's local hit converted back to that frame via its
+    ``offset_mm``), added along the heliostat's own global ``u``/``v`` axes
+    (the frame the map's CSV convention is defined in) rather than a
+    canted facet's tilted ``fu``/``fv`` -- consistent with how
+    :func:`heliostat.web.app._sag_grid_mm` samples a design's sag in plan
+    view. Costs one bilinear lookup per ray regardless of the map's own
+    resolution (pre-processed once at import), so Monte Carlo trace time is
+    essentially unaffected. ``None`` (default) skips this branch entirely,
+    bit-identical to before this parameter existed. There is no cone-mode
+    equivalent -- the cone backends never see this parameter, so a map
+    changes nothing about their kernels by construction (spec: "Monte Carlo
+    only").
     """
     if sampler is None:
         sampler = _default_sampler()
@@ -365,6 +386,10 @@ def trace_heliostat(
         _, dsdx, dsdy = _zernike_sag_and_slopes(lx, ly, c3, c4, c5)
         normal = n[:, None] - u[:, None] * dsdx - v[:, None] * dsdy
         normal /= np.linalg.norm(normal, axis=0)
+        if error_map is not None:
+            map_dsdx, map_dsdy = error_map.sample_slopes(lx, ly)
+            normal = normal - u[:, None] * map_dsdx - v[:, None] * map_dsdy
+            normal /= np.linalg.norm(normal, axis=0)
         if slope_error_mrad:
             normal = _perturb_unit(normal, u, v, slope_error_mrad * 1.0e-3, rng)
         # In-place reflection: d -= 2 (d.n) n, no fresh (3, M) temporaries.
@@ -411,9 +436,22 @@ def trace_heliostat(
             grp = best == k
             if not np.any(grp):
                 continue
-            _, dsu, dsv = facet.surface.sag_and_slopes(lu_all[k][ok][grp], lv_all[k][ok][grp])
+            grp_lu, grp_lv = lu_all[k][ok][grp], lv_all[k][ok][grp]
+            _, dsu, dsv = facet.surface.sag_and_slopes(grp_lu, grp_lv)
             nrm = nf[:, None] - fu[:, None] * dsu - fv[:, None] * dsv
             nrm /= np.linalg.norm(nrm, axis=0)
+            if error_map is not None:
+                # The map's own frame is the heliostat's aperture-frame
+                # plan view (§D convention), not this facet's canted
+                # (fu, fv) -- so both the query point and the tangent axes
+                # the correction is added along use the heliostat's global
+                # (u, v), converting this facet's local hit back to that
+                # frame via its offset first.
+                full_x = grp_lu + facet.offset_mm[0]
+                full_y = grp_lv + facet.offset_mm[1]
+                map_dsdx, map_dsdy = error_map.sample_slopes(full_x, full_y)
+                nrm = nrm - u[:, None] * map_dsdx - v[:, None] * map_dsdy
+                nrm /= np.linalg.norm(nrm, axis=0)
             if slope_error_mrad:
                 nrm = _perturb_unit(nrm, fu, fv, slope_error_mrad * 1.0e-3, rng)
             normal[:, grp] = nrm
