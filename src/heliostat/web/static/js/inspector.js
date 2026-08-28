@@ -135,6 +135,14 @@ function build(container) {
     const rows = {};
     let warnBox = null;
     for (const field of fields) {
+      // See panels/receiver.js's identical handling -- keeps the floating
+      // inspector's fields visually identical to the sidebar's.
+      if (field.sectionHeader) {
+        const sub = document.createElement("div");
+        sub.className = "subhead";
+        sub.textContent = field.sectionHeader;
+        wrap.appendChild(sub);
+      }
       const input = numberRow(wrap, field);
       inputs[field.key] = input;
       rows[field.key] = input.parentElement;

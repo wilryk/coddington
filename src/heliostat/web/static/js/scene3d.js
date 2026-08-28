@@ -565,19 +565,55 @@ export function createScene(container, callbacks) {
     const mesh = new THREE.Mesh(lathe, material);
     mesh.rotation.x = Math.PI / 2;
     mesh.userData.pickKind = "secondary";
-    secondaryGroup.add(mesh);
 
     const edges = new THREE.EdgesGeometry(lathe, 20);
     const edgeMat = new THREE.LineBasicMaterial({ color: SECONDARY_EDGE, transparent: true, opacity: 0.55 });
     const edgeLines = new THREE.LineSegments(edges, edgeMat);
     edgeLines.rotation.x = Math.PI / 2;
-    secondaryGroup.add(edgeLines);
+
+    // docs/ui-spec-v0.2.md §E2 rigid-body misalignment: dx/dy/dz/tip/tilt
+    // from the scene payload's `secondary` block, applied as a pivot
+    // transform around the mirror's own vertex/apex -- NOT the mesh's
+    // bounding-box centre -- matching the backend's exact
+    // `world = R @ (local - vertex) + vertex + decenter` transform
+    // (heliostat.geometry.secondary._to_secondary_world/_local, R = Ry(tilt)
+    // @ Rx(tip), both about the world x/y axes since the secondary's
+    // unperturbed frame already coincides with them). `_secondary_profile`
+    // always draws the nominal (unperturbed) surface -- see its docstring --
+    // so the mesh/edges built just above are the same "local" points the
+    // backend rotates; only the vertex height is missing from the payload,
+    // approximated here as the profile's own r=0 point (exact for
+    // Cassegrain, where z(0) = vertex_z_mm; a small tip-blend offset for
+    // Axicon's rounded-tip default, immaterial for posing a picture whose
+    // physics is traced server-side either way).
+    const vertexZMm = points[0].y / MM;
+    const vertexWorld = new THREE.Vector3(0, 0, vertexZMm * MM);
+    const dxMm = secondary.dx_mm || 0;
+    const dyMm = secondary.dy_mm || 0;
+    const dzMm = secondary.dz_mm || 0;
+    const tipRad = (secondary.tip_mrad || 0) * 1e-3;
+    const tiltRad = (secondary.tilt_mrad || 0) * 1e-3;
+
+    const inner = new THREE.Group();
+    inner.position.copy(vertexWorld).negate();
+    inner.add(mesh, edgeLines);
+
+    const pivot = new THREE.Group();
+    if (dxMm !== 0 || dyMm !== 0 || dzMm !== 0 || tipRad !== 0 || tiltRad !== 0) {
+      const r = new THREE.Matrix4().makeRotationY(tiltRad).multiply(new THREE.Matrix4().makeRotationX(tipRad));
+      pivot.quaternion.setFromRotationMatrix(r);
+    }
+    pivot.position.copy(vertexWorld).add(new THREE.Vector3(dxMm * MM, dyMm * MM, dzMm * MM));
+    pivot.add(inner);
+    secondaryGroup.add(pivot);
 
     state.secondaryMesh = mesh;
     state.secondaryFillMat = material;
     state.secondaryEdgeMat = edgeMat;
 
     // Mast: thin cylinder from the ground to the profile's lowest point.
+    // Left out of the pivot -- it represents a fixed support post, not part
+    // of the rigid mirror body the perturbation fields describe.
     const lowestZ = Math.min(...points.map((p) => p.y));
     if (lowestZ > 0) {
       const mastGeom = new THREE.CylinderGeometry(0.12, 0.12, lowestZ, 12);

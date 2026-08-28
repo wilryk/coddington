@@ -1078,7 +1078,9 @@ input.val::-webkit-inner-spin-button {
   flex: 0 0 330px;
   overflow-y: auto;
 }
-.tabcontent .subhead {
+.tabcontent .subhead,
+.stage .subhead,
+.inspector .subhead {
   color: var(--muted);
   font-size: 12.5px;
   margin: 16px 0 6px 0;

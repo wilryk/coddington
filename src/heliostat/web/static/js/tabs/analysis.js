@@ -27,6 +27,7 @@ import { store } from "../store.js";
 import { setVal, segButton } from "../fields.js";
 import {
   buildDayRequest,
+  buildFluxCsvRequest,
   buildTraceRequest,
   buildYearRequest,
   dayExportUrl,
@@ -43,6 +44,7 @@ import {
   postDayCancel,
   postDayStart,
   postFieldTrace,
+  postSecondaryFluxFeaCsv,
   postTrace,
   postYearCancel,
   postYearStart,
@@ -654,6 +656,39 @@ function physicsKey(body) {
     mode: body.mode,
     n_rays: body.n_rays != null ? body.n_rays : null,
   });
+}
+
+// docs/ui-spec-v0.2.md §C leftover: the secondary's own FEA CSV for
+// whichever timestep is selected -- same single-heliostat request shape as
+// js/main.js's exportSecondaryFluxFeaCsv (buildFluxCsvRequest, no `layout`
+// even in field mode: /api/trace/secondary_flux_fea.csv always reads
+// heliostat_x_mm/y_mm), just at this step's own sun position instead of the
+// live doc.sun one -- mirrors fluxRequestFor's own az/el override above.
+function exportSecondaryFluxFeaCsvForStep() {
+  const steps = dayResult && dayResult.steps;
+  const step = steps && selectedStepIndex != null ? steps[selectedStepIndex] : null;
+  if (!step) return;
+  const body = Object.assign(buildFluxCsvRequest(store.get("doc"), store.get("ui")), {
+    solar_az_deg: step.solar_az_deg,
+    solar_el_deg: step.solar_el_deg,
+  });
+  els.fluxSecFeaCsv.textContent = "Exporting…";
+  postSecondaryFluxFeaCsv(body)
+    .then((blob) => {
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "heliostat-secondary-flux-fea.csv";
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    })
+    .catch((err) => {
+      fluxError = (err && err.message) || "CSV export failed.";
+      paintIfVisible();
+    })
+    .finally(() => {
+      els.fluxSecFeaCsv.textContent = "Export CSV for FEA";
+    });
 }
 
 function resultIsStale() {
@@ -2466,6 +2501,22 @@ function build(container) {
   fluxFeaCsv.className = "an-fea-export";
   fluxFeaCsv.hidden = true;
   fluxPanel.appendChild(fluxFeaCsv);
+  // docs/ui-spec-v0.2.md §C leftover: the secondary's own FEA CSV for this
+  // timestep, same idiom as fluxFeaCsv above -- but the secondary map has no
+  // stored-job grid to link to (only the live single-heliostat endpoint
+  // /api/trace/secondary_flux_fea.csv, same limitation js/main.js's own
+  // secondary export lives with), so this is a fetch-then-download button
+  // like the run bar's exportFeaLink, not a plain href.
+  const fluxSecFeaCsv = document.createElement("a");
+  fluxSecFeaCsv.href = "#";
+  fluxSecFeaCsv.textContent = "Export CSV for FEA";
+  fluxSecFeaCsv.className = "an-fea-export";
+  fluxSecFeaCsv.hidden = true;
+  fluxSecFeaCsv.addEventListener("click", (e) => {
+    e.preventDefault();
+    exportSecondaryFluxFeaCsvForStep();
+  });
+  fluxPanel.appendChild(fluxSecFeaCsv);
   right.appendChild(fluxPanel);
 
   // -- sweep drill-down to one heliostat (docs/ui-spec-v0.2.md §M.2) --------
@@ -2699,6 +2750,7 @@ function build(container) {
     fluxCaption,
     fluxCompass,
     fluxFeaCsv,
+    fluxSecFeaCsv,
     drillPanel,
     drillIdInput,
     drillPlanSvg,
@@ -2994,6 +3046,7 @@ function paintFluxPanel() {
     els.fluxCaption.textContent = "";
     els.fluxCompass.textContent = "";
     els.fluxFeaCsv.hidden = true;
+    els.fluxSecFeaCsv.hidden = true;
   }
 
   if (!step) return showPlaceholder("Click a timestep to render its irradiance map.");
@@ -3018,10 +3071,12 @@ function paintFluxPanel() {
     els.secAbsorbedRow.num.textContent = fmtPower(fluxSecondary.absorbed_power_w);
     els.secPeakAbsorbedRow.num.textContent = fmtFlux(fluxSecondary.peak_absorbed_kw_m2);
     els.fluxSecFidelity.textContent = secondaryFidelityNote(fluxSecondary.fidelity);
-    // No secondary CSV export wired here -- the day-sweep endpoints
-    // (§D's dayFluxFeaCsvUrl) were not extended for spec §C; the run bar's
-    // own single-trace export (js/main.js) is the supported path for now.
+    // No stored-job grid for the secondary (unlike the receiver's
+    // dayFluxFeaCsvUrl below) -- always the live single-heliostat endpoint,
+    // via exportSecondaryFluxFeaCsvForStep above. Available exactly when
+    // showSecondary is true, since that already required fluxSecondary.flux_grid.
     els.fluxFeaCsv.hidden = true;
+    els.fluxSecFeaCsv.hidden = false;
   } else {
     els.fluxImg.src = fluxSrcUrl || "data:image/png;base64," + fluxPngBase64;
     els.fluxImg.hidden = false;
@@ -3030,6 +3085,7 @@ function paintFluxPanel() {
     els.fluxCaption.textContent = `${fmtHHMM(step.hour)} solar · peak ${fmtFlux(fluxPeakKwM2 != null ? fluxPeakKwM2 : step.peak_flux_kw_m2)}`;
     // Compass rider (§M) -- see compassCaptionFor.
     els.fluxCompass.textContent = compassCaptionFor(store.get("doc"));
+    els.fluxSecFeaCsv.hidden = true;
     // Only a sweep-stored map (fluxSrcUrl, backed by a live job id) has a
     // raw grid on the server to export -- an on-demand trace's flux_png and
     // a reopened saved run's stored PNG are pixels only, nothing to grid.

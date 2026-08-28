@@ -82,6 +82,16 @@ function build(container) {
     const rows = {};
     let warnBox = null;
     for (const field of fields) {
+      // docs/ui-spec-v0.2.md §E2: a field carrying `sectionHeader` starts a
+      // named subgroup (currently just "Perturbations") within its optics
+      // block -- same "subhead" convention tabs/shape.js uses for Surface
+      // figure / Facet curvature / Optical errors.
+      if (field.sectionHeader) {
+        const sub = document.createElement("div");
+        sub.className = "subhead";
+        sub.textContent = field.sectionHeader;
+        wrap.appendChild(sub);
+      }
       const input = numberRow(wrap, field);
       inputs[field.key] = input;
       rows[field.key] = input.parentElement;

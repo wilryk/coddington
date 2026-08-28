@@ -117,6 +117,18 @@ export function postFluxFeaCsv(body, signal) {
   return postForBlob("/trace/flux_fea.csv", body, signal).then((resp) => resp.blob());
 }
 
+// docs/ui-spec-v0.2.md §C leftover: the secondary's own incident-flux map,
+// same ANSYS-oriented FEA CSV convention as postFluxFeaCsv above (x, y,
+// flux, absorbed rows behind commented metadata -- see app.py's
+// _secondary_flux_fea_csv), just on the secondary's own surface instead of
+// the receiver's. Same single-heliostat-map-even-in-field-mode request
+// shape (the endpoint reads body.heliostat_x_mm/y_mm unconditionally, same
+// as flux_fea.csv); 404s for prime_focus or a secondary with no
+// single-valued flux-map parameterization.
+export function postSecondaryFluxFeaCsv(body, signal) {
+  return postForBlob("/trace/secondary_flux_fea.csv", body, signal).then((resp) => resp.blob());
+}
+
 // ---------------------------------------------------------------------------
 // library: named designs, receiver configs and projects (docs/ui-spec.md 5)
 // -- plus the read-only legacy `/api/setups` used for the Projects tab's

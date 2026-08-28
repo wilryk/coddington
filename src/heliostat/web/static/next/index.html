@@ -171,6 +171,11 @@
           </div>
           <div class="rformula">absorbed = (1 − R) × incident</div>
           <div class="rfidelity" id="flux-sec-fidelity"></div>
+          <!-- docs/ui-spec-v0.2.md §C leftover: the secondary's own
+               "Export CSV for FEA", same idiom as the run bar's receiver
+               export (js/panels/run.js's exportFeaLink) -- just calling
+               /api/trace/secondary_flux_fea.csv instead. -->
+          <a href="#" id="flux-sec-fea-export" class="an-fea-export" hidden>Export CSV for FEA</a>
         </div>
       </div>
     </div>

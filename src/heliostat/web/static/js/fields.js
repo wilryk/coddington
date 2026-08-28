@@ -371,6 +371,44 @@ export const RECEIVER_FIELD_TABLE = {
       step: 0.01,
       tooltip: "Fraction of secondary-incident power the secondary itself reflects back out; absorbed heat is (1 − R) × incident.",
     },
+    // docs/ui-spec-v0.2.md §E2: rigid-body misalignment of the secondary --
+    // exact geometry at every fidelity (unlike §C's flux-map fidelity note,
+    // no caveat needed). Wire units match AxiconOptics.secondary_dx_mm et
+    // al. exactly -- mm/mrad, no conversion layer -- and §H keeps
+    // mirror/receiver fabrication numbers in mm, so these stay unconverted
+    // like the rest of this table. sectionHeader groups them under their
+    // own "Perturbations" subhead (see panels/receiver.js + inspector.js).
+    {
+      key: "secondary_dx_mm",
+      label: "Decenter Δx (mm)",
+      path: opticsPath("secondary_dx_mm"),
+      sectionHeader: "Perturbations",
+      tooltip: "East/west rigid-body decenter of the secondary from its design position.",
+    },
+    {
+      key: "secondary_dy_mm",
+      label: "Decenter Δy (mm)",
+      path: opticsPath("secondary_dy_mm"),
+      tooltip: "North/south rigid-body decenter of the secondary from its design position.",
+    },
+    {
+      key: "secondary_dz_mm",
+      label: "Decenter Δz (mm)",
+      path: opticsPath("secondary_dz_mm"),
+      tooltip: "Vertical rigid-body decenter of the secondary from its design position.",
+    },
+    {
+      key: "secondary_tip_mrad",
+      label: "Tip (mrad)",
+      path: opticsPath("secondary_tip_mrad"),
+      tooltip: "Rigid-body rotation of the secondary about its vertex, tilting the surface north/south.",
+    },
+    {
+      key: "secondary_tilt_mrad",
+      label: "Tilt (mrad)",
+      path: opticsPath("secondary_tilt_mrad"),
+      tooltip: "Rigid-body rotation of the secondary about its vertex, tilting the surface east/west.",
+    },
   ],
   cassegrain: [
     {
@@ -418,6 +456,39 @@ export const RECEIVER_FIELD_TABLE = {
       max: 1,
       step: 0.01,
       tooltip: "Fraction of secondary-incident power the secondary itself reflects back out; absorbed heat is (1 − R) × incident.",
+    },
+    // See axicon's identical fields above -- CassegrainOptics.secondary_dx_mm
+    // et al., rotation about the Cassegrain secondary's own vertex_z_mm.
+    {
+      key: "secondary_dx_mm",
+      label: "Decenter Δx (mm)",
+      path: opticsPath("secondary_dx_mm"),
+      sectionHeader: "Perturbations",
+      tooltip: "East/west rigid-body decenter of the secondary from its design position.",
+    },
+    {
+      key: "secondary_dy_mm",
+      label: "Decenter Δy (mm)",
+      path: opticsPath("secondary_dy_mm"),
+      tooltip: "North/south rigid-body decenter of the secondary from its design position.",
+    },
+    {
+      key: "secondary_dz_mm",
+      label: "Decenter Δz (mm)",
+      path: opticsPath("secondary_dz_mm"),
+      tooltip: "Vertical rigid-body decenter of the secondary from its design position.",
+    },
+    {
+      key: "secondary_tip_mrad",
+      label: "Tip (mrad)",
+      path: opticsPath("secondary_tip_mrad"),
+      tooltip: "Rigid-body rotation of the secondary about its vertex, tilting the surface north/south.",
+    },
+    {
+      key: "secondary_tilt_mrad",
+      label: "Tilt (mrad)",
+      path: opticsPath("secondary_tilt_mrad"),
+      tooltip: "Rigid-body rotation of the secondary about its vertex, tilting the surface east/west.",
     },
   ],
 };

@@ -75,6 +75,14 @@ const DEFAULT_DOC = {
       // fraction. 0.90 matches AxiconOptics.secondary_reflectance's own
       // default (docs/secondary-irradiance-plan.md).
       secondary_reflectance: 0.9,
+      // docs/ui-spec-v0.2.md §E2: rigid-body misalignment, all zero so an
+      // unperturbed project traces bit-identically to before this feature
+      // existed (heliostat.geometry.secondary's own default-zero promise).
+      secondary_dx_mm: 0,
+      secondary_dy_mm: 0,
+      secondary_dz_mm: 0,
+      secondary_tip_mrad: 0,
+      secondary_tilt_mrad: 0,
     },
     cassegrain: {
       vertex_z_mm: 26993.999446877,
@@ -86,6 +94,12 @@ const DEFAULT_DOC = {
       // See AxiconOptics's identical field above -- CassegrainOptics.
       // secondary_reflectance shares the same 0.90 default.
       secondary_reflectance: 0.9,
+      // See axicon's identical fields above -- CassegrainOptics.secondary_dx_mm et al.
+      secondary_dx_mm: 0,
+      secondary_dy_mm: 0,
+      secondary_dz_mm: 0,
+      secondary_tip_mrad: 0,
+      secondary_tilt_mrad: 0,
     },
   },
   field: {

@@ -14,6 +14,7 @@ import {
   getFieldTraceResult,
   postFluxCsv,
   postFluxFeaCsv,
+  postSecondaryFluxFeaCsv,
   fetchManuscriptField,
   setManuscriptField,
 } from "./api.js";
@@ -177,6 +178,7 @@ const fluxSecAbsorbedLbl = document.getElementById("flux-sec-absorbed-lbl");
 const fluxSecAbsorbed = document.getElementById("flux-sec-absorbed");
 const fluxSecPeakAbsorbed = document.getElementById("flux-sec-peakabsorbed");
 const fluxSecFidelity = document.getElementById("flux-sec-fidelity");
+const fluxSecFeaExport = document.getElementById("flux-sec-fea-export");
 
 // Field-trace progress and its cancel control, deliberately NOT gated by
 // ui.tab (unlike #runbar's contents -- see renderTabs) -- a field trace is a
@@ -667,6 +669,29 @@ function exportFluxFeaCsv() {
     });
 }
 
+// docs/ui-spec-v0.2.md §C leftover: the secondary's own FEA CSV, same body
+// and download pattern as exportFluxFeaCsv above, just the secondary
+// endpoint -- wired from the flux overlay's Secondary panel (fluxSecFeaExport
+// below), since that is the only place with a secondary map to export from.
+function exportSecondaryFluxFeaCsv() {
+  const doc = store.get("doc");
+  const ui = store.get("ui");
+  const body = buildFluxCsvRequest(doc, ui);
+  postSecondaryFluxFeaCsv(body)
+    .then((blob) => {
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "heliostat-secondary-flux-fea.csv";
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    })
+    .catch((err) => {
+      store.set("ui.traceError", "CSV export failed: " + ((err && err.message) || "unknown error"));
+      renderAllPanels();
+    });
+}
+
 // v0.2 §M compass rider: N/E/S/W on a flat window's map edges; the unwrapped
 // cylinder/frustum axis labelled in compass terms instead, seam-to-seam.
 //
@@ -813,11 +838,15 @@ function paintFluxOverlay() {
     fluxSecAbsorbed.textContent = fmtPower(secondary.absorbed_power_w);
     fluxSecPeakAbsorbed.textContent = fmtFlux(secondary.peak_absorbed_kw_m2);
     fluxSecFidelity.textContent = secondaryFidelityNote(secondary.fidelity);
+    // §C leftover: only ever exportable from a live trace's own grid --
+    // same "the raw grid, not just the picture" gate as available above.
+    fluxSecFeaExport.hidden = !available;
   } else {
     fluxOverlayImg.hidden = false;
     fluxSecondaryCanvas.hidden = true;
     fluxSecondaryCaption.hidden = true;
     fluxSecondaryReadout.hidden = true;
+    fluxSecFeaExport.hidden = true;
 
     const kind = data.scene && data.scene.receiver ? data.scene.receiver.kind : null;
     const isFlat = kind === "flat";
@@ -841,6 +870,10 @@ fluxSurfaceReceiverBtn.addEventListener("click", () => store.set("ui.fluxSurface
 fluxSurfaceSecondaryBtn.addEventListener("click", () => {
   if (fluxSurfaceSecondaryBtn.classList.contains("disabled")) return;
   store.set("ui.fluxSurface", "secondary");
+});
+fluxSecFeaExport.addEventListener("click", (e) => {
+  e.preventDefault();
+  exportSecondaryFluxFeaCsv();
 });
 
 function openFluxOverlay() {
