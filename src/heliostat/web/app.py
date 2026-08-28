@@ -257,8 +257,11 @@ def _mc_secondary_flux(
     backend's chief-point deposit -- see ``secondary_fidelity`` on the cone
     result."""
     u_edges, v_edges, bin_area_m2 = _secondary_flux_edges(secondary)
-    p3 = np.vstack([secondary_xy[0], secondary_xy[1], np.zeros(secondary_xy.shape[1])])
-    uv = secondary_uv(secondary, p3)
+    # secondary_xy already carries the full (x, y, z) world point (see
+    # heliostat.trace.mc.trace_heliostat's return_secondary_hits) -- needed
+    # verbatim, not padded with a fake z=0, so secondary_uv can undo a spec
+    # §E2 rigid-body misalignment exactly.
+    uv = secondary_uv(secondary, secondary_xy)
     counts, _, _ = np.histogram2d(uv[1], uv[0], bins=[v_edges, u_edges])
     flux = counts * watts_per_ray / bin_area_m2
     return flux, u_edges, v_edges
@@ -658,6 +661,21 @@ class AxiconOptics(_StrictModel):
     #: this field changes no existing response.
     secondary_reflectance: float = Field(default=0.90, gt=0, le=1)
 
+    #: Spec §E2 rigid-body misalignment of the secondary -- decenter (mm)
+    #: and tip/tilt (mrad, about the vertex/apex; see
+    #: :func:`~heliostat.geometry.secondary._secondary_rotation_matrix` for
+    #: the axis convention). Exact geometry, so it applies at every
+    #: fidelity: passed straight through to
+    #: :class:`~heliostat.geometry.secondary.AxiconSecondary`'s own
+    #: identically-named fields. Defaults all zero, matching that class's
+    #: own defaults -- an unperturbed request traces bit-identically to
+    #: before this feature existed.
+    secondary_dx_mm: float = 0.0
+    secondary_dy_mm: float = 0.0
+    secondary_dz_mm: float = 0.0
+    secondary_tip_mrad: float = 0.0
+    secondary_tilt_mrad: float = 0.0
+
     @model_validator(mode="after")
     def _receiver_below_the_cone(self) -> "AxiconOptics":
         # solve_axicon's whole construction is "the beam travels down from
@@ -702,6 +720,17 @@ class CassegrainOptics(_StrictModel):
     #: See :attr:`AxiconOptics.secondary_reflectance` -- identical field,
     #: identical default, same reasoning.
     secondary_reflectance: float = Field(default=0.90, gt=0, le=1)
+
+    #: See :attr:`AxiconOptics.secondary_dx_mm` et al. -- identical fields,
+    #: identical defaults, passed through to
+    #: :class:`~heliostat.geometry.secondary.CassegrainSecondary`'s own
+    #: identically-named fields (rotation about its vertex rather than an
+    #: axicon's apex, but the same spec §E2 convention).
+    secondary_dx_mm: float = 0.0
+    secondary_dy_mm: float = 0.0
+    secondary_dz_mm: float = 0.0
+    secondary_tip_mrad: float = 0.0
+    secondary_tilt_mrad: float = 0.0
 
     @model_validator(mode="after")
     def _relay_must_be_solvable(self) -> "CassegrainOptics":
@@ -1995,6 +2024,11 @@ def _geometry_for(optics: str, params: OpticsParams | None = None):
             apex_height_mm=params.apex_height_mm,
             half_angle_deg=params.half_angle_deg,
             aperture_radius_mm=params.aperture_radius_mm,
+            dx_mm=params.secondary_dx_mm,
+            dy_mm=params.secondary_dy_mm,
+            dz_mm=params.secondary_dz_mm,
+            tip_mrad=params.secondary_tip_mrad,
+            tilt_mrad=params.secondary_tilt_mrad,
         )
         receiver = FlatWindowReceiver(
             z_mm=params.receiver_z_mm,
@@ -2012,6 +2046,11 @@ def _geometry_for(optics: str, params: OpticsParams | None = None):
             vertex_radius_mm=vertex_radius_mm,
             conic=conic,
             aperture_radius_mm=params.aperture_radius_mm,
+            dx_mm=params.secondary_dx_mm,
+            dy_mm=params.secondary_dy_mm,
+            dz_mm=params.secondary_dz_mm,
+            tip_mrad=params.secondary_tip_mrad,
+            tilt_mrad=params.secondary_tilt_mrad,
         )
         receiver = FlatWindowReceiver(
             z_mm=params.receiver_z_mm,

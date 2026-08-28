@@ -180,8 +180,9 @@ def _secondary_ring_clears(
     p_flat = np.repeat(pts, n_ring, axis=1)
 
     hit_pt, _, on_sec = secondary.redirect(p_flat, d_out_flat, {})
+    local_hit = secondary.to_local_point(hit_pt)
     radial = np.full(m * n_ring, np.inf)
-    radial[on_sec] = np.hypot(hit_pt[0], hit_pt[1])
+    radial[on_sec] = np.hypot(local_hit[0], local_hit[1])
     worst = radial.reshape(m, n_ring).max(axis=1)
     return worst <= (secondary.aperture_radius_mm - margin_mm)
 

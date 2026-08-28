@@ -571,6 +571,13 @@ def test_default_rect_matches_the_pinned_legacy_path(client):
                 # spec §C: explicit secondary reflectance, default 0.90 --
                 # see docs/secondary-irradiance-plan.md.
                 "secondary_reflectance": 0.90,
+                # spec §E2: rigid-body misalignment of the secondary,
+                # defaults all zero.
+                "secondary_dx_mm": 0.0,
+                "secondary_dy_mm": 0.0,
+                "secondary_dz_mm": 0.0,
+                "secondary_tip_mrad": 0.0,
+                "secondary_tilt_mrad": 0.0,
             },
         ),
         (
@@ -584,6 +591,11 @@ def test_default_rect_matches_the_pinned_legacy_path(client):
                 "window_half_u_mm": WINDOW_MM,
                 "window_half_v_mm": WINDOW_MM,
                 "secondary_reflectance": 0.90,
+                "secondary_dx_mm": 0.0,
+                "secondary_dy_mm": 0.0,
+                "secondary_dz_mm": 0.0,
+                "secondary_tip_mrad": 0.0,
+                "secondary_tilt_mrad": 0.0,
             },
         ),
     ],
@@ -629,6 +641,13 @@ def test_optics_resolved_echoes_the_defaults(client, optics):
             "window_half_v_mm",
             # spec §C: explicit secondary reflectance, default 0.90.
             "secondary_reflectance",
+            # spec §E2: rigid-body misalignment of the secondary, defaults
+            # all zero.
+            "secondary_dx_mm",
+            "secondary_dy_mm",
+            "secondary_dz_mm",
+            "secondary_tip_mrad",
+            "secondary_tilt_mrad",
         }
         assert resolved["vertex_z_mm"] == CASSEGRAIN_VERTEX_Z_MM
         assert resolved["focus_height_mm"] == CASSEGRAIN_FOCUS_HEIGHT_MM

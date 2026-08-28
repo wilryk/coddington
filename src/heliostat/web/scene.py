@@ -293,6 +293,31 @@ def _secondary_profile(secondary: Secondary, n_points: int = PROFILE_POINTS):
     return None
 
 
+def _secondary_perturbation_payload(secondary: Secondary) -> dict:
+    """Spec §E2 rigid-body misalignment fields, mm/mrad, for the scene's
+    ``secondary`` block.
+
+    ``_secondary_profile`` always draws the surface in its own nominal
+    (unperturbed) frame -- the physics-facing consumers care about the
+    perturbed surface, but this picture is deliberately the "design"
+    geometry, posed at the vertex the client already revolves the profile
+    about. Carrying the perturbation here rather than baking it into the
+    profile's own points lets the 3-D view pose the mesh (translate by
+    decenter, rotate by tip/tilt about the vertex) without this module
+    duplicating that transform in Python for a picture only. All zero
+    (identity pose) for anything with no rigid-body perturbation to report:
+    ``NoSecondary``, ``PyramidSecondary``, or an Axicon/Cassegrain left at
+    its default.
+    """
+    return {
+        "dx_mm": _round(getattr(secondary, "dx_mm", 0.0)),
+        "dy_mm": _round(getattr(secondary, "dy_mm", 0.0)),
+        "dz_mm": _round(getattr(secondary, "dz_mm", 0.0)),
+        "tip_mrad": _round(getattr(secondary, "tip_mrad", 0.0)),
+        "tilt_mrad": _round(getattr(secondary, "tilt_mrad", 0.0)),
+    }
+
+
 def _receiver_dict(receiver: Receiver) -> dict | None:
     """The receiver as the client needs it to draw: shape, dimensions, facing.
 
@@ -567,7 +592,11 @@ def build_scene(
         "heliostat": [_poly_payload(p) for p in polygons],
         "secondary": None
         if profile is None
-        else {"kind": profile[0], "profile": [[_round(r), _round(z)] for r, z in rings]},
+        else {
+            "kind": profile[0],
+            "profile": [[_round(r), _round(z)] for r, z in rings],
+            **_secondary_perturbation_payload(secondary),
+        },
         "receiver": _receiver_dict(receiver),
         "sun": [_round_unit(c) for c in sun],
         "rays": _rays_payload(paths, max_rays),
@@ -712,7 +741,11 @@ def build_field_scene(
         },
         "secondary": None
         if profile is None
-        else {"kind": profile[0], "profile": [[_round(r), _round(z)] for r, z in rings]},
+        else {
+            "kind": profile[0],
+            "profile": [[_round(r), _round(z)] for r, z in rings],
+            **_secondary_perturbation_payload(secondary),
+        },
         "receiver": _receiver_dict(receiver),
         "sun": [_round_unit(c) for c in sun],
         "rays": corner,
@@ -840,7 +873,11 @@ def build_geometry_scene(
             "heliostats": table,
             "secondary": None
             if profile is None
-            else {"kind": profile[0], "profile": [[_round(r), _round(z)] for r, z in rings]},
+            else {
+                "kind": profile[0],
+                "profile": [[_round(r), _round(z)] for r, z in rings],
+                **_secondary_perturbation_payload(secondary),
+            },
             "receiver": None if receiver is None else _receiver_dict(receiver),
             "sun": [_round_unit(c) for c in sun],
             "sun_below_horizon": bool(sun_below_horizon),
@@ -1199,7 +1236,12 @@ def field_miss_detection(
         needed = None
         aperture_miss_ids: list = []
     else:
-        radius = np.hypot(hit[0], hit[1])
+        # `hit` is world-frame (redirect() undoes a spec §E2 rigid-body
+        # misalignment on its way out); `aperture_radius_mm` is a property
+        # of the physical part's own body, so the comparison needs the same
+        # local-frame radius `redirect`'s own rim test used internally, not
+        # the point's distance from the world z-axis.
+        radius = np.hypot(*secondary.to_local_point(hit)[:2])
         needed = float(np.max(radius[deliver_sub]))
         beyond_actual = (radius > secondary.aperture_radius_mm) & deliver_sub
         aperture_miss_ids = sorted(int(i) for i in ids[on_enlarged][beyond_actual])

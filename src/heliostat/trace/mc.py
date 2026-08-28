@@ -445,10 +445,15 @@ def trace_heliostat(
         "watts_per_ray": source_power_w / n_rays if n_rays else 0.0,
     }
     if return_secondary_hits:
-        # Plan (x, y) of every ray that struck the secondary, whether or not
-        # it reached the receiver window -- for irradiance maps on the
-        # secondary itself.
-        result["secondary_xy"] = pre[:2].copy()
+        # World (x, y, z) of every ray that struck the secondary, whether or
+        # not it reached the receiver window -- for irradiance maps on the
+        # secondary itself. The full 3-D point (not just plan x, y) is kept
+        # so a spec §E2 rigid-body misalignment can be undone exactly: the
+        # world -> local inverse a perturbed secondary_uv() needs (via
+        # Secondary.to_local_point) is a rotation that mixes z into x and y,
+        # so a hit's z is load-bearing here even though the unperturbed
+        # secondary_uv formula itself never reads it.
+        result["secondary_xy"] = pre.copy()
     if return_paths:
         # `pre`/`d` are already down to the K = on_sec.sum() rays that
         # struck the secondary (or all of them, for NoSecondary); `hit_mask`
