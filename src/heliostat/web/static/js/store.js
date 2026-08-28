@@ -23,7 +23,15 @@ const DEFAULT_DOC = {
     surface: "twisting",
     // Reflectance is kept in the operator's usual unit (percent);
     // api.js's currentDesignPayload converts to the wire's 0-1 fraction.
-    errors: { slope_error_mrad: 0, specularity_mrad: 0, reflectance_pct: 90 },
+    // error_map (docs/ui-spec-v0.2.md §E) is null (no measured map) until
+    // an Import CSV… completes -- see js/tabs/shape.js.
+    errors: {
+      slope_error_mrad: 0,
+      specularity_mrad: 0,
+      reflectance_pct: 90,
+      pointing_error_mrad: 0,
+      error_map: null,
+    },
   },
   designParams: {
     rect: { width_mm: 5000, height_mm: 3000 },
@@ -59,8 +67,8 @@ const DEFAULT_DOC = {
       aperture_to_receiver_mm: 0,
       cylinder_radius_mm: 3000,
       cylinder_height_mm: 6000,
-      frustum_top_radius_mm: 2500,
-      frustum_bottom_radius_mm: 4000,
+      frustum_top_radius_mm: 4000,
+      frustum_bottom_radius_mm: 2500,
       frustum_height_mm: 6000,
     },
     axicon: {
@@ -70,6 +78,29 @@ const DEFAULT_DOC = {
       receiver_z_mm: 7000,
       window_half_u_mm: 2000,
       window_half_v_mm: 2000,
+      // Spec §C: fraction of secondary-incident power the secondary itself
+      // reflects back out; 1 - this is the absorbed-heat readout's own
+      // fraction. 0.90 matches AxiconOptics.secondary_reflectance's own
+      // default (docs/secondary-irradiance-plan.md).
+      secondary_reflectance: 0.9,
+      // docs/ui-spec-v0.2.md §E2: rigid-body misalignment, all zero so an
+      // unperturbed project traces bit-identically to before this feature
+      // existed (heliostat.geometry.secondary's own default-zero promise).
+      secondary_dx_mm: 0,
+      secondary_dy_mm: 0,
+      secondary_dz_mm: 0,
+      secondary_tip_mrad: 0,
+      secondary_tilt_mrad: 0,
+      // docs/ui-spec-v0.2.md §E2: surface deformation (a measured error map,
+      // §E's own machinery reused) + parametric warp on the secondary,
+      // MONTE CARLO ONLY -- null/all-zero so an unperturbed project traces
+      // bit-identically to before this feature existed, exactly like the
+      // rigid-body fields above (though those apply at every fidelity;
+      // these three do not -- see the fieldbadge on their own descriptors).
+      secondary_error_map: null,
+      secondary_defocus_um: 0,
+      secondary_astig_um: 0,
+      secondary_astig_axis_deg: 0,
     },
     cassegrain: {
       vertex_z_mm: 26993.999446877,
@@ -78,6 +109,21 @@ const DEFAULT_DOC = {
       aperture_radius_mm: 14000,
       window_half_u_mm: 2000,
       window_half_v_mm: 2000,
+      // See AxiconOptics's identical field above -- CassegrainOptics.
+      // secondary_reflectance shares the same 0.90 default.
+      secondary_reflectance: 0.9,
+      // See axicon's identical fields above -- CassegrainOptics.secondary_dx_mm et al.
+      secondary_dx_mm: 0,
+      secondary_dy_mm: 0,
+      secondary_dz_mm: 0,
+      secondary_tip_mrad: 0,
+      secondary_tilt_mrad: 0,
+      // See axicon's identical fields above -- CassegrainOptics.
+      // secondary_error_map/secondary_defocus_um et al.
+      secondary_error_map: null,
+      secondary_defocus_um: 0,
+      secondary_astig_um: 0,
+      secondary_astig_axis_deg: 0,
     },
   },
   field: {
@@ -123,14 +169,17 @@ const DEFAULT_DOC = {
 };
 
 const DEFAULT_UI = {
-  // All collapsed on open: the workspace opens on the 3D scene, and an
-  // expanded Field or Receiver stage would immediately swap it for that
-  // stage's own plan or elevation view.
+  // All collapsed on open (docs/ui-spec-v0.2.md §N): the app opens on the
+  // 3D View tab, and the Design tab's sidebar stages no longer drive which
+  // 2D view shows (that auto-morph retired -- see ui.view below).
   expanded: { heliostat: false, field: false, receiver: false, sun: false },
-  // "3d" | "plan" | "elevation". Not derived fresh from ui.expanded on
-  // read, so a manual "back to 3D" isn't clobbered by an already-expanded
-  // stage.
-  view: "3d",
+  // "plan" | "elevation" -- which of Design's two 2D views is showing,
+  // switched only by its own explicit toggle (main.js's design-view-plan /
+  // design-view-elevation buttons). 3D View has no view state of its own:
+  // it always shows the 3D scene. Pre-§N this also held "3d" and was
+  // coupled to ui.expanded.field/receiver (the "auto-morph" mockup M18a
+  // retires); that coupling is gone.
+  view: "plan",
   fidelity: "fast_accurate",
   mcRays: null,
   geometryPending: false,
@@ -156,12 +205,22 @@ const DEFAULT_UI = {
   libraryTab: "receivers", // "designs" | "receivers" | "projects"
   projectName: null,
   dirty: false,
-  // Which full-screen tab is showing -- "workspace" | "shape" | "analysis".
-  // `shapeHeliostatId` is which heliostat the Heliostat Shape tab previews;
-  // null means "no explicit pick yet", so js/tabs/shape.js falls back to a
-  // deterministic median-radius heliostat from the live field.
-  tab: "workspace",
+  // Which top-level tab is showing -- "design" | "3dview" | "shape" |
+  // "analysis" (docs/ui-spec-v0.2.md §N: the old single "workspace" tab
+  // split into Design, the authoring tab, and 3D View, the observing/
+  // simulating tab the app now opens on). `shapeHeliostatId` is which
+  // heliostat the Heliostat Shape tab previews; null means "no explicit
+  // pick yet", so js/tabs/shape.js falls back to a deterministic
+  // median-radius heliostat from the live field.
+  tab: "3dview",
   shapeHeliostatId: null,
+  // Spec §C / mockup M9: Receiver | Secondary selector shown wherever a
+  // trace flux map is on screen (run bar's flux overlay, Analysis tab's
+  // timestep map) -- one shared preference rather than a copy per view, so
+  // picking "Secondary" in one place is what you meant everywhere else too.
+  // Only ever meaningful for axicon/cassegrain; a prime-focus doc simply
+  // has nothing to show for it (see fluxSecondaryAvailable helpers).
+  fluxSurface: "receiver",
 };
 
 function createStore() {

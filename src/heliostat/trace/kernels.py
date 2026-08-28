@@ -170,6 +170,7 @@ def deposit(
     hess: np.ndarray | None = None,
     mask: np.ndarray | None = None,
     wrap_u: bool = False,
+    jac_smax: float | None = None,
 ) -> None:
     """Accumulate one sample point's mapped kernel into ``out`` in place.
 
@@ -197,6 +198,12 @@ def deposit(
         one surface point — all of them are angular clips, so one raster
         expresses any combination, penumbra included. A masked deposit's
         conserved mass is ``weight * mask_transmitted_fraction(...)``.
+    :param jac_smax: optional precomputed top singular value of ``jac``
+        (``sqrt(eigvalsh(jac @ jac.T).max())``). A caller that already
+        needs this value for its own footprint-reach bound (e.g. the cone
+        tracer's transmission-skip test) can pass it here to avoid paying
+        for the same eigenproblem twice; leaving it ``None`` computes it
+        here instead, with an identical result either way.
 
     The kernel is evaluated at bin centres — exact in the limit of bins
     small against the kernel footprint, which holds by orders of magnitude
@@ -213,7 +220,7 @@ def deposit(
     # support under jac is an ellipse whose largest reach is the largest
     # singular value of jac times the support radius; the quadratic term
     # can push the true image out by up to |H| support² / 2 more.
-    smax = np.sqrt(np.linalg.eigvalsh(jac @ jac.T).max())
+    smax = jac_smax if jac_smax is not None else np.sqrt(np.linalg.eigvalsh(jac @ jac.T).max())
     reach = smax * kernel.support_rad
     if hess is not None:
         reach += 0.5 * float(np.abs(hess).max()) * kernel.support_rad**2 * 2.0

@@ -58,6 +58,15 @@ const CALLOUT_LABELS = {
 let built = false;
 let els = {};
 let lastGeometry = null;
+let builtContainer = null;
+
+// v0.2 fix wave item 4: same zoom/pan mechanism as ./plan.js (see its own
+// comment for the full rationale) -- null = auto-fit, else the live
+// {scale, panX, panY} on top of the height-driven fit computeProjection
+// would otherwise recompute from scratch on every render.
+let manualView = null;
+let lastProj = null;
+let suppressNextClick = false;
 
 // Called by main.js on every successful /api/scene/geometry response --
 // never on error, so (like the 3D scene) this view keeps drawing the last
@@ -66,10 +75,23 @@ export function setGeometry(data) {
   lastGeometry = data;
 }
 
+function resetView() {
+  if (!manualView) return;
+  manualView = null;
+  if (builtContainer) render(builtContainer);
+}
+
 // Callouts live in a sibling HTML layer, not inside the SVG (see build()),
 // so a click on one never reaches this handler at all -- anything that does
 // arrive here is either a data-kind shape or empty ground.
 function handleClick(e) {
+  if (suppressNextClick) {
+    // Mirrors plan.js's own guard: a pan drag that ended here must not also
+    // fire the click semantics (select/deselect) under the pointer's rest
+    // position -- see handlePointerUp below.
+    suppressNextClick = false;
+    return;
+  }
   const el = e.target.closest && e.target.closest("[data-kind]");
   if (!el) {
     store.set("ui.selection", null); // empty ground deselects
@@ -77,6 +99,68 @@ function handleClick(e) {
   }
   const kind = el.dataset.kind;
   store.set("ui.selection", { kind, id: null });
+}
+
+// Wheel over the SVG zooms about the cursor -- identical construction to
+// ./plan.js's own handleWheel, just against this view's (y, z) projection.
+const ZOOM_MIN_FACTOR = 0.15;
+const ZOOM_MAX_FACTOR = 40;
+
+function handleWheel(e) {
+  if (!lastProj) return;
+  e.preventDefault();
+  const rect = els.svg.getBoundingClientRect();
+  const mx = ((e.clientX - rect.left) / rect.width) * lastProj.w;
+  const my = ((e.clientY - rect.top) / rect.height) * lastProj.h;
+  const proj = lastProj;
+  const factor = Math.exp(-e.deltaY * 0.0015);
+  const minScale = proj.fitScale * ZOOM_MIN_FACTOR;
+  const maxScale = proj.fitScale * ZOOM_MAX_FACTOR;
+  const newScale = Math.min(maxScale, Math.max(minScale, proj.scale * factor));
+
+  // toScreen: sx = cx + ym*scale, sy = groundPx - (zm-zBottom)*scale --
+  // solve for the world point under the cursor, then pick the new cx/groundPx
+  // (as pan offsets from the fit basis) that put it back under the cursor.
+  const ym = (mx - proj.cx) / proj.scale;
+  const zm = proj.zBottom + (proj.groundPx - my) / proj.scale;
+  const newCx = mx - ym * newScale;
+  const newGroundPx = my + (zm - proj.zBottom) * newScale;
+  manualView = { scale: newScale, panX: newCx - proj.baseCx, panY: newGroundPx - proj.baseGroundPx };
+  render(builtContainer);
+}
+
+const PAN_DRAG_THRESHOLD_PX = 3;
+let dragState = null;
+
+function handlePointerDown(e) {
+  if (e.button !== 0 || !lastProj) return;
+  dragState = {
+    startX: e.clientX,
+    startY: e.clientY,
+    startPanX: manualView ? manualView.panX : 0,
+    startPanY: manualView ? manualView.panY : 0,
+    moved: false,
+  };
+  els.svg.setPointerCapture(e.pointerId);
+}
+
+function handlePointerMove(e) {
+  if (!dragState) return;
+  const dx = e.clientX - dragState.startX;
+  const dy = e.clientY - dragState.startY;
+  if (!dragState.moved && Math.hypot(dx, dy) < PAN_DRAG_THRESHOLD_PX) return;
+  dragState.moved = true;
+  const scale = manualView ? manualView.scale : lastProj.fitScale;
+  manualView = { scale, panX: dragState.startPanX + dx, panY: dragState.startPanY + dy };
+  render(builtContainer);
+}
+
+function handlePointerUp(e) {
+  if (dragState && dragState.moved) suppressNextClick = true;
+  dragState = null;
+  if (els.svg.hasPointerCapture && els.svg.hasPointerCapture(e.pointerId)) {
+    els.svg.releasePointerCapture(e.pointerId);
+  }
 }
 
 function build(container) {
@@ -99,6 +183,28 @@ function build(container) {
     layers[name] = container.querySelector('[data-layer="' + name + '"]');
   }
   svg.addEventListener("click", handleClick);
+  svg.addEventListener("dblclick", (e) => {
+    e.preventDefault();
+    resetView();
+  });
+  svg.addEventListener("wheel", handleWheel, { passive: false });
+  svg.addEventListener("pointerdown", handlePointerDown);
+  svg.addEventListener("pointermove", handlePointerMove);
+  svg.addEventListener("pointerup", handlePointerUp);
+  svg.addEventListener("pointercancel", handlePointerUp);
+
+  // Reset-view chip (v0.2 fix wave item 4's "double-click or a small reset
+  // control"), a plain HTML button rather than SVG chrome -- simplest way to
+  // share the callout layer's overlay pattern. Shown only while manualView
+  // is non-null (render() below toggles it), top-left where nothing else in
+  // this view ever draws.
+  const resetBtn = document.createElement("button");
+  resetBtn.type = "button";
+  resetBtn.className = "elevation-reset-view";
+  resetBtn.textContent = "Reset view";
+  resetBtn.hidden = true;
+  resetBtn.addEventListener("click", resetView);
+  container.appendChild(resetBtn);
 
   // Callouts float in an HTML layer over the SVG (real <input>s, not SVG
   // text) so fields.js's setVal/focused-input guard works exactly as it
@@ -117,6 +223,7 @@ function build(container) {
       if (!field) continue;
       const wrap = document.createElement("div");
       wrap.className = "callout";
+      if (field.tooltip) wrap.title = field.tooltip;
       const input = document.createElement("input");
       input.type = "number";
       input.className = "val";
@@ -152,8 +259,9 @@ function build(container) {
   groundWrap.appendChild(groundLab);
   calloutLayer.appendChild(groundWrap);
 
-  els = { svg, bg, layers, calloutLayer, callouts, groundWrap };
+  els = { svg, bg, layers, calloutLayer, callouts, groundWrap, resetBtn };
   built = true;
+  builtContainer = container;
   window.addEventListener("resize", () => {
     if (!container.hidden) render(container);
   });
@@ -178,10 +286,40 @@ function computeProjection(doc, geometry, w, h) {
 
   const marginPx = 90;
   const zSpanM = Math.max((zTop - zBottom) * 1.15, 1);
-  const scale = Math.max((h - 2 * marginPx) / zSpanM, 0.01);
-  const cx = w / 2; // tower axis (y = 0) centered; the far field clips
-  const groundPx = h - marginPx;
-  return { scale, cx, groundPx, zBottom, visibleHalfYm: w / 2 / scale };
+  const fitScale = Math.max((h - 2 * marginPx) / zSpanM, 0.01);
+  const baseCx = w / 2; // tower axis (y = 0) centered; the far field clips
+  const baseGroundPx = h - marginPx;
+
+  // v0.2 fix wave item 4: manualView (see module comment) overrides the fit
+  // with a live scale + pixel pan offset from this same fitted basis, so
+  // zooming/panning survives a doc/geometry re-render instead of snapping
+  // back to the fit every time.
+  if (manualView) {
+    return {
+      scale: manualView.scale,
+      cx: baseCx + manualView.panX,
+      groundPx: baseGroundPx + manualView.panY,
+      zBottom,
+      visibleHalfYm: w / 2 / manualView.scale,
+      fitScale,
+      baseCx,
+      baseGroundPx,
+      w,
+      h,
+    };
+  }
+  return {
+    scale: fitScale,
+    cx: baseCx,
+    groundPx: baseGroundPx,
+    zBottom,
+    visibleHalfYm: w / 2 / fitScale,
+    fitScale,
+    baseCx,
+    baseGroundPx,
+    w,
+    h,
+  };
 }
 
 function toScreen(proj, ym, zm) {
@@ -594,6 +732,8 @@ export function render(container) {
   els.bg.setAttribute("height", h);
 
   const proj = computeProjection(doc, geometry, w, h);
+  lastProj = proj;
+  els.resetBtn.hidden = !manualView;
 
   els.layers.ground.innerHTML = groundSvg(proj, w);
   els.layers.rays.innerHTML = raysSvg(geometry, ui, proj);

@@ -420,11 +420,23 @@ def traced_day_energy(summary: pd.DataFrame, cfg, dni_provider, date, source_dat
     trace's time sampling is dense enough; a gap is evidence it is not.
 
     The samples themselves only cover ``sunrise + margin`` .. ``sunset -
-    margin`` (see ``solar.build_time_grid``), so the integral is anchored to
-    zero at the true sunrise and sunset from :func:`solar.sunrise_sunset`.
-    Both DNI and the cosine incidence factor are genuinely ~0 at the horizon,
-    so the wings between the horizon and the first/last sample are real
-    energy that a trapezoid over the samples alone would silently drop.
+    margin``, further narrowed by ``cfg.sweep.min_elevation_deg`` if set (see
+    ``solar.build_time_grid``), so the integral is anchored to zero power at
+    :func:`solar.elevation_floor_edges` -- the true sunrise/sunset from
+    :func:`solar.sunrise_sunset`, narrowed by that same elevation floor.
+    Anchoring at the true horizon regardless of the floor would be wrong:
+    DNI and the cosine incidence factor really are ~0 exactly at the
+    horizon, but a straight line from that true zero to the first sample
+    the floor kept (already well above the floor, not just above the
+    horizon) cuts across a real, non-linear power ramp and can OVERSTATE the
+    day's energy -- measured to happen (a 5 deg floor scoring a higher total
+    than a 0 deg one) before this anchor was changed to track the floor.
+    Anchoring at the floor's own edge instead makes the anchor coincide with
+    the first/last surviving sample (up to the small ``sunrise_margin_min``
+    sliver, the one case where the wing is thin enough that a straight line
+    across it is a fair approximation, exactly as it always was); the
+    excluded band is simply dropped rather than approximated, which only
+    ever removes energy from the total, never adds it.
 
     Deliberately makes no assumption about how many timesteps a day has or
     where they fall in the hour -- the trace grid is not whole-hour and not a
@@ -460,10 +472,7 @@ def traced_day_energy(summary: pd.DataFrame, cfg, dni_provider, date, source_dat
     scale = np.array([dni_provider.scale(date, float(h)) for h in hours])
     power_w = grouped["power_w"].to_numpy(float) * scale
 
-    site = cfg.site
-    rise, set_ = solar.sunrise_sunset(
-        site.latitude, site.longitude, site.timezone, date.year, date.month, date.day
-    )
+    rise, set_ = solar.elevation_floor_edges(cfg, date)
 
     # Anchor only OUTSIDE the samples. On a day traced against its own date
     # this is unconditional -- build_time_grid samples inside

@@ -11,6 +11,8 @@ before it existed).
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 
@@ -22,7 +24,12 @@ from heliostat.geometry.aiming import (  # noqa: E402
     solve_prime_focus,
     solve_prime_focus_to_receiver,
 )
-from heliostat.geometry.receiver import CylinderReceiver, FrustumReceiver  # noqa: E402
+from heliostat.geometry.receiver import (  # noqa: E402
+    ApertureClippedReceiver,
+    CylinderReceiver,
+    FlatWindowReceiver,
+    FrustumReceiver,
+)
 from heliostat.web.app import (  # noqa: E402
     PRIME_FOCUS_HEIGHT_MM,
     _prime_focus_receiver,
@@ -412,3 +419,324 @@ def test_an_axicon_never_collects_more_than_arrives(client, x_mm, y_mm, params):
         body["optics_params"] = params
     data = client.post("/api/trace", json=body).json()
     assert data["power_w"] <= data["incident_power_w"] * 1.002
+
+
+# ---------------------------------------------------------------------------
+# uv_to_world: the exact inverse of intersect(), used to draw real 3-D ray
+# paths on a receiver's own hit point (release-night bug: cylinder/frustum
+# had no such inverse, so every ray path carried a NaN fourth vertex and was
+# dropped whole by the scene's own finite-only filter -- "rays disappear").
+
+
+def _random_rays_from_field(rng, n=500):
+    """Rays scattered from plausible heliostat positions toward roughly the
+    tower top, biased so most (but not all) actually cross a receiver near
+    35 m up -- a mix of near and far ground radii, like a real field."""
+    rad = rng.uniform(4000.0, 90000.0, n)
+    ang = rng.uniform(0.0, 2.0 * np.pi, n)
+    p = np.vstack([rad * np.cos(ang), rad * np.sin(ang), np.zeros(n)])
+    aim = np.vstack(
+        [rng.uniform(-3000.0, 3000.0, n), rng.uniform(-3000.0, 3000.0, n), rng.uniform(30000.0, 40000.0, n)]
+    )
+    d = aim - p
+    d /= np.linalg.norm(d, axis=0)
+    return p, d
+
+
+@pytest.mark.parametrize(
+    "receiver",
+    [
+        FlatWindowReceiver(z_mm=35335.0, half_u_mm=2000.0, half_v_mm=2000.0, facing="down"),
+        FlatWindowReceiver(
+            z_mm=35335.0, half_u_mm=2000.0, half_v_mm=2000.0, facing="down",
+            center_x_mm=1500.0, center_y_mm=-800.0,
+        ),
+        CylinderReceiver(center_z_mm=35335.0, radius_mm=3000.0, height_mm=6000.0),
+        CylinderReceiver(
+            center_z_mm=35335.0, radius_mm=3000.0, height_mm=6000.0,
+            center_x_mm=1500.0, center_y_mm=-800.0,
+        ),
+        FrustumReceiver(z_bot_mm=32335.0, r_bot_mm=4000.0, z_top_mm=38335.0, r_top_mm=2500.0),
+        FrustumReceiver(z_bot_mm=32335.0, r_bot_mm=2500.0, z_top_mm=38335.0, r_top_mm=4000.0),
+        ApertureClippedReceiver(
+            aperture=FlatWindowReceiver(z_mm=35335.0, half_u_mm=5000.0, half_v_mm=5000.0, facing="down"),
+            inner=CylinderReceiver(center_z_mm=35335.0, radius_mm=3000.0, height_mm=6000.0),
+        ),
+    ],
+    ids=["flat", "flat-offaxis", "cylinder", "cylinder-offaxis", "frustum", "frustum-inverted", "aperture-clipped"],
+)
+def test_uv_to_world_is_the_exact_inverse_of_intersect(receiver):
+    """For every receiver kind, `uv_to_world(intersect(p, d)[1])` must land
+    on the exact same 3-D point the ray actually crossed -- checked by
+    independently recomputing that point from the ray's own parametric line
+    (using intersect's returned uv only to know *which* height/slant it hit),
+    never from uv_to_world itself, so this cannot be a tautology."""
+    rng = np.random.default_rng(0)
+    p, d = _random_rays_from_field(rng, n=800)
+    hit, uv = receiver.intersect(p, d)
+    assert hit.sum() > 400  # sanity: the ray bundle actually meets this shape a lot
+
+    world = receiver.uv_to_world(uv)
+    ph, dh = p[:, hit], d[:, hit]
+
+    # Recompute each hit's true 3-D point independently: solve the ray's own
+    # parameter t from matching world[2] (z), the one coordinate every one
+    # of these shapes reports directly or via a simple linear map -- then
+    # compare the ray-parametrized (x, y) against uv_to_world's (x, y).
+    t = (world[2] - ph[2]) / dh[2]
+    x_expected = ph[0] + t * dh[0]
+    y_expected = ph[1] + t * dh[1]
+    np.testing.assert_allclose(world[0], x_expected, atol=1e-6)
+    np.testing.assert_allclose(world[1], y_expected, atol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# rays render on curved receivers (release-night bug: field_corner_rays and
+# trace_heliostat's return_paths both reconstructed a receiver hit's world z
+# via getattr(receiver, "z_mm", nan) -- always NaN for cylinder/frustum, so
+# every ray's fourth vertex was non-finite and the whole ray got dropped by
+# the scene's finite-only filter. Switching a prime-focus setup to cylinder,
+# or the frustum default, showed a receiver mesh with no rays on it at all.)
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"receiver_type": "cylinder", "cylinder_radius_mm": 3000.0, "cylinder_height_mm": 6000.0},
+        {"receiver_type": "frustum"},
+    ],
+    ids=["cylinder", "frustum"],
+)
+def test_single_heliostat_trace_draws_rays_on_a_curved_receiver(client, params):
+    resp = client.post("/api/trace", json=_payload(params, mode="monte_carlo"))
+    assert resp.status_code == 200
+    data = resp.json()
+    rays = data["scene"]["rays"]
+    assert len(rays) > 0
+    # Every ray's receiver-hit vertex (index 3) must be finite -- the NaN
+    # this bug produced would have been silently dropped whole, not
+    # reported as a NaN, so also check the count is a healthy fraction of
+    # what a flat receiver draws for the same request.
+    for ray in rays:
+        assert all(math.isfinite(c) for c in ray[3])
+    flat = client.post("/api/trace", json=_payload(None, mode="monte_carlo")).json()
+    assert len(rays) >= 0.3 * len(flat["scene"]["rays"])
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"receiver_type": "cylinder", "cylinder_radius_mm": 3000.0, "cylinder_height_mm": 6000.0},
+        {"receiver_type": "frustum"},
+    ],
+    ids=["cylinder", "frustum"],
+)
+def test_field_trace_draws_rays_on_a_curved_receiver(client, params):
+    resp = client.post("/api/field/trace", json=_field_payload(params))
+    assert resp.status_code == 200
+    rays = resp.json()["scene"]["rays"]
+    assert len(rays) > 0
+    for ray in rays:
+        assert all(math.isfinite(c) for c in ray[3])
+
+
+# ---------------------------------------------------------------------------
+# frustum orientation: the mesh scene.py/scene3d.js draw pairs r_top_mm with
+# z_top_mm and r_bot_mm with z_bot_mm; pin that the physics traces onto that
+# same surface, so a rendered "wide end" always matches where flux actually
+# lands (docs/ui-spec.md 2.2: reported bug was the two looking inverted
+# relative to each other).
+
+
+def test_frustum_traced_hits_land_within_the_rendered_surfaces_extent(client):
+    """Every traced ray's receiver-hit point, in world frame, must fall
+    within the exact z-range and radius-range the 3-D/elevation views draw
+    the mesh over (z_bot_mm..z_top_mm, and the taper's own radius at that
+    height) -- proving the rendered shape and the traced surface are the
+    same object, not just two numbers that happen not to have been swapped
+    anywhere obvious."""
+    resp = client.post(
+        "/api/trace",
+        json=_payload({"receiver_type": "frustum"}, mode="monte_carlo"),
+    )
+    data = resp.json()
+    receiver = data["scene"]["receiver"]
+    assert receiver["kind"] == "frustum"
+    z_bot, r_bot = receiver["z_bot_mm"], receiver["r_bot_mm"]
+    z_top, r_top = receiver["z_top_mm"], receiver["r_top_mm"]
+    assert z_top > z_bot
+
+    rays = data["scene"]["rays"]
+    assert len(rays) > 0
+    for ray in rays:
+        x, y, z = ray[3]
+        assert z_bot - 1.0 <= z <= z_top + 1.0
+        frac = (z - z_bot) / (z_top - z_bot)
+        r_expected = r_bot + frac * (r_top - r_bot)
+        assert math.hypot(x, y) == pytest.approx(r_expected, abs=1.0)
+
+
+def test_frustum_uv_to_world_pins_bottom_and_top_rim_to_the_dataclass_fields():
+    """Direct pin, independent of any web-layer plumbing: v=0 (bottom rim)
+    maps to z_bot_mm at radius r_bot_mm; v=slant_length_mm (top rim) maps to
+    z_top_mm at radius r_top_mm -- the exact pairing scene.py's receiver
+    dict and scene3d.js's CylinderGeometry(r_top_mm, r_bot_mm, ...) rely on
+    to draw the wide end where the physics actually put it."""
+    receiver = FrustumReceiver(z_bot_mm=32335.0, r_bot_mm=4000.0, z_top_mm=38335.0, r_top_mm=2500.0)
+    uv_bottom = np.array([[0.0], [0.0]])
+    uv_top = np.array([[0.0], [receiver.slant_length_mm]])
+    x0, y0, z0 = receiver.uv_to_world(uv_bottom)[:, 0]
+    x1, y1, z1 = receiver.uv_to_world(uv_top)[:, 0]
+    assert z0 == pytest.approx(receiver.z_bot_mm, abs=1e-6)
+    assert math.hypot(x0, y0) == pytest.approx(receiver.r_bot_mm, abs=1e-6)
+    assert z1 == pytest.approx(receiver.z_top_mm, abs=1e-6)
+    assert math.hypot(x1, y1) == pytest.approx(receiver.r_top_mm, abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# peak vs mean flux (user-reported bug: a FRUSTUM trace once reported peak
+# 1007.1 kW/m^2 but mean 1393.1 kW/m^2 -- mean > peak is impossible for two
+# numbers drawn from one consistently-normalised flux field. Root cause: the
+# results-strip's mean flux (run.js's old deriveMetrics) divided power_w by a
+# box built from optics_resolved's window_half_u/v_mm -- the entrance
+# APERTURE's own half-extents (PrimeFocusOptics), unrelated to the actual
+# absorbing surface's size for a curved receiver. peak_flux_kw_m2, by
+# contrast, has always come from the true per-bin curved-surface areas
+# (Receiver.bin_areas_m2). The fix: the backend now reports its own
+# mean_flux_kw_m2 (app.py's _mean_flux_kw_m2), the area-weighted mean of the
+# SAME flux grid peak_flux_kw_m2 takes its max from, which is <= that max by
+# construction; the frontend just reads it instead of re-deriving it.
+
+
+def test_frustum_bin_areas_sum_to_the_analytic_lateral_area():
+    """`FrustumReceiver.bin_areas_m2` varies row by row (bins shrink toward
+    the narrow end), but summed over the whole grid it must reproduce the
+    textbook lateral-surface-area formula for a truncated cone, regardless of
+    grid resolution or which end is wider."""
+    for r_bot, r_top, z_bot, z_top in [
+        (2500.0, 4000.0, 30000.0, 36000.0),  # flares outward (upright)
+        (4000.0, 2500.0, 30000.0, 36000.0),  # tapers inward (inverted)
+    ]:
+        receiver = FrustumReceiver(z_bot_mm=z_bot, r_bot_mm=r_bot, z_top_mm=z_top, r_top_mm=r_top)
+        slant_m = receiver.slant_length_mm / 1000.0
+        analytic_area_m2 = math.pi * (r_bot + r_top) / 1000.0 * slant_m
+        for grid in [(64, 32), (128, 128), (16, 200)]:
+            total = float(np.sum(receiver.bin_areas_m2(grid)))
+            assert total == pytest.approx(analytic_area_m2, rel=1e-9)
+
+
+@pytest.mark.parametrize(
+    "optics_params",
+    [
+        {},
+        {"receiver_type": "cylinder", "cylinder_radius_mm": 3000.0, "cylinder_height_mm": 6000.0},
+        {"receiver_type": "frustum"},
+        # A frustum much bigger than the (unrelated) entrance aperture --
+        # the configuration that used to invert peak and mean once enough
+        # power landed relative to the aperture's own tiny box area.
+        {
+            "receiver_type": "frustum",
+            "frustum_bottom_radius_mm": 6000.0,
+            "frustum_top_radius_mm": 8000.0,
+            "frustum_height_mm": 10000.0,
+            "focus_height_mm": 40000.0,
+        },
+    ],
+    ids=["flat", "cylinder", "frustum", "frustum-oversized"],
+)
+def test_single_trace_peak_flux_is_never_below_mean_flux(client, optics_params):
+    data = client.post("/api/trace", json=_payload(optics_params, mode="fast_accurate")).json()
+    assert data["power_w"] > 0
+    assert data["peak_flux_kw_m2"] >= data["mean_flux_kw_m2"]
+
+
+@pytest.mark.parametrize(
+    "optics_params",
+    [
+        {"receiver_type": "cylinder", "cylinder_radius_mm": 3000.0, "cylinder_height_mm": 6000.0},
+        {
+            "receiver_type": "frustum",
+            "frustum_bottom_radius_mm": 6000.0,
+            "frustum_top_radius_mm": 8000.0,
+            "frustum_height_mm": 10000.0,
+            "focus_height_mm": 40000.0,
+        },
+    ],
+    ids=["cylinder", "frustum-oversized"],
+)
+def test_field_trace_peak_flux_is_never_below_mean_flux(optics_params):
+    """Same claim with several heliostats landing across more of the
+    surface -- the buggy aperture-box divisor only diverged far enough from
+    the true surface area to invert peak/mean once a field (not just one
+    mirror) was summed onto it."""
+    client = TestClient(create_app())
+    resp = client.post(
+        "/api/field/trace",
+        json=_field_payload(optics_params, n=40, mode="ultra_fast"),
+    )
+    data = resp.json()
+    assert resp.status_code == 200
+    assert data["power_w"] > 0
+    assert data["peak_flux_kw_m2"] >= data["mean_flux_kw_m2"]
+
+
+# ---------------------------------------------------------------------------
+# adaptive flux grid (striping fix): a curved receiver unrolls its FULL
+# circumference into u while v spans only its height/slant, so the historical
+# square FLUX_GRID left u-bins ~pi*(diameter/height) coarser than v-bins
+# (~146 mm vs 47 mm on the default cylinder) -- a single heliostat's spot was
+# ~4 bins wide and every flux map striped, in BOTH backends, because they
+# share the same edges. _receiver_flux_grid widens n_u to square-ish bins.
+
+
+class TestAdaptiveFluxGrid:
+    def test_flat_window_keeps_the_historical_square_grid(self):
+        from heliostat.web.app import FLUX_GRID, _receiver_flux_grid
+
+        flat = FlatWindowReceiver(z_mm=35335.0, half_u_mm=2000.0, half_v_mm=2000.0, facing="down")
+        assert _receiver_flux_grid(flat) == (FLUX_GRID, FLUX_GRID)
+
+    def test_default_cylinder_gets_square_ish_bins(self):
+        from heliostat.web.app import FLUX_GRID, FLUX_GRID_TEXTURE_DIM, _receiver_flux_grid
+
+        cyl = CylinderReceiver(center_z_mm=35335.0, radius_mm=3000.0, height_mm=6000.0)
+        n_u, n_v = _receiver_flux_grid(cyl)
+        assert n_v == FLUX_GRID
+        assert n_u == 448  # ceil(128*pi / 64) * 64 -- pinned so payload sizes stay known
+        (u0, u1), (v0, v1) = cyl.uv_extent()
+        du, dv = (u1 - u0) / n_u, (v1 - v0) / n_v
+        # The point of the fix: u resolution within ~25% of v resolution,
+        # instead of the old pi-fold mismatch.
+        assert du / dv < 1.25
+        # Drape texture block-averaging must divide evenly.
+        assert n_u % FLUX_GRID_TEXTURE_DIM == 0
+
+    def test_frustum_and_aperture_clipped_receivers_also_adapt(self):
+        from heliostat.web.app import FLUX_GRID, FLUX_GRID_MAX_U, _receiver_flux_grid
+
+        fr = FrustumReceiver(z_bot_mm=32335.0, r_bot_mm=2500.0, z_top_mm=38335.0, r_top_mm=4000.0)
+        n_u, n_v = _receiver_flux_grid(fr)
+        assert n_v == FLUX_GRID and FLUX_GRID < n_u <= FLUX_GRID_MAX_U
+
+        clipped = ApertureClippedReceiver(
+            aperture=FlatWindowReceiver(z_mm=35335.0, half_u_mm=5000.0, half_v_mm=5000.0, facing="down"),
+            inner=CylinderReceiver(center_z_mm=35335.0, radius_mm=3000.0, height_mm=6000.0),
+        )
+        # is_planar delegates to the inner surface, so the cavity's flux map
+        # gets the same resolution its bare cylinder would.
+        assert _receiver_flux_grid(clipped) == _receiver_flux_grid(clipped.inner)
+
+    def test_single_cylinder_trace_round_trips_the_adaptive_grid(self, client):
+        """End-to-end: the traced flux grid, its payload, and the drape
+        texture all agree on the widened u axis."""
+        body = _payload({"receiver_type": "cylinder"})
+        body["include_flux_grid"] = True
+        resp = client.post("/api/trace", json=body)
+        assert resp.status_code == 200
+        data = resp.json()
+        grid = data["flux_grid"]
+        assert grid is not None
+        # 448 u-bins block-average by 7 into a 64-wide texture; 128 v-bins by 2.
+        assert grid["n_u"] == 64 and grid["n_v"] == 64
+        assert data["power_w"] > 0
+        assert data["peak_flux_kw_m2"] >= data["mean_flux_kw_m2"]

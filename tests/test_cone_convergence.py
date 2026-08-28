@@ -10,7 +10,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from heliostat.trace.cone import sunshape_kernel, trace_heliostat_cone
+from heliostat.trace.cone import grid_for_density, sunshape_kernel, trace_heliostat_cone
+from heliostat.trace.modes import FAST_ACCURATE, ULTRA_FAST
 from test_mc_parity import _geometry_for, _load_fixture
 
 _D, _COUNTERS, _SUMMARY = _load_fixture("prime_focus")
@@ -157,3 +158,127 @@ class TestSlopeErrorBroadening:
         sigma_broaden = 2.0 * 1.0e-3
         expected_rms2 = base.rms_radius_rad() ** 2 + 2.0 * sigma_broaden**2
         assert broadened.rms_radius_rad() ** 2 == pytest.approx(expected_rms2, rel=0.02)
+
+
+class TestFrustumFluxNormalisation:
+    """A frustum's flux grid is uniform in the (u, v) parameterisation, but
+    the surface rows those bins map to are not: bin area scales with
+    r(v)/r_mean (FrustumReceiver.bin_areas_m2). The tracer's deposit
+    accumulates power per PARAMETER bin, so reporting that density directly
+    as W/m^2 mislabels every row that isn't at r_mean -- ~0.18% near
+    mid-slant, growing toward the rims. The physical field must satisfy
+    power == sum(flux * TRUE bin areas), the same contraction the MC
+    backend, _mean_flux_kw_m2 and the FEA CSV export already use.
+    """
+
+    def _frustum_trace(self):
+        from heliostat.geometry.receiver import FrustumReceiver
+
+        receiver = FrustumReceiver(
+            z_bot_mm=32335.0, r_bot_mm=2500.0, z_top_mm=38335.0, r_top_mm=4000.0
+        )
+        cone = trace_heliostat_cone(
+            _ROW.x_mm,
+            _ROW.y_mm,
+            _ROW.rot_az_deg,
+            _ROW.rot_el_deg,
+            _ROW.c3,
+            _ROW.c4,
+            _ROW.c5,
+            _ROW.solar_az_deg,
+            _ROW.solar_el_deg,
+            _SECONDARY,
+            receiver,
+            _KERNEL,
+        )
+        return receiver, cone
+
+    def test_flux_times_true_bin_areas_recovers_collected_power(self):
+        receiver, cone = self._frustum_trace()
+        assert cone["power_w"] > 0
+        n_u = len(cone["u_edges"]) - 1
+        n_v = len(cone["v_edges"]) - 1
+        areas = receiver.bin_areas_m2((n_u, n_v))
+        assert np.sum(cone["flux"] * areas) == pytest.approx(cone["power_w"], rel=1e-9)
+
+    def test_parameter_bin_contraction_no_longer_matches_power(self):
+        """The uniform-bin contraction was the OLD (wrong) invariant; with
+        true W/m^2 in the grid it must now visibly diverge from power, or
+        the row correction silently regressed to a no-op."""
+        receiver, cone = self._frustum_trace()
+        du = cone["u_edges"][1] - cone["u_edges"][0]
+        dv = cone["v_edges"][1] - cone["v_edges"][0]
+        uniform_m2 = du * dv * 1.0e-6
+        wrong = float(np.sum(cone["flux"]) * uniform_m2)
+        assert abs(wrong - cone["power_w"]) / cone["power_w"] > 1.0e-7
+
+
+class TestDensityGrid:
+    """``grid=None`` + ``density`` resolves the mirror-sample grid from a
+    requested density (samples/m^2) and the mirror's own aperture bbox,
+    aspect-matched -- see ``heliostat.trace.cone.grid_for_density`` and
+    ``scripts/coeff_prototype/REPORT.md`` SS7 (full 643-heliostat field
+    sparsity sweep: density=12.0 holds field-total error at 0.073% vs the
+    hardcoded (20, 12) grid, the sparsest rung under the owner's 0.1%
+    target). ``ultra_fast`` (:mod:`heliostat.trace.modes`) adopts this;
+    ``fast_accurate`` keeps its fixed (20, 12) grid untouched.
+    """
+
+    def test_manuscript_rectangle_resolves_to_17_10(self):
+        assert grid_for_density(12.0, 5.0, 3.0) == (17, 10)
+
+    def test_old_hardcoded_density_still_reproduces_20_12(self):
+        """Sanity anchor: the OLD hardcoded grid's own implied density
+        (16.0 samples/m^2) reproduces (20, 12) exactly on the manuscript
+        mirror -- if this ever drifts, the "0.073% vs hardcoded" comparison
+        in REPORT.md silently stops meaning what it says."""
+        assert grid_for_density(16.0, 5.0, 3.0) == (20, 12)
+
+    def test_custom_outline_bbox_aspect_matched(self):
+        """A non-manuscript mirror (a custom design's own bbox, not the
+        pinned 5x3m rectangle) must still resolve a grid aspect-matched to
+        ITS bbox, not the manuscript's -- this is the whole point of driving
+        the grid from density rather than a fixed tuple."""
+        from heliostat.geometry.design import rect_heliostat
+
+        design = rect_heliostat(width_mm=4000.0, height_mm=8000.0)
+        du0, du1, dv0, dv1 = design.bbox
+        width_m, height_m = (du1 - du0) / 1000.0, (dv1 - dv0) / 1000.0
+        assert (width_m, height_m) == (4.0, 8.0)
+
+        n_x, n_y = grid_for_density(12.0, width_m, height_m)
+        assert (n_x, n_y) == (14, 28)
+        assert n_x * height_m == pytest.approx(n_y * width_m, rel=1e-9)  # aspect-matched
+
+    def test_ultra_fast_mode_resolves_170_samples_on_default_mirror(self):
+        """End-to-end: ULTRA_FAST.cone_kwargs (grid=None, density=12.0)
+        through the real tracer resolves to the manuscript's (17, 10) = 170
+        sample grid, not the old hardcoded 240."""
+        cone = _trace(**ULTRA_FAST.cone_kwargs)
+        assert cone["counters"]["samples"] == 17 * 10
+
+    def test_ultra_fast_mode_resolves_grid_from_custom_design_bbox(self):
+        """Same density-through-the-tracer path, but for a custom design
+        whose bbox is NOT the manuscript's 5x3m rectangle -- the grid must
+        track the design's own bbox (14, 28) = 392 samples, not (17, 10)."""
+        from heliostat.geometry.design import rect_heliostat
+
+        design = rect_heliostat(width_mm=4000.0, height_mm=8000.0)
+        cone = _trace(**ULTRA_FAST.cone_kwargs, design=design)
+        assert cone["counters"]["samples"] == 14 * 28
+
+    def test_grid_none_without_density_raises(self):
+        with pytest.raises(ValueError, match="density"):
+            _trace(grid=None)
+
+    def test_fast_accurate_grid_unchanged_bit_identical(self):
+        """fast_accurate's cone_kwargs still carries the fixed (20, 12)
+        grid, completely untouched by the density path added for
+        ultra_fast -- pinned to the exact power_w this trace produced
+        before and after the density change (the explicit-grid code path
+        was not modified, only wrapped in an `if grid is None: ... else:`
+        branch whose else arm is `n_x, n_y = grid`, identical to the prior
+        unconditional line)."""
+        cone = _trace(**FAST_ACCURATE.cone_kwargs)
+        assert cone["counters"]["samples"] == 20 * 12
+        assert cone["power_w"] == pytest.approx(12462.091980873456, rel=1e-9)

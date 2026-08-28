@@ -30,6 +30,9 @@ import {
   expandCustomVertices,
   postDesignPreview,
   postDesignSag,
+  postErrorMapImport,
+  postErrorMapStats,
+  postSagFeaCsv,
   saveLibraryEntry,
 } from "../api.js";
 
@@ -37,12 +40,51 @@ import {
 // Optical errors are only edited from this tab, so they don't need a home
 // in fields.js's shared descriptor tables the way the sidebar-shared ones
 // do.
+// docs/ui-spec-v0.2.md §G: the optical-error glossary wording is signed off
+// verbatim -- these four tooltips must not be reworded.
 const ERROR_FIELDS = [
-  { key: "slope_error_mrad", label: "Slope error (mrad)", path: "doc.design.errors.slope_error_mrad", min: 0, step: 0.1 },
-  { key: "specularity_mrad", label: "Specularity (mrad)", path: "doc.design.errors.specularity_mrad", min: 0, step: 0.1 },
+  {
+    key: "slope_error_mrad",
+    label: "Slope error (mrad)",
+    path: "doc.design.errors.slope_error_mrad",
+    min: 0,
+    step: 0.1,
+    tooltip:
+      "Large-scale waviness of the mirror surface: the local surface normal deviates from the design surface by this RMS angle. Broadens the beam (doubled on reflection). Not pointing error (that's the tracker, §F) and not canting error (that's facet aiming).",
+  },
+  {
+    key: "specularity_mrad",
+    label: "Specularity (mrad)",
+    path: "doc.design.errors.specularity_mrad",
+    min: 0,
+    step: 0.1,
+    tooltip:
+      "Micro-scale roughness: scatter of the reflected ray about the ideal specular direction, RMS, isotropic about the reflected beam. The 'polish' term — independent of shape, canting, and tracking.",
+  },
   // The server takes reflectance as a fraction greater than zero: a mirror
   // that reflects nothing is not a mirror, and 0 % would 422 every trace.
-  { key: "reflectance_pct", label: "Reflectance (%)", path: "doc.design.errors.reflectance_pct", min: 0.1, max: 100, step: 0.5 },
+  {
+    key: "reflectance_pct",
+    label: "Reflectance (%)",
+    path: "doc.design.errors.reflectance_pct",
+    min: 0.1,
+    max: 100,
+    step: 0.5,
+    tooltip: "Fraction of incident sunlight the mirror reflects; scales collected power directly.",
+  },
+  // docs/ui-spec-v0.2.md §F (resolved 2026-08-25): the quoted number is the
+  // RMS angular deviation of the REFLECTED BEAM -- no factor-of-two on
+  // reflection is applied to it, unlike slope error above. Label and
+  // tooltip wording are signed off verbatim, same as the other three.
+  {
+    key: "pointing_error_mrad",
+    label: "Pointing error (mrad RMS, on the reflected beam)",
+    path: "doc.design.errors.pointing_error_mrad",
+    min: 0,
+    step: 0.1,
+    tooltip:
+      "The tracker's aiming inaccuracy: the whole mirror points slightly off its commanded direction. Quasi-static per instant, not surface roughness.",
+  },
 ];
 
 // cant_focal_mm is aim only: null = per-heliostat slant range, 0 =
@@ -52,6 +94,7 @@ const CANT_FOCAL_FIELD = {
   label: "Field-wide focal (mm)",
   path: "doc.designParams.grid.cant_focal_mm",
   min: 1,
+  tooltip: "The one shared aim distance every heliostat's facets are canted to, instead of each aiming at its own slant range.",
 };
 
 // facet_focal_mm is the facet's own curvature, independent of aim: null =
@@ -61,6 +104,7 @@ const FACET_FOCAL_FIELD = {
   label: "Facet focal (mm)",
   path: "doc.designParams.grid.facet_focal_mm",
   min: 1,
+  tooltip: "The facet's own surface curvature, independent of where it's aimed.",
 };
 
 // -- module state ---------------------------------------------------------
@@ -75,6 +119,25 @@ let sagObjectUrl = null;
 let lastPreviewKey = null;
 let lastSagKey = null;
 let lastSagResult = null; // {contourIntervalMm, peakToValleyMm, slantRangeM} of the currently-shown sag PNG
+let lastSagBody = null; // the TraceRequest-shaped body the shown sag map/export both come from
+let sagExportBusy = false;
+let sagExportError = null;
+
+// docs/ui-spec-v0.2.md §E: measured error-map import state. `errorMapStats`
+// caches the last {grid_size, coverage_fraction, rms_slope_mrad} the server
+// reported, keyed by the exact grid object it was computed from (`===` on
+// doc.design.errors.error_map, which only changes identity on an import,
+// a remove, or a fresh load -- never on an unrelated re-render), so a
+// design carrying an already-imported map doesn't refetch its own chip
+// every render, only once per map change (an import reports its own stats
+// inline; a load from the Library/a project has only the grid, so this
+// module fetches /design/errormap/stats for it once, see
+// ensureErrorMapStats below).
+let errorMapImportBusy = false;
+let errorMapImportError = null;
+let errorMapStatsGrid = null; // the error_map object the cached stats below describe
+let errorMapStats = null; // {grid_size, coverage_fraction, rms_slope_mrad} | null
+let errorMapStatsBusy = false;
 
 // Ephemeral view-only toggles -- these don't hold a value the user typed,
 // just which of two already-live views is showing.
@@ -424,7 +487,7 @@ function build(container) {
   nameEl.className = "name";
   const fromEl = document.createElement("span");
   fromEl.className = "from";
-  fromEl.textContent = "updates live in the workspace field";
+  fromEl.textContent = "updates live in the shared design";
 
   const chip = document.createElement("span");
   chip.className = "previewchip";
@@ -452,7 +515,7 @@ function build(container) {
   const popHint = document.createElement("div");
   popHint.className = "hint";
   popHint.style.margin = "6px 0 0 0";
-  popHint.textContent = "or click a heliostat in the Workspace and choose View shape";
+  popHint.textContent = "or click a heliostat in 3D View or Design's plan view and choose View shape";
   popover.appendChild(popRow);
   popover.appendChild(popApply);
   popover.appendChild(popHint);
@@ -539,8 +602,13 @@ function build(container) {
 
   const doneBtn = document.createElement("div");
   doneBtn.className = "btn primary";
-  doneBtn.textContent = "Done — back to workspace";
-  doneBtn.addEventListener("click", () => store.set("ui.tab", "workspace"));
+  // docs/ui-spec-v0.2.md §N: entered from either Design's sidebar ("Edit
+  // shape...") or 3D View's inspector ("View shape ->") -- 3D View is the
+  // closer analogue of the old single Workspace (it's what the app opens
+  // on), so Done returns there rather than trying to remember which of the
+  // two tabs the user came from.
+  doneBtn.textContent = "Done — back to 3D View";
+  doneBtn.addEventListener("click", () => store.set("ui.tab", "3dview"));
 
   rightWrap.appendChild(saveWrap);
   rightWrap.appendChild(doneBtn);
@@ -611,16 +679,27 @@ function build(container) {
   const surfaceSeg = document.createElement("div");
   surfaceSeg.className = "seg";
   const surfaceBtns = {};
+  const SURFACE_TOOLTIPS = {
+    twisting: "Re-solves each facet's figure as the sun moves, so it stays perfectly focused at every instant.",
+    spherical: "Freezes one figure — a long focal gives a weakly focusing, not-quite-flat facet that no longer re-solves with the sun.",
+    flat: "No curvature by default — a true flat panel, though a facet grid can still be given a gentle fixed curvature.",
+  };
   for (const [key, label] of HELIOSTAT_SURFACE_OPTIONS) {
-    surfaceBtns[key] = segButton(surfaceSeg, label, key === "twisting", () => {
-      store.set("doc.design.surface", key);
-      if (key === "twisting") {
-        if (store.get("doc.designParams.grid.cant_focal_mm") !== null) store.set("doc.designParams.grid.cant_focal_mm", null);
-        if (store.get("doc.designParams.grid.facet_focal_mm") !== null) store.set("doc.designParams.grid.facet_focal_mm", null);
-      } else if (key === "flat" && store.get("doc.designParams.grid.facet_focal_mm") === null) {
-        store.set("doc.designParams.grid.facet_focal_mm", 0);
-      }
-    });
+    surfaceBtns[key] = segButton(
+      surfaceSeg,
+      label,
+      key === "twisting",
+      () => {
+        store.set("doc.design.surface", key);
+        if (key === "twisting") {
+          if (store.get("doc.designParams.grid.cant_focal_mm") !== null) store.set("doc.designParams.grid.cant_focal_mm", null);
+          if (store.get("doc.designParams.grid.facet_focal_mm") !== null) store.set("doc.designParams.grid.facet_focal_mm", null);
+        } else if (key === "flat" && store.get("doc.designParams.grid.facet_focal_mm") === null) {
+          store.set("doc.designParams.grid.facet_focal_mm", 0);
+        }
+      },
+      SURFACE_TOOLTIPS[key]
+    );
   }
   controls.appendChild(surfaceSeg);
   const surfaceHint = document.createElement("div");
@@ -644,19 +723,37 @@ function build(container) {
   const curvSeg = document.createElement("div");
   curvSeg.className = "seg";
   const curvBtns = {
-    off: segButton(curvSeg, "No curvature", false, () => {
-      if (curvDisabledNow()) return;
-      store.set("doc.designParams.grid.facet_focal_mm", 0);
-    }),
-    auto: segButton(curvSeg, "Follow canting", false, () => {
-      if (curvDisabledNow()) return;
-      store.set("doc.designParams.grid.facet_focal_mm", null);
-    }),
-    focal: segButton(curvSeg, "Fixed focal…", false, () => {
-      if (curvDisabledNow()) return;
-      const cur = store.get("doc.designParams.grid.facet_focal_mm");
-      if (!(cur > 0)) store.set("doc.designParams.grid.facet_focal_mm", 60000);
-    }),
+    off: segButton(
+      curvSeg,
+      "No curvature",
+      false,
+      () => {
+        if (curvDisabledNow()) return;
+        store.set("doc.designParams.grid.facet_focal_mm", 0);
+      },
+      "Facets are flat panels — no curvature of their own."
+    ),
+    auto: segButton(
+      curvSeg,
+      "Follow canting",
+      false,
+      () => {
+        if (curvDisabledNow()) return;
+        store.set("doc.designParams.grid.facet_focal_mm", null);
+      },
+      "Each facet curves to match its own canting distance, so it focuses exactly where it's aimed."
+    ),
+    focal: segButton(
+      curvSeg,
+      "Fixed focal…",
+      false,
+      () => {
+        if (curvDisabledNow()) return;
+        const cur = store.get("doc.designParams.grid.facet_focal_mm");
+        if (!(cur > 0)) store.set("doc.designParams.grid.facet_focal_mm", 60000);
+      },
+      "One curvature for every facet in the field, independent of where each one is aimed."
+    ),
   };
   controls.appendChild(curvSeg);
   const curvWeakRow = document.createElement("div");
@@ -698,19 +795,37 @@ function build(container) {
     return doc.design.type !== "grid" || doc.design.surface === "twisting";
   }
   const cantBtns = {
-    off: segButton(cantSeg, "Off", false, () => {
-      if (cantDisabledNow()) return;
-      store.set("doc.designParams.grid.cant_focal_mm", 0);
-    }),
-    auto: segButton(cantSeg, "Per heliostat", false, () => {
-      if (cantDisabledNow()) return;
-      store.set("doc.designParams.grid.cant_focal_mm", null);
-    }),
-    focal: segButton(cantSeg, "Fixed focal…", false, () => {
-      if (cantDisabledNow()) return;
-      const cur = store.get("doc.designParams.grid.cant_focal_mm");
-      if (!(cur > 0)) store.set("doc.designParams.grid.cant_focal_mm", 60000);
-    }),
+    off: segButton(
+      cantSeg,
+      "Off",
+      false,
+      () => {
+        if (cantDisabledNow()) return;
+        store.set("doc.designParams.grid.cant_focal_mm", 0);
+      },
+      "Facets stay parallel — the mirror acts as one flat panel, so each facet sends its own separate spot."
+    ),
+    auto: segButton(
+      cantSeg,
+      "Per heliostat",
+      false,
+      () => {
+        if (cantDisabledNow()) return;
+        store.set("doc.designParams.grid.cant_focal_mm", null);
+      },
+      "Each heliostat aims its facets at its own distance to the aim point, so every field position is individually optimal."
+    ),
+    focal: segButton(
+      cantSeg,
+      "Fixed focal…",
+      false,
+      () => {
+        if (cantDisabledNow()) return;
+        const cur = store.get("doc.designParams.grid.cant_focal_mm");
+        if (!(cur > 0)) store.set("doc.designParams.grid.cant_focal_mm", 60000);
+      },
+      "One aim distance for the whole field — every heliostat points its facets the same way, the buildable case at the cost of performance away from that range."
+    ),
   };
   controls.appendChild(cantSeg);
   const cantFocalRow = document.createElement("div");
@@ -731,8 +846,107 @@ function build(container) {
   errorHint.className = "hint";
   errorHint.style.marginLeft = "0";
   errorHint.textContent =
-    "Applied by every fidelity: slope and specularity broaden the spot, reflectance scales the power collected.";
+    "Applied by every fidelity: slope, specularity, and pointing error broaden the spot, reflectance scales the power collected.";
   controls.appendChild(errorHint);
+
+  // docs/ui-spec-v0.2.md §E: "Measured error map -- Import CSV…" -- a real
+  // deformation map (FEA/deflectometry), on top of the analytic figure
+  // above, Monte Carlo only. Static elements built once here; visibility
+  // and text are updated per render in renderDesignControls, same pattern
+  // as every other hint/chip in this tab.
+  const errorMapRow = document.createElement("div");
+  errorMapRow.className = "frow";
+  errorMapRow.style.marginTop = "6px";
+  const errorMapLabel = document.createElement("label");
+  errorMapLabel.textContent = "Measured error map";
+  errorMapLabel.title =
+    "A real deformation map (gravity sag, wind load, thermal) from FEA or deflectometry, applied on top of the figure above. Monte Carlo only -- cone modes ignore it.";
+  errorMapRow.appendChild(errorMapLabel);
+  const errorMapImportBtn = document.createElement("div");
+  errorMapImportBtn.className = "btn small";
+  errorMapImportBtn.textContent = "Import CSV…";
+  errorMapRow.appendChild(errorMapImportBtn);
+  const errorMapFileInput = document.createElement("input");
+  errorMapFileInput.type = "file";
+  errorMapFileInput.accept = ".csv,text/csv";
+  errorMapFileInput.hidden = true;
+  errorMapRow.appendChild(errorMapFileInput);
+  controls.appendChild(errorMapRow);
+
+  const errorMapChip = document.createElement("div");
+  errorMapChip.className = "errormapchip";
+  errorMapChip.hidden = true;
+  const errorMapBadge = document.createElement("span");
+  errorMapBadge.className = "badge import";
+  errorMapBadge.textContent = "Monte Carlo only";
+  errorMapBadge.title =
+    "Applied on top of the analytic figure in Monte Carlo traces only -- cone modes (Ultra fast, Fast accurate) ignore an attached map entirely.";
+  const errorMapStatsText = document.createElement("span");
+  errorMapStatsText.className = "errormapstats";
+  const errorMapRemoveBtn = document.createElement("span");
+  errorMapRemoveBtn.className = "btn small";
+  errorMapRemoveBtn.textContent = "Remove";
+  errorMapChip.appendChild(errorMapBadge);
+  errorMapChip.appendChild(errorMapStatsText);
+  errorMapChip.appendChild(errorMapRemoveBtn);
+  controls.appendChild(errorMapChip);
+
+  const errorMapErrEl = document.createElement("div");
+  errorMapErrEl.className = "fielderr";
+  errorMapErrEl.hidden = true;
+  controls.appendChild(errorMapErrEl);
+
+  function startErrorMapImport(file) {
+    if (!file) return;
+    errorMapImportBusy = true;
+    errorMapImportError = null;
+    rerender();
+    const reader = new FileReader();
+    reader.onload = () => {
+      postErrorMapImport(String(reader.result))
+        .then((data) => {
+          errorMapImportBusy = false;
+          store.set("doc.design.errors.error_map", data.grid);
+          // The import response already carries this map's own stats --
+          // cache them directly so the chip shows them on the very next
+          // render with no extra round trip to /errormap/stats.
+          errorMapStatsGrid = data.grid;
+          errorMapStats = {
+            grid_size: data.grid_size,
+            coverage_fraction: data.coverage_fraction,
+            rms_slope_mrad: data.rms_slope_mrad,
+          };
+          rerender();
+        })
+        .catch((err) => {
+          errorMapImportBusy = false;
+          errorMapImportError = (err && err.message) || "Could not import the error map CSV.";
+          rerender();
+        });
+    };
+    reader.onerror = () => {
+      errorMapImportBusy = false;
+      errorMapImportError = "Could not read the file.";
+      rerender();
+    };
+    reader.readAsText(file);
+  }
+  errorMapImportBtn.addEventListener("click", () => {
+    if (errorMapImportBusy) return;
+    errorMapFileInput.click();
+  });
+  errorMapFileInput.addEventListener("change", () => {
+    const file = errorMapFileInput.files && errorMapFileInput.files[0];
+    errorMapFileInput.value = ""; // allow re-selecting the same file later
+    startErrorMapImport(file);
+  });
+  errorMapRemoveBtn.addEventListener("click", () => {
+    store.set("doc.design.errors.error_map", null);
+    errorMapStatsGrid = null;
+    errorMapStats = null;
+    errorMapImportError = null;
+    rerender();
+  });
 
   // -- previews: aperture layout + sag map -----------------------------
   const previews = document.createElement("div");
@@ -828,9 +1042,43 @@ function build(container) {
   sagPlaceholder.hidden = true;
   sagFrame.appendChild(sagImg);
   sagFrame.appendChild(sagPlaceholder);
+  // docs/ui-spec-v0.2.md §D / mockup M10: an "Export CSV for FEA" button
+  // sits in the map's own corner -- .frame is already position:relative, so
+  // this overlays it rather than crowding the header row. Hidden until a sag
+  // map has actually rendered (no request body to export before then).
+  const sagExportBtn = document.createElement("div");
+  sagExportBtn.className = "btn small cornerbtn";
+  sagExportBtn.textContent = "Export CSV for FEA";
+  sagExportBtn.hidden = true;
+  sagExportBtn.addEventListener("click", () => {
+    if (!lastSagBody || sagExportBusy) return;
+    sagExportBusy = true;
+    sagExportError = null;
+    renderSagCaption(store.get("doc"));
+    postSagFeaCsv(lastSagBody, undefined, sagShowCant)
+      .then((blob) => {
+        sagExportBusy = false;
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "heliostat-sag-fea.csv";
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+        renderSagCaption(store.get("doc"));
+      })
+      .catch((err) => {
+        sagExportBusy = false;
+        sagExportError = (err && err.message) || "Could not export the sag CSV.";
+        renderSagCaption(store.get("doc"));
+      });
+  });
+  sagFrame.appendChild(sagExportBtn);
   sagPanel.appendChild(sagFrame);
   const sagCaption = document.createElement("div");
   sagCaption.className = "caption";
+  const sagExportErrEl = document.createElement("div");
+  sagExportErrEl.className = "fielderr";
+  sagExportErrEl.hidden = true;
   const cantToggleLabel = document.createElement("label");
   cantToggleLabel.className = "caption";
   cantToggleLabel.style.cursor = "pointer";
@@ -851,6 +1099,7 @@ function build(container) {
   sagCaption2.className = "caption";
   sagPanel.appendChild(sagCaption);
   sagPanel.appendChild(sagCaption2);
+  sagPanel.appendChild(sagExportErrEl);
 
   locatorSvg.addEventListener("click", (e) => {
     const geometry = (lastCtx && lastCtx.geometry) || null;
@@ -920,6 +1169,12 @@ function build(container) {
     cantFocalInput,
     cantHint,
     errorInputs,
+    errorMapImportBtn,
+    errorMapFileInput,
+    errorMapChip,
+    errorMapStatsText,
+    errorMapRemoveBtn,
+    errorMapErrEl,
     apertureH2,
     apertureToggle,
     apertureFrame,
@@ -934,6 +1189,8 @@ function build(container) {
     sagPlaceholder,
     sagCaption,
     sagCaption2,
+    sagExportBtn,
+    sagExportErrEl,
     cantToggle,
     // vertex-table row bookkeeping (rebuilt only when the count changes --
     // see renderCustomVertexRows)
@@ -1020,6 +1277,47 @@ function renderEditbar(doc, ui, previewHeliostat) {
     els.saveErrEl.hidden = true;
     els.saveErrEl.className = "fielderr";
   }
+}
+
+// §E: a design loaded from the Library/a project carries an error_map grid
+// but not the import response that first reported on it -- fetch that
+// report once per distinct grid (identity-cached, see errorMapStatsGrid's
+// own comment) rather than on every render.
+function ensureErrorMapStats(map) {
+  if (map === errorMapStatsGrid || errorMapStatsBusy) return;
+  errorMapStatsBusy = true;
+  postErrorMapStats(map)
+    .then((data) => {
+      errorMapStatsBusy = false;
+      errorMapStatsGrid = map;
+      errorMapStats = data;
+      rerender();
+    })
+    .catch(() => {
+      errorMapStatsBusy = false;
+      // Best-effort background refresh -- the chip just shows "attached"
+      // with no numbers until this succeeds; not worth a second error UI.
+    });
+}
+
+function renderErrorMapSection(doc) {
+  const map = doc.design.errors.error_map;
+  els.errorMapImportBtn.textContent = errorMapImportBusy ? "Importing…" : "Import CSV…";
+  els.errorMapImportBtn.classList.toggle("disabled-link", errorMapImportBusy);
+  if (map) {
+    ensureErrorMapStats(map);
+    els.errorMapChip.hidden = false;
+    const stats = map === errorMapStatsGrid ? errorMapStats : null;
+    els.errorMapStatsText.textContent = stats
+      ? ` ${stats.grid_size.nx}×${stats.grid_size.ny} grid, ` +
+        `${(stats.coverage_fraction * 100).toFixed(0)}% aperture coverage, ` +
+        `${stats.rms_slope_mrad.toFixed(3)} mrad implied RMS slope`
+      : " loading grid stats…";
+  } else {
+    els.errorMapChip.hidden = true;
+  }
+  els.errorMapErrEl.hidden = !errorMapImportError;
+  els.errorMapErrEl.textContent = errorMapImportError || "";
 }
 
 function renderDesignControls(doc, previewHeliostat) {
@@ -1129,6 +1427,8 @@ function renderDesignControls(doc, previewHeliostat) {
   setVal(els.errorInputs.slope_error_mrad, errors.slope_error_mrad);
   setVal(els.errorInputs.specularity_mrad, errors.specularity_mrad);
   setVal(els.errorInputs.reflectance_pct, errors.reflectance_pct);
+  setVal(els.errorInputs.pointing_error_mrad, errors.pointing_error_mrad);
+  renderErrorMapSection(doc);
 }
 
 function setPreviewImageBlob(blob) {
@@ -1181,12 +1481,17 @@ function setSagImageBlob(result) {
   els.sagImg.hidden = false;
   els.sagPlaceholder.hidden = true;
   lastSagResult = result;
+  // A map actually rendered -- lastSagBody (set by renderSagPanel just
+  // before this fetch was scheduled) is now something worth exporting.
+  els.sagExportBtn.hidden = false;
 }
 
 function setSagError(err) {
   els.sagImg.hidden = true;
   els.sagPlaceholder.hidden = false;
   els.sagPlaceholder.textContent = (err && err.message) || "Could not render the sag map.";
+  // No map shown -- nothing for the export button to describe.
+  els.sagExportBtn.hidden = true;
 }
 
 function renderSagPanel(doc, previewHeliostat) {
@@ -1195,6 +1500,7 @@ function renderSagPanel(doc, previewHeliostat) {
 
   if (!previewHeliostat) {
     lastSagKey = null;
+    lastSagBody = null;
     setSagError({ message: "No heliostats in the field yet." });
     els.sagCaption.textContent = "";
     els.sagCaption2.textContent = "";
@@ -1202,6 +1508,9 @@ function renderSagPanel(doc, previewHeliostat) {
   }
 
   const body = buildSagRequest(doc, { x_mm: previewHeliostat.x_mm, y_mm: previewHeliostat.y_mm });
+  // The export must always match whatever the map is currently showing (or
+  // about to show), cache hit or fresh fetch alike -- set unconditionally.
+  lastSagBody = body;
   const key = JSON.stringify(body) + (sagShowCant ? "|whole" : "|perfacet");
   if (key !== lastSagKey) {
     lastSagKey = key;
@@ -1233,8 +1542,12 @@ function renderSagCaption(doc) {
   els.cantToggle.parentElement.hidden = !faceted;
   els.sagCaption2.textContent = faceted && !sagShowCant
     ? "Each facet measured from its own mounting plane — what a facet fabricator works to. Tick the box to see the mirror as one shape."
-    : "Figure solved for the workspace's current sun and this heliostat's slant range. Pick another heliostat from the " +
-      "locator above, the ▾ selector, or by clicking one in the workspace and choosing “View shape”.";
+    : "Figure solved for the current sun and this heliostat's slant range. Pick another heliostat from the " +
+      "locator above, the ▾ selector, or by clicking one in 3D View and choosing “View shape”.";
+  els.sagExportBtn.textContent = sagExportBusy ? "Exporting…" : "Export CSV for FEA";
+  els.sagExportBtn.classList.toggle("disabled-link", sagExportBusy);
+  els.sagExportErrEl.hidden = !sagExportError;
+  if (sagExportError) els.sagExportErrEl.textContent = sagExportError;
 }
 
 function renderLocator(ui, geometry, previewHeliostat) {

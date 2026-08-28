@@ -143,6 +143,27 @@ class Receiver(ABC):
         :returns: ``(3,)`` or ``(3, N)`` aim point(s), mm.
         """
 
+    @abstractmethod
+    def uv_to_world(self, uv: np.ndarray) -> np.ndarray:
+        """Invert :meth:`intersect`: world ``(x, y, z)`` mm for surface ``uv``.
+
+        Every point :meth:`intersect` ever returns lies exactly on this
+        surface by construction, so this is an exact inverse (not an
+        approximation) for any ``uv`` actually produced by ``intersect`` --
+        including one outside :meth:`uv_extent`, the same "hit vs. in window"
+        distinction ``intersect`` itself documents. Callers that need a real
+        3-D point for a receiver hit (the picture in ``web/scene.py``, the
+        path array in ``trace/mc.py``'s ``return_paths``) use this instead of
+        re-deriving the surface per receiver kind -- see the note in the
+        module docstring about ``(u, v)`` not embedding a world point on a
+        flat window: it does, trivially, but a curved receiver needs this
+        method, not a bare attribute lookup, to recover one.
+
+        :param uv: ``(2, K)`` surface coordinates, mm, in the same
+            convention :meth:`intersect` returns them.
+        :returns: ``(3, K)`` world positions, mm.
+        """
+
     def bin_edges(self, grid: tuple[int, int]) -> tuple[np.ndarray, np.ndarray]:
         """Uniform ``(u_edges, v_edges)`` spanning :meth:`uv_extent`.
 
@@ -231,6 +252,11 @@ class FlatWindowReceiver(Receiver):
         aim[1] = self.center_y_mm
         aim[2] = self.z_mm
         return aim
+
+    def uv_to_world(self, uv: np.ndarray) -> np.ndarray:
+        uv = np.asarray(uv, dtype=float)
+        k = uv.shape[1]
+        return np.vstack([uv[0] + self.center_x_mm, uv[1] + self.center_y_mm, np.full(k, self.z_mm)])
 
     def to_manifest(self) -> dict:
         return {
@@ -325,6 +351,19 @@ class CylinderReceiver(Receiver):
         aim[1] = self.center_y_mm + self.radius_mm * toward[1]
         aim[2] = self.center_z_mm
         return aim
+
+    def uv_to_world(self, uv: np.ndarray) -> np.ndarray:
+        """Exact inverse of :meth:`intersect`: ``u = radius*az`` with ``az``
+        measured from -y (south), so ``az = u/radius`` and the point sits at
+        ``radius`` in that direction from the axis; ``v`` is height above
+        :attr:`center_z_mm` directly.
+        """
+        uv = np.asarray(uv, dtype=float)
+        az = uv[0] / self.radius_mm
+        x = self.center_x_mm + self.radius_mm * np.sin(az)
+        y = self.center_y_mm - self.radius_mm * np.cos(az)
+        z = self.center_z_mm + uv[1]
+        return np.vstack([x, y, z])
 
 
 @dataclass
@@ -484,6 +523,25 @@ class FrustumReceiver(Receiver):
         aim[2] = 0.5 * (self.z_bot_mm + self.z_top_mm)
         return aim
 
+    def uv_to_world(self, uv: np.ndarray) -> np.ndarray:
+        """Exact inverse of :meth:`intersect`. ``v`` is slant distance from
+        the bottom rim, so ``frac = v / slant_length_mm`` interpolates both
+        the local radius (``r_bot_mm`` at ``frac=0`` to ``r_top_mm`` at
+        ``frac=1``) and the height (``z_bot_mm`` to ``z_top_mm``) linearly;
+        ``u = r_mean_mm * az`` (the mean-radius arc length ``intersect``
+        builds it from) recovers the same azimuth, applied here at the
+        point's own local radius rather than the mean one used only to keep
+        ``u`` from distorting across ``v``.
+        """
+        uv = np.asarray(uv, dtype=float)
+        az = uv[0] / self.r_mean_mm
+        frac = uv[1] / self.slant_length_mm
+        r = self.r_bot_mm + frac * (self.r_top_mm - self.r_bot_mm)
+        x = self.center_x_mm + r * np.sin(az)
+        y = self.center_y_mm - r * np.cos(az)
+        z = self.z_bot_mm + frac * (self.z_top_mm - self.z_bot_mm)
+        return np.vstack([x, y, z])
+
 
 @dataclass
 class ApertureClippedReceiver(Receiver):
@@ -533,11 +591,26 @@ class ApertureClippedReceiver(Receiver):
     def aim_point_mm(self, helio_xy_mm: np.ndarray) -> np.ndarray:
         return self.inner.aim_point_mm(helio_xy_mm)
 
+    def uv_to_world(self, uv: np.ndarray) -> np.ndarray:
+        return self.inner.uv_to_world(uv)
+
     def bin_edges(self, grid: tuple[int, int]) -> tuple[np.ndarray, np.ndarray]:
         return self.inner.bin_edges(grid)
 
     def bin_areas_m2(self, grid: tuple[int, int]) -> np.ndarray:
         return self.inner.bin_areas_m2(grid)
+
+    @property
+    def u_period_mm(self) -> float | None:
+        """The inner surface's own periodicity. A cavity cylinder/frustum
+        still closes on itself -- its ``uv``/extent are the inner's, so the
+        seam machinery (wrapping flux deposit, wrapping window-membership
+        test, continuous azimuth unwrap) must engage exactly as it would
+        bare. Without this delegation the tracer saw ``None``, treated the
+        seam as a hard edge, and a spot straddling it behind the aperture
+        lost its wrapped share -- the release-night seam bug, cavity
+        edition."""
+        return getattr(self.inner, "u_period_mm", None)
 
     def to_manifest(self) -> dict:
         return {"kind": self.kind, "aperture": self.aperture.to_manifest(), "inner": self.inner.to_manifest()}

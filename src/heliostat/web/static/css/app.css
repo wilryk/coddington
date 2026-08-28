@@ -112,6 +112,46 @@ a:hover {
   align-items: center;
   gap: 12px;
 }
+
+/* -- field-trace status bar ------------------------------------------------
+   Sits between .topbar and .shell, in normal flow -- when a field trace is
+   running it takes its own row and pushes .shell down, rather than an
+   overlay that could sit on top of the tab bar or toolbar controls. Hidden
+   (main.js) whenever no trace is in flight, so it costs nothing the rest
+   of the time. */
+.tracebar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 20px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.tracebar-label {
+  font-size: 12.5px;
+  color: var(--text);
+  white-space: nowrap;
+}
+.tracebar-track {
+  flex: 1 1 auto;
+  max-width: 280px;
+  height: 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--bg);
+}
+.tracebar-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  transition: width 0.2s linear;
+}
+.tracebar .btn {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
 .btn {
   padding: 7px 12px;
   border: 1px solid var(--border);
@@ -234,6 +274,15 @@ a:hover {
   border-color: var(--border);
   color: var(--muted);
 }
+/* One button disabled within an otherwise-live .seg (spec §C: the
+   Receiver | Secondary selector's Secondary option, disabled with a
+   tooltip when the current optics/trace has no secondary flux map) --
+   deliberately NOT pointer-events:none like .disabled-link, so the title
+   attribute still shows on hover instead of being unreachable. */
+.seg button.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 
 .frow {
   display: flex;
@@ -277,6 +326,26 @@ input.val::-webkit-inner-spin-button {
   margin-top: 4px;
 }
 
+/* docs/ui-spec-v0.2.md §E: the "Measured error map" import chip -- grid
+   size / coverage / implied RMS next to the MC-only badge, in-flow (not
+   the absolute-positioned .chip used to overlay a preview image). */
+.errormapchip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin: 2px 0 8px 0;
+}
+.errormapstats {
+  flex: 1 1 auto;
+}
+
 .fielderr {
   color: var(--error-text);
   background: var(--error-bg);
@@ -290,6 +359,17 @@ input.val::-webkit-inner-spin-button {
   color: var(--warn-text);
   background: var(--warn-bg);
   border: 1px solid var(--warn-border);
+  border-radius: 5px;
+  font-size: 11.5px;
+  padding: 5px 8px;
+  margin: 4px 0 8px 0;
+}
+/* The duration estimate's quiet form -- same box, no amber: the estimate
+   always shows (tabs/analysis.js applyDurationHint), only long runs warn. */
+.fieldhint {
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--border);
   border-radius: 5px;
   font-size: 11.5px;
   padding: 5px 8px;
@@ -318,6 +398,106 @@ input.val::-webkit-inner-spin-button {
 .sidebar-footer a {
   font-size: 11px;
   margin-left: auto;
+}
+
+/* -- Design's 2D canvas head (docs/ui-spec-v0.2.md §N, mockup M18a): the
+   explicit Plan view / Elevation toggle that replaces the old
+   expand-a-stage auto-morph. */
+.mainarea {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.canvashead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.canvashead .seg {
+  margin-bottom: 0;
+  flex: 0 0 auto;
+}
+.canvashead .seg button {
+  flex: 0 0 auto;
+  padding: 7px 14px;
+}
+.canvashead .hint {
+  margin-top: 0;
+}
+
+/* -- 3D View's own layout (docs/ui-spec-v0.2.md §N, mockup M18b): a
+   condensed trace bar (#runbar) above a row holding the 3D viewport and the
+   results dock. */
+.tab3d-body {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+}
+.dock {
+  flex: 0 0 380px;
+  border-left: 1px solid var(--border);
+  background: var(--panel);
+  overflow-y: auto;
+  padding: 14px 16px;
+}
+.dockpanel {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+.dockpanel h2 {
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin: 0 0 10px 0;
+  font-weight: 600;
+}
+/* .results (peak/mean/intercept, the flux thumbnail, the traced-at stamp +
+   export links) is panels/run.js's own unchanged content, just stacked
+   vertically here instead of the old full-width bottom bar's single row. */
+.dock .results {
+  flex-direction: column;
+  align-items: stretch;
+  margin-left: 0;
+  gap: 10px;
+}
+.dock .metric {
+  text-align: left;
+}
+.dock .fluxthumb {
+  width: 100%;
+  height: 170px;
+  cursor: pointer;
+}
+.dock .stalechip {
+  align-self: stretch;
+}
+
+/* Compact, read-only sun chip (docs/ui-spec-v0.2.md §N, mockup M18b) --
+   top-left rather than the mockup's top-right so it never sits under the
+   floating #inspector, which is fixed top-right (this app's own established
+   idiom, unchanged by this restructure). Click the sun arrow in the scene
+   for the editable fields. */
+.suncompact {
+  position: absolute;
+  left: 14px;
+  top: 14px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 11px;
+  font-size: 11.5px;
+  color: var(--text);
+  font-weight: 600;
+  pointer-events: none;
 }
 
 /* -- viewport ------------------------------------------------------------ */
@@ -381,6 +561,23 @@ input.val::-webkit-inner-spin-button {
   font-size: 10px;
   color: var(--muted);
   margin-top: 2px;
+}
+
+/* v0.2 fix wave item 4: appears only while the elevation view is zoomed or
+   panned away from its fit (js/views/elevation.js toggles [hidden]) --
+   top-left, clear of the sun disc and the (separate, sibling) view pill
+   which both live top-right. */
+.elevation-reset-view {
+  position: absolute;
+  left: 14px;
+  top: 14px;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid #a9b4c0;
+  border-radius: 5px;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: #345a80;
+  cursor: pointer;
 }
 
 .chip {
@@ -507,17 +704,17 @@ input.val::-webkit-inner-spin-button {
   margin-top: 4px;
 }
 
-/* -- run bar --------------------------------------------------------------- */
+/* -- trace bar (docs/ui-spec-v0.2.md §N, mockup M18b: "a condensed trace
+   bar" above the 3D scene) --------------------------------------------- */
 
 .runbar {
   display: flex;
   align-items: center;
   gap: 16px;
-  padding: 12px 20px;
+  padding: 10px 20px;
   background: var(--panel);
-  border-top: 1px solid var(--border);
-  height: 86px;
-  flex: 0 0 86px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
 }
 .runbar .seg {
   margin-bottom: 0;
@@ -591,6 +788,7 @@ input.val::-webkit-inner-spin-button {
   padding: 16px;
   max-width: 90vw;
   max-height: 90vh;
+  overflow: auto;
   position: relative;
   box-shadow: 0 12px 40px rgba(31, 41, 51, 0.3);
 }
@@ -609,6 +807,142 @@ input.val::-webkit-inner-spin-button {
   line-height: 1;
   background: none;
   border: none;
+}
+
+/* Spec §C / mockup M9: the Receiver | Secondary selector sits above the
+   map, clear of the close button (top-right) -- #flux-surfaceseg reuses
+   the app's own .seg segmented-control look (js/panels/receiver.js's
+   optics picker, js/tabs/analysis.js's fidelity buttons), including its
+   .seg.disabled state for when the current trace has no secondary map. */
+.overlay-head {
+  display: flex;
+  justify-content: flex-start;
+  margin: 0 34px 12px 0;
+}
+.overlay-head .seg {
+  margin-bottom: 0;
+}
+.overlay-body {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+.overlay-mapcol {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+#flux-secondary-canvas {
+  display: block;
+  max-width: 70vw;
+  max-height: 70vh;
+  width: 460px;
+  height: auto;
+  border-radius: 4px;
+}
+
+/* Absorbed-heat readout (spec §C) -- same rmetric/rformula idiom mockup M9
+   and js/tabs/analysis.js's aperture readout both use, so the number reads
+   the same way everywhere in the app. */
+.overlay-body .readout {
+  flex: 0 0 230px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px;
+  background: var(--bg);
+}
+.overlay-body .readout h3 {
+  margin: 0 0 10px 0;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  font-weight: 600;
+}
+.overlay-body .rmetric {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 7px 0;
+  border-bottom: 1px solid #eef1f4;
+}
+.overlay-body .rmetric:last-of-type {
+  border-bottom: none;
+}
+.overlay-body .rnum {
+  font-size: 15px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+.overlay-body .rlbl {
+  font-size: 11.5px;
+  color: var(--muted);
+  text-align: right;
+}
+.overlay-body .rformula {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+  font-size: 11px;
+  color: var(--muted);
+  font-family: ui-monospace, Consolas, monospace;
+}
+/* Fidelity disclosure (docs/secondary-irradiance-plan.md: "UI must say
+   coarse in cone modes, exact in Monte Carlo wherever the secondary map
+   shows") -- stated as visible text, not a tooltip. */
+.overlay-body .rfidelity {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+  font-size: 11.5px;
+  color: var(--text);
+  line-height: 1.4;
+}
+
+/* v0.2 §M compass rider: N/E/S/W on a flat window's map, an axis caption in
+   compass terms for the unwrapped cylinder/frustum map -- deliberately as
+   quiet as .tabcontent .caption (muted color, ~11px), sitting in the
+   frame's own padding rather than over the flux data itself. */
+.flux-map-frame {
+  position: relative;
+  display: inline-block;
+  padding: 18px;
+}
+.compass-label {
+  position: absolute;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  pointer-events: none;
+}
+.compass-label.compass-n {
+  top: 2px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+.compass-label.compass-s {
+  bottom: 2px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+.compass-label.compass-e {
+  right: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+.compass-label.compass-w {
+  left: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+.compass-axis {
+  display: flex;
+  justify-content: space-between;
+  padding: 0 18px;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.03em;
 }
 
 /* -- Library slide-over ---------------------------------------------------
@@ -718,6 +1052,14 @@ input.val::-webkit-inner-spin-button {
 .badge.inuse {
   background: var(--accent);
   color: #fff;
+}
+.fieldbadge {
+  margin-left: 6px;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.subhead .fieldbadge {
+  display: inline-block;
 }
 .badge.import {
   background: var(--warn-bg);
@@ -864,7 +1206,9 @@ input.val::-webkit-inner-spin-button {
   flex: 0 0 330px;
   overflow-y: auto;
 }
-.tabcontent .subhead {
+.tabcontent .subhead,
+.stage .subhead,
+.inspector .subhead {
   color: var(--muted);
   font-size: 12.5px;
   margin: 16px 0 6px 0;
@@ -913,6 +1257,16 @@ input.val::-webkit-inner-spin-button {
   color: var(--muted);
   font-size: 11.5px;
   margin-top: 8px;
+}
+/* §D map exports (docs/ui-spec-v0.2.md): "Export CSV for FEA" sits in a
+   map's own corner rather than crowding its header row -- .frame is already
+   position:relative, so this just anchors the ordinary .btn.small look
+   there. */
+.tabcontent .frame .cornerbtn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
 }
 
 /* Custom-outline sketch canvas: draggable vertex handles, ghost mirror

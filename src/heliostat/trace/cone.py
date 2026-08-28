@@ -33,11 +33,23 @@ not with luck.
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 from ..geometry.receiver import Receiver
-from ..geometry.secondary import AxiconSecondary, CassegrainSecondary, NoSecondary, Secondary
+from ..geometry.secondary import (
+    AxiconSecondary,
+    CassegrainSecondary,
+    NoSecondary,
+    Secondary,
+    secondary_bin_areas_m2,
+    secondary_has_flux_map,
+    secondary_uv,
+    secondary_uv_extent,
+)
 from ..geometry.shading import _blocked_mask
+from .bspline_deposit import control_grid_edges, evaluate_bspline
 from .kernels import RadialKernel, deposit
 from .mc import (
     MIRROR_HALF_X_MM,
@@ -59,6 +71,14 @@ WINDOW_MARGIN_FLOOR_MM = 5.0  # absolute floor for a near-zero reach
 SECONDARY_MARGIN_FRAC = 0.01  # relative cushion on the secondary aperture
 SECONDARY_MARGIN_FLOOR_MM = 20.0  # absolute floor for a small aperture
 RING_PROBES = 12  # boundary directions probed per sample for the rim check
+
+# deposit_method="bspline" (see trace_heliostat_cone's docstring):
+# control_grid=None derives a coarse accumulation grid this many times
+# smaller than flux_grid, per axis (scripts/coeff_prototype/REPORT.md's own
+# 32x32-vs-128x128 benchmark is a 4x coarsening), clamped to a minimum so a
+# very small flux_grid still gets a usable control grid.
+CONTROL_GRID_COARSEN = 4
+CONTROL_GRID_MIN = 8
 
 #: Test-only escape hatch: forces every sample through the full node raster,
 #: bypassing the skip test below, so a test can compare "skip enabled" against
@@ -98,22 +118,35 @@ def _effective_support_rad(kernel: RadialKernel, tail_tol: float = SKIP_TAIL_MAS
     return float(theta[np.argmax(within_tol)])
 
 
-def _reach_mm(
-    jac_all: np.ndarray, hess_all: np.ndarray | None, full_stencil: np.ndarray, support_rad: float
-) -> np.ndarray:
-    """Vectorised form of :func:`~heliostat.trace.kernels.deposit`'s own
-    footprint-reach bound, one value per sample: the top singular value of
-    the local Jacobian times the kernel support radius, plus the order-2
-    Hessian correction where one was measured (see ``deposit`` for the
-    derivation of both terms). Samples without a Jacobian get a harmless
-    zero-filled reach; callers gate those out separately.
+def _jac_smax_mm(jac_all: np.ndarray) -> np.ndarray:
+    """Vectorised top singular value of each sample's local Jacobian.
+
+    Shared by the transmission-skip test's footprint-reach bound
+    (:func:`_reach_mm`) and :func:`~heliostat.trace.kernels.deposit`'s own
+    bounding-box sizing, which needs the identical per-sample value — this
+    computes it once for all ``m`` samples instead of once more per sample
+    inside ``deposit``'s Python loop. Samples without a Jacobian (NaN)
+    get a harmless zero-filled input and thus a zero smax; callers gate
+    those out separately.
     """
     jac_safe = np.where(np.isnan(jac_all), 0.0, jac_all)
     jjt = np.einsum("mij,mkj->mik", jac_safe, jac_safe)
-    smax = np.sqrt(np.clip(np.linalg.eigvalsh(jjt)[:, -1], 0.0, None))
+    return np.sqrt(np.clip(np.linalg.eigvalsh(jjt)[:, -1], 0.0, None))
+
+
+def _reach_mm(
+    smax: np.ndarray, hess_all: np.ndarray | None, full_stencil: np.ndarray, support_rad: float
+) -> np.ndarray:
+    """Footprint-reach bound, one value per sample: ``smax`` (the top
+    singular value of the local Jacobian, from :func:`_jac_smax_mm`) times
+    the kernel support radius, plus the order-2 Hessian correction where
+    one was measured (see :func:`~heliostat.trace.kernels.deposit` for the
+    derivation of both terms). Samples without a Jacobian carry a harmless
+    zero ``smax``; callers gate those out separately.
+    """
     reach = smax * support_rad
     if hess_all is not None:
-        hmax = np.zeros(jac_all.shape[0])
+        hmax = np.zeros(smax.shape[0])
         hmax[full_stencil] = np.abs(hess_all[full_stencil]).max(axis=(1, 2, 3))
         reach = reach + hmax * support_rad**2
     return reach
@@ -158,8 +191,9 @@ def _secondary_ring_clears(
     p_flat = np.repeat(pts, n_ring, axis=1)
 
     hit_pt, _, on_sec = secondary.redirect(p_flat, d_out_flat, {})
+    local_hit = secondary.to_local_point(hit_pt)
     radial = np.full(m * n_ring, np.inf)
-    radial[on_sec] = np.hypot(hit_pt[0], hit_pt[1])
+    radial[on_sec] = np.hypot(local_hit[0], local_hit[1])
     worst = radial.reshape(m, n_ring).max(axis=1)
     return worst <= (secondary.aperture_radius_mm - margin_mm)
 
@@ -167,7 +201,7 @@ def _secondary_ring_clears(
 def sunshape_kernel(
     source_model: str = "super_gauss",
     slope_error_mrad: float = 0.0,
-    tracking_error_mrad: float = 0.0,
+    pointing_error_mrad: float = 0.0,
     specularity_mrad: float = 0.0,
 ) -> RadialKernel:
     """The angular kernel for a named sunshape, optionally error-broadened.
@@ -178,6 +212,26 @@ def sunshape_kernel(
     coating scatter of the reflected ray itself, so it carries no such
     doubling -- the same distinction (and the same two error sources) the
     Monte Carlo backend's ``trace_heliostat`` applies per-ray.
+
+    ``pointing_error_mrad`` (docs/ui-spec-v0.2.md §F) is the tracker's
+    aiming inaccuracy, folded in as a third broadening term alongside the
+    two above -- "the annual energy hit of a sloppy tracker shows up at
+    every fidelity" (spec §F), even though at cone fidelity there is no
+    per-instant "misses left/misses right" character to show, only its
+    long-run, ensemble-averaged effect as an added broadening (equivalent,
+    in variance, to convolving the base kernel with the same Gaussian that
+    Monte Carlo's many independent per-timestep offsets would average out
+    to over many instants -- see ``heliostat.trace.mc.trace_heliostat``'s
+    own ``pointing_error_mrad`` docstring for that MC side). By the
+    resolved spec convention, ``pointing_error_mrad`` is already the RMS
+    angular deviation of the REFLECTED beam, not the mirror tilt that
+    produces it -- so unlike ``slope_error_mrad`` (a mirror-tilt RMS that
+    the reflection law doubles), it carries NO factor of two here: it
+    enters the ``hypot`` below exactly as given, the same convention
+    ``specularity_mrad`` already uses (also a reflected-beam-frame
+    quantity). Getting this backwards -- doubling ``pointing_error_mrad``
+    the way ``slope_error_mrad`` is doubled -- would silently broaden the
+    cone spot by 2x what a matching Monte Carlo trace realises.
     """
     if source_model == "super_gauss":
         sig = SUPER_GAUSS_SIGMA_RAD
@@ -202,9 +256,35 @@ def sunshape_kernel(
         raise ValueError(f"unknown source_model {source_model!r}")
 
     broadening = (
-        np.hypot(np.hypot(2.0 * slope_error_mrad, specularity_mrad), tracking_error_mrad) * 1e-3
+        np.hypot(np.hypot(2.0 * slope_error_mrad, specularity_mrad), pointing_error_mrad) * 1e-3
     )
     return kernel.convolve_gaussian(broadening) if broadening > 0 else kernel
+
+
+def grid_for_density(
+    density_per_m2: float, width_m: float, height_m: float, min_n: int = 2
+) -> tuple[int, int]:
+    """``(n_x, n_y)`` mirror-sample grid for ``density_per_m2`` samples/m^2
+    over a ``width_m x height_m`` aperture bounding box, aspect-matched to
+    that bbox.
+
+    Requiring both ``n_x * n_y == density * width_m * height_m`` (the
+    requested sample count) and ``n_x / n_y == width_m / height_m`` (aspect
+    matched to the bbox) simultaneously gives, by substitution, ``n_x ==
+    width_m * sqrt(density)`` and ``n_y == height_m * sqrt(density)`` -- each
+    axis independently its own physical length times ``sqrt(density)``,
+    rounded (floored at ``min_n`` per axis). On the manuscript's 5m x 3m
+    mirror at ``density=12.0`` this gives exactly ``(17, 10)``; at the old
+    hardcoded grid's own implied density (``16.0``) it reproduces ``(20,
+    12)`` exactly. See ``scripts/coeff_prototype/REPORT.md`` SS7 for the
+    sparsity sweep (full 643-heliostat field) that picked density=12.0 as
+    the sparsest rung holding field-total error under ~0.1% vs the
+    hardcoded grid.
+    """
+    s = math.sqrt(density_per_m2)
+    n_x = max(min_n, round(width_m * s))
+    n_y = max(min_n, round(height_m * s))
+    return n_x, n_y
 
 
 def trace_heliostat_cone(
@@ -220,7 +300,8 @@ def trace_heliostat_cone(
     secondary: Secondary,
     receiver: Receiver,
     kernel: RadialKernel,
-    grid: tuple[int, int] = (20, 12),
+    grid: tuple[int, int] | None = (20, 12),
+    density: float | None = None,
     flux_grid: tuple[int, int] = (128, 128),
     delta_rad: float = 2.0e-4,
     order: int = 1,
@@ -228,6 +309,10 @@ def trace_heliostat_cone(
     shadow_body=None,
     mask_nodes: int = 16,
     design=None,
+    return_secondary_flux: bool = False,
+    secondary_flux_grid: tuple[int, int] = (128, 128),
+    deposit_method: str = "binned",
+    control_grid: tuple[int, int] | None = None,
 ) -> dict:
     """Cone-optics trace of one heliostat at one instant.
 
@@ -239,6 +324,36 @@ def trace_heliostat_cone(
     window), ``incident_power_w`` (cosine-weighted power arriving on the
     mirror), and a counter chain ``samples / valid / blocked / unresolved``
     over mirror sample cells.
+
+    ``grid`` is the mirror-surface sample grid, ``(n_x, n_y)``. Passing
+    ``grid=None`` instead resolves it from ``density`` (samples/m^2, required
+    in that case) via :func:`grid_for_density`, aspect-matched to the
+    mirror's own aperture bbox (``MIRROR_HALF_X_MM``/``MIRROR_HALF_Y_MM`` for
+    a plain rectangle, ``design.bbox`` for a custom design) rather than a
+    fixed tuple baked to the manuscript's 5m x 3m mirror. This is how the
+    ``ultra_fast`` mode (:mod:`heliostat.trace.modes`) samples; every other
+    caller keeps passing an explicit ``grid`` tuple and is unaffected.
+
+    ``deposit_method`` selects how sample kernels are laid down onto the
+    receiver window. ``"binned"`` (default) deposits every sample directly
+    onto the fine ``flux_grid`` via :func:`heliostat.trace.kernels.deposit`
+    -- exact per :mod:`heliostat.trace.kernels`'s own analysis, cost scales
+    with footprint size on the fine grid. ``"bspline"`` instead accumulates
+    onto a coarse ``control_grid`` spanning the same window -- "binning with
+    smooth bins," the *same* ``deposit`` call, just far fewer cells per
+    footprint -- then upsamples once, at the end, via a fixed cubic-B-spline
+    interpolation matrix onto the requested ``flux_grid``; see
+    :mod:`heliostat.trace.bspline_deposit` for the accumulate/evaluate math
+    and the cylinder-seam periodicity note. ``control_grid=None`` (default)
+    derives it as ``flux_grid`` coarsened ``CONTROL_GRID_COARSEN`` (4x) per
+    axis rather than a fixed tuple: a curved receiver's adaptive
+    ``flux_grid`` (``_receiver_flux_grid`` in the web layer scales ``n_u``
+    up to 448 for a wide cylinder) needs a proportionally wider control grid
+    too, or the fixed 32x32 the prototype benchmarked at flat 128x128 becomes
+    a far coarser-than-intended ~14x coarsening instead of 4x, badly
+    under-resolving peak flux. This is how the ``ultra_fast`` mode
+    (:mod:`heliostat.trace.modes`) deposits; ``fast_accurate`` and Monte
+    Carlo keep exact binned deposit.
 
     ``delta_rad`` is the finite-difference probe angle; it must be small
     against the optics' scale of nonlinearity but large enough that
@@ -266,9 +381,31 @@ def trace_heliostat_cone(
     it ``None`` for store-bound sweeps, where the store contract applies
     occlusion as read-time scalars instead. Counter invariant:
     ``valid + masked + blocked + node_fallback + unresolved == samples``.
+
+    ``return_secondary_flux`` (default ``False``, so a caller who never asks
+    for it gets bit-identical receiver-path results) additionally computes
+    an incident-flux map on the secondary's own surface, when ``secondary``
+    has one (:func:`~heliostat.geometry.secondary.secondary_has_flux_map` --
+    axicon/Cassegrain only; silently omitted for :class:`NoSecondary` or a
+    :class:`~heliostat.geometry.secondary.PyramidSecondary`). Unlike the
+    receiver deposit, this is deliberately COARSE: each sample deposits its
+    full weight at its CHIEF ray's secondary hit point (no footprint/
+    Jacobian spread onto the secondary's own surface -- a second Jacobian in
+    the secondary's ``(u, v)`` is a real refinement left for later), with
+    samples whose chief ray misses the secondary rim falling back to
+    depositing at each surviving node's own hit point, mirroring the
+    receiver deposit's ``node_fallback`` path. Exact per-ray accounting is
+    what :func:`heliostat.trace.mc.trace_heliostat`'s
+    ``return_secondary_hits=True`` gives instead -- "coarse in cone modes,
+    exact in Monte Carlo" is the fidelity disclosure the UI must carry
+    wherever this map is shown. Adds ``secondary_flux``, ``secondary_u_edges``,
+    ``secondary_v_edges``, ``secondary_power_w`` and ``secondary_fidelity``
+    to the returned dict when computed.
     """
     if order not in (1, 2):
         raise ValueError(f"order must be 1 or 2, got {order!r}")
+    if deposit_method not in ("binned", "bspline"):
+        raise ValueError(f"deposit_method must be 'binned' or 'bspline', got {deposit_method!r}")
     # The order-2 deposit spreads each sample by a Hessian of the map from
     # ray angle to surface position. That map folds on a curved receiver,
     # and a fold drives the deposit's density factor through zero: the cap
@@ -289,8 +426,22 @@ def trace_heliostat_cone(
 
     n, u, v = _mirror_frame(rot_az_deg, rot_el_deg)
 
-    # Mirror-surface sample grid: cell centres, area-weighted.
-    n_x, n_y = grid
+    # Mirror-surface sample grid: cell centres, area-weighted. `grid=None`
+    # resolves to a density-derived grid instead of a fixed tuple -- see
+    # `grid_for_density` and the docstring above.
+    if grid is None:
+        if density is None:
+            raise ValueError("grid=None requires density (samples/m^2) to resolve a grid")
+        if design is None:
+            bbox_width_m = 2.0 * MIRROR_HALF_X_MM / 1000.0
+            bbox_height_m = 2.0 * MIRROR_HALF_Y_MM / 1000.0
+        else:
+            bbox_du0, bbox_du1, bbox_dv0, bbox_dv1 = design.bbox
+            bbox_width_m = (bbox_du1 - bbox_du0) / 1000.0
+            bbox_height_m = (bbox_dv1 - bbox_dv0) / 1000.0
+        n_x, n_y = grid_for_density(density, bbox_width_m, bbox_height_m)
+    else:
+        n_x, n_y = grid
     if design is None:
         gx = (np.arange(n_x) + 0.5) / n_x * 2.0 * MIRROR_HALF_X_MM - MIRROR_HALF_X_MM
         gy = (np.arange(n_y) + 0.5) / n_y * 2.0 * MIRROR_HALF_Y_MM - MIRROR_HALF_Y_MM
@@ -406,6 +557,19 @@ def trace_heliostat_cone(
     alive = alive.reshape(legs, m)
     uv = uv.reshape(2, legs, m)
 
+    want_sec = return_secondary_flux and secondary_has_flux_map(secondary)
+    if want_sec:
+        # Chief leg's own secondary hit point, recovered the same way `uv`
+        # is above: `pre` is already the (3, on_sec.sum()) world hit points
+        # `secondary.redirect` computed unconditionally -- no new ray
+        # tracing -- scattered back to (3, legs*m) via `survivors`, then
+        # sliced to leg 0 (stencil-major layout: leg k occupies indices
+        # [k*m, (k+1)*m)).
+        sec_pts_flat = np.full((3, legs * m), np.nan)
+        sec_pts_flat[:, survivors] = pre
+        chief_sec_pts = sec_pts_flat.reshape(3, legs, m)[:, 0, :]
+        chief_on_sec = on_sec.reshape(legs, m)[0]
+
     chief_ok = alive[0]
     full_stencil = alive.all(axis=0)
 
@@ -424,6 +588,11 @@ def trace_heliostat_cone(
         col[:, neg] = (uv[:, 0, neg] - uv[:, leg_m, neg]) / delta_rad
         jac_all[:, :, axis] = col.T
         can_jac &= alive[leg_p] | alive[leg_m]
+
+    # Top singular value of each sample's Jacobian, computed once for every
+    # sample: shared below by the transmission-skip test's reach bound and
+    # by `deposit`'s own bounding-box sizing (see `_jac_smax_mm`).
+    smax_all = _jac_smax_mm(jac_all)
 
     hess_all = None
     if order == 2:
@@ -469,7 +638,7 @@ def trace_heliostat_cone(
     if not occluders and shadow_body is None and not DISABLE_TRANSMISSION_SKIP:
         skip_support = _effective_support_rad(kernel)
         with np.errstate(invalid="ignore"):
-            reach = _reach_mm(jac_all, hess_all, full_stencil, skip_support)
+            reach = _reach_mm(smax_all, hess_all, full_stencil, skip_support)
             uv0 = uv[:, 0, :]
             margin = reach * WINDOW_SAFETY_FACTOR + WINDOW_MARGIN_FLOOR_MM
             v_clears = (uv0[1] - margin >= v0) & (uv0[1] + margin <= v1)
@@ -508,6 +677,12 @@ def trace_heliostat_cone(
     frac = np.ones(m)
     node_ok = np.ones((m, kk), dtype=bool)
     uv_nodes = np.full((2, m, kk), np.nan)
+    if want_sec:
+        # Default 1.0 matches the skip branch's own guarantee: `can_skip`
+        # only fires with no occluders and no shadow body (see above), so a
+        # skipped sample has nothing shading/blocking it on the way to the
+        # secondary either.
+        frac_secondary = np.ones(m)
 
     if np.any(need):
         idxn = np.flatnonzero(need)
@@ -535,7 +710,25 @@ def trace_heliostat_cone(
         if occluders:
             blocked_out = _blocked_mask(p_nodes.T, d_out_flat.T, occluders).reshape(mn, kk)
             node_ok_n &= ~blocked_out
+        if want_sec:
+            # Shading+blocking-only mask, BEFORE the receiver-window/
+            # secondary-aperture filters below are ANDed in -- a free
+            # byproduct captured one step earlier than the receiver deposit,
+            # used as the secondary deposit's own transmitted fraction (see
+            # `frac_secondary` below). A plain `.copy()`: nothing past this
+            # point mutates `node_ok_n` in place other than `&=`, which
+            # rebinds rather than mutating the array this aliases.
+            sec_mask_n = node_ok_n.copy()
         pre_n, d_n, on_n = secondary.redirect(p_nodes, d_out_flat.copy(), {})
+        if want_sec:
+            # Every node ray's own secondary hit point (mm, world), scattered
+            # back to sample-major (3, mn, k²) the same way `pre` was above --
+            # needed for the node-fallback deposit when a sample's CHIEF ray
+            # misses the secondary rim but some of its nodes still land on it.
+            sec_pos_flat = np.full((3, mn * kk), np.nan)
+            sec_pos_flat[:, np.flatnonzero(on_n)] = pre_n
+            sec_pos_nodes_n = sec_pos_flat.reshape(3, mn, kk)
+            sec_ok_n = sec_mask_n & on_n.reshape(mn, kk)
         hit_n, uv_n = receiver.intersect(pre_n, d_n)
         pass_out = np.zeros(mn * kk, dtype=bool)
         uv_nodes_n = np.full((2, mn * kk), np.nan)
@@ -555,6 +748,8 @@ def trace_heliostat_cone(
         frac[idxn] = (node_ok_n @ w_nodes) / w_sum  # kernel-weighted transmitted fraction
         node_ok[idxn] = node_ok_n
         uv_nodes[:, idxn] = uv_nodes_n
+        if want_sec:
+            frac_secondary[idxn] = (sec_mask_n @ w_nodes) / w_sum
 
     # --- classify and deposit --------------------------------------------
     cos_aoi = np.abs(normal.T @ s)  # incoming is -s; |normal . s| is cos(aoi)
@@ -566,8 +761,32 @@ def trace_heliostat_cone(
     n_u, n_v = flux_grid
     u_edges = np.linspace(u0, u1, n_u + 1)
     v_edges = np.linspace(v0, v1, n_v + 1)
-    out = np.zeros((n_v, n_u))
     bin_area_mm2 = (u_edges[1] - u_edges[0]) * (v_edges[1] - v_edges[0])
+
+    # `deposit_method="bspline"` accumulates onto a coarse control grid
+    # instead of the fine flux grid, upsampling once at the end -- see
+    # bspline_deposit.py. `accum_*` alias the fine grid unchanged when
+    # deposit_method="binned" (the default and fast_accurate/MC's only
+    # option), so that path is untouched, bit-for-bit, by this branch.
+    use_bspline = deposit_method == "bspline"
+    if use_bspline:
+        if control_grid is None:
+            # Proportional to flux_grid, not a fixed tuple -- see docstring:
+            # a curved receiver's adaptive (wide) flux_grid needs a
+            # proportionally wider control grid to keep the same
+            # coarsening factor the prototype benchmarked.
+            n_cu = max(CONTROL_GRID_MIN, round(n_u / CONTROL_GRID_COARSEN))
+            n_cv = max(CONTROL_GRID_MIN, round(n_v / CONTROL_GRID_COARSEN))
+            control_grid = (n_cu, n_cv)
+        accum_u_edges, accum_v_edges = control_grid_edges(u_edges, v_edges, control_grid)
+    else:
+        accum_u_edges, accum_v_edges = u_edges, v_edges
+    accum_n_u = accum_u_edges.size - 1
+    accum_n_v = accum_v_edges.size - 1
+    accum_du = accum_u_edges[1] - accum_u_edges[0]
+    accum_dv = accum_v_edges[1] - accum_v_edges[0]
+    accum_bin_area_mm2 = accum_du * accum_dv
+    out = np.zeros((accum_n_v, accum_n_u))
 
     n_valid = n_masked = n_blocked = n_node_fallback = 0
     for idx in range(m):
@@ -581,8 +800,8 @@ def trace_heliostat_cone(
                 hess_i = hess_all[idx]
             deposit(
                 out,
-                u_edges,
-                v_edges,
+                accum_u_edges,
+                accum_v_edges,
                 uv[:, 0, idx],
                 jac_all[idx],
                 float(weights[idx]),
@@ -590,6 +809,7 @@ def trace_heliostat_cone(
                 hess=hess_i,
                 mask=None if full_pass else node_ok[idx].astype(float).reshape(k, k),
                 wrap_u=wrap_u,
+                jac_smax=float(smax_all[idx]),
             )
             if full_pass:
                 n_valid += 1
@@ -603,10 +823,29 @@ def trace_heliostat_cone(
             # kernel-weighted. Locally granular, but these slivers carry
             # little power and would otherwise be dropped entirely.
             ok_j = node_ok[idx]
-            share = weights[idx] * w_nodes[ok_j] / w_sum / bin_area_mm2
-            iu = np.clip(((uv_nodes[0, idx, ok_j] - u0) // (u_edges[1] - u_edges[0])), 0, n_u - 1)
-            iv = np.clip(((uv_nodes[1, idx, ok_j] - v0) // (v_edges[1] - v_edges[0])), 0, n_v - 1)
-            np.add.at(out, (iv.astype(np.intp), iu.astype(np.intp)), share)
+            share = weights[idx] * w_nodes[ok_j] / w_sum / accum_bin_area_mm2
+            iu_raw = (uv_nodes[0, idx, ok_j] - accum_u_edges[0]) // accum_du
+            iv = np.clip(
+                (uv_nodes[1, idx, ok_j] - accum_v_edges[0]) // accum_dv, 0, accum_n_v - 1
+            ).astype(np.intp)
+            if wrap_u:
+                # Periodic accumulation grid: node landing points are
+                # azimuth-unwrapped for stencil continuity, so a node's ``u``
+                # can sit past the chart edge and its column continues at 0,
+                # matching `deposit`'s own wrap_u handling above. Clipping
+                # instead piles that mass onto the edge column. On the coarse
+                # control grid of the bspline path that was a measured +3.7%
+                # cylinder-seam peak error (coeff-prototype REPORT.md SS3.4).
+                # On the binned path the reachable misplacement is kernel-tail
+                # negligible (<~1e-10 of peak, measured): a chief ray near the
+                # seam always INTERSECTS a surface of revolution, so fallback
+                # only fires at tangent-miss limbs where the out-of-chart
+                # nodes carry only the kernel's outermost weights. Wrapped on
+                # both paths anyway -- same semantics, no reachable wrongness.
+                iu = (iu_raw.astype(np.intp)) % accum_n_u
+            else:
+                iu = np.clip(iu_raw, 0, accum_n_u - 1).astype(np.intp)
+            np.add.at(out, (iv, iu), share)
             n_node_fallback += 1
 
     counters["valid"] = n_valid
@@ -615,10 +854,93 @@ def trace_heliostat_cone(
     counters["node_fallback"] = n_node_fallback
     counters["unresolved"] = 0  # retained for counter-invariant compatibility
 
+    if use_bspline:
+        # Upsample the coarse control grid onto the fine flux grid, once,
+        # via the fixed cubic-B-spline matrices -- everything downstream
+        # (power_w, flux, true-area correction) reads `out` on the fine grid
+        # exactly as the binned path leaves it, so no other code path below
+        # needs to know which deposit method ran.
+        out = evaluate_bspline(out, accum_u_edges, accum_v_edges, u_edges, v_edges, wrap_u)
+
+    secondary_extra: dict = {}
+    if want_sec:
+        (su0, su1), (sv0, sv1) = secondary_uv_extent(secondary)
+        sn_u, sn_v = secondary_flux_grid
+        su_edges = np.linspace(su0, su1, sn_u + 1)
+        sv_edges = np.linspace(sv0, sv1, sn_v + 1)
+        su_step = su_edges[1] - su_edges[0]
+        sv_step = sv_edges[1] - sv_edges[0]
+        sec_bin_area_mm2 = su_step * sv_step
+        sec_out = np.zeros((sn_v, sn_u))
+
+        # Chief-point deposit: every sample whose CHIEF ray reached the
+        # secondary deposits its full (shading/blocking-discounted) weight
+        # at that one point -- the coarse fidelity this backend documents.
+        chief_idx = np.flatnonzero(chief_on_sec)
+        if chief_idx.size:
+            uv_c = secondary_uv(secondary, chief_sec_pts[:, chief_idx])
+            w_c = weights[chief_idx] * frac_secondary[chief_idx]
+            iu = np.clip((uv_c[0] - su0) // su_step, 0, sn_u - 1).astype(np.intp)
+            iv = np.clip((uv_c[1] - sv0) // sv_step, 0, sn_v - 1).astype(np.intp)
+            np.add.at(sec_out, (iv, iu), w_c / sec_bin_area_mm2)
+
+        # Node fallback: a sample whose chief ray missed the secondary rim
+        # (chief_on_sec False) can still have part of its kernel land on it
+        # -- deposit that surviving mass at each such node's own hit point,
+        # mirroring the receiver deposit's node_fallback branch above. By
+        # the same invariant `_secondary_ring_clears`'s skip test relies on
+        # (a skipped sample's chief ray always reaches the secondary), every
+        # chief-miss sample was in `need`, so `sec_ok_n`/`sec_pos_nodes_n`
+        # exist whenever this loop has work to do.
+        fallback_idx = np.flatnonzero(~chief_on_sec)
+        if fallback_idx.size:
+            pos_in_idxn = -np.ones(m, dtype=np.intp)
+            pos_in_idxn[idxn] = np.arange(idxn.size)
+            for idx in fallback_idx:
+                li = pos_in_idxn[idx]
+                if li < 0:
+                    continue  # pragma: no cover - see invariant note above
+                ok_j = sec_ok_n[li]
+                if not np.any(ok_j):
+                    continue
+                uv_j = secondary_uv(secondary, sec_pos_nodes_n[:, li, ok_j])
+                share = weights[idx] * w_nodes[ok_j] / w_sum / sec_bin_area_mm2
+                iu = np.clip((uv_j[0] - su0) // su_step, 0, sn_u - 1).astype(np.intp)
+                iv = np.clip((uv_j[1] - sv0) // sv_step, 0, sn_v - 1).astype(np.intp)
+                np.add.at(sec_out, (iv.astype(np.intp), iu.astype(np.intp)), share)
+
+        secondary_power_w = float(sec_out.sum() * sec_bin_area_mm2)
+        secondary_flux = sec_out * 1.0e6  # W/mm^2 -> W/m^2
+        sec_true_area_m2 = secondary_bin_areas_m2(secondary, (sn_u, sn_v))
+        sec_uniform_area_m2 = sec_bin_area_mm2 * 1.0e-6
+        if not np.allclose(sec_true_area_m2, sec_uniform_area_m2):
+            secondary_flux = secondary_flux * (sec_uniform_area_m2 / sec_true_area_m2)
+        secondary_extra = {
+            "secondary_flux": secondary_flux,
+            "secondary_u_edges": su_edges,
+            "secondary_v_edges": sv_edges,
+            "secondary_power_w": secondary_power_w,
+            # UI disclosure (spec §C): this backend's secondary deposit is a
+            # chief-ray-point approximation, not a full footprint/Jacobian
+            # spread -- exact accounting is Monte Carlo's
+            # (`return_secondary_hits=True`).
+            "secondary_fidelity": "coarse",
+        }
+
     bin_area_mm2 = (u_edges[1] - u_edges[0]) * (v_edges[1] - v_edges[0])
     power_w = float(out.sum() * bin_area_mm2)
+    flux = out * 1.0e6  # W/mm^2 -> W/m^2
+    # `out` is power per (u, v) parameter bin. On a frustum the parameter
+    # bins are uniform but the surface rows they map to are not (area scales
+    # with r(v)/r_mean), so the physical W/m^2 divides bin power by the TRUE
+    # row area — the same bin_areas_m2 the MC backend, _mean_flux_kw_m2 and
+    # the FEA CSV already use. Flat/cylinder areas are uniform: untouched.
+    true_area_m2 = receiver.bin_areas_m2((n_u, n_v))
+    uniform_area_m2 = bin_area_mm2 * 1.0e-6
+    if not np.allclose(true_area_m2, uniform_area_m2):
+        flux *= uniform_area_m2 / true_area_m2
     return {
-        "flux": out * 1.0e6,  # W/mm^2 -> W/m^2
+        "flux": flux,
         "u_edges": u_edges,
         "v_edges": v_edges,
         "power_w": power_w,
@@ -626,4 +948,5 @@ def trace_heliostat_cone(
         "counters": counters,
         "chief_uv": uv[:, 0],
         "jacobians": jac_all,
+        **secondary_extra,
     }

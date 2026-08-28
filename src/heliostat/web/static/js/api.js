@@ -107,6 +107,28 @@ export async function postFluxCsv(body) {
   return resp.blob();
 }
 
+// docs/ui-spec-v0.2.md §D: the ANSYS-oriented FEA CSV grid (meters, W/m²,
+// one x/y/flux point per row behind commented metadata) -- a different file
+// format from postFluxCsv's mm/kW-m2 labelled matrix above, not a
+// replacement for it. Same request body shape (buildFluxCsvRequest), same
+// single-heliostat-map-even-in-field-mode limitation that function already
+// documents; only the endpoint and the resulting file differ.
+export function postFluxFeaCsv(body, signal) {
+  return postForBlob("/trace/flux_fea.csv", body, signal).then((resp) => resp.blob());
+}
+
+// docs/ui-spec-v0.2.md §C leftover: the secondary's own incident-flux map,
+// same ANSYS-oriented FEA CSV convention as postFluxFeaCsv above (x, y,
+// flux, absorbed rows behind commented metadata -- see app.py's
+// _secondary_flux_fea_csv), just on the secondary's own surface instead of
+// the receiver's. Same single-heliostat-map-even-in-field-mode request
+// shape (the endpoint reads body.heliostat_x_mm/y_mm unconditionally, same
+// as flux_fea.csv); 404s for prime_focus or a secondary with no
+// single-valued flux-map parameterization.
+export function postSecondaryFluxFeaCsv(body, signal) {
+  return postForBlob("/trace/secondary_flux_fea.csv", body, signal).then((resp) => resp.blob());
+}
+
 // ---------------------------------------------------------------------------
 // library: named designs, receiver configs and projects (docs/ui-spec.md 5)
 // -- plus the read-only legacy `/api/setups` used for the Projects tab's
@@ -172,6 +194,41 @@ export function dayFluxUrl(jobId, stepIndex) {
   return `${API_BASE}/day/flux/${encodeURIComponent(jobId)}/${stepIndex}.png`;
 }
 
+// That same stored timestep's flux map as a §D FEA CSV grid (docs/ui-spec-v0.2.md
+// §D) -- built once, alongside the PNG, during the sweep itself. Only valid
+// for a step the sweep kept a map for (has_flux_map), exactly like
+// dayFluxUrl above; a direct download link, not a fetch wrapper, for the
+// same reason dayExportUrl is.
+export function dayFluxFeaCsvUrl(jobId, stepIndex) {
+  return `${API_BASE}/day/flux/${encodeURIComponent(jobId)}/${stepIndex}.csv`;
+}
+
+// docs/ui-spec-v0.2.md §M.4: that same stored timestep's flux map as a
+// compact JSON grid -- built once alongside the PNG/CSV during the sweep
+// itself, never a re-trace (see heliostat.web.app's _day_flux_grid_blob_key).
+// The Analysis tab's aperture reads this and does its own arithmetic
+// against it client-side (power within a radius, avg flux, avg
+// concentration, the encircled-power curve) -- a real fetch wrapper, unlike
+// dayFluxUrl/dayFluxFeaCsvUrl above, because the caller needs the parsed
+// numbers, not just a URL to hand to an <img>/<a>. Same has_flux_map/404
+// rules as those two siblings.
+export function getDayFluxGrid(jobId, stepIndex, signal) {
+  return getJSON(`/day/flux/${encodeURIComponent(jobId)}/${stepIndex}.grid.json`, signal);
+}
+
+// Spec §C's remaining honest gap, closed: that same stored timestep's
+// SECONDARY-surface flux map (app.py's _secondary_payload -- power_w,
+// peak_flux_kw_m2, the absorbed-heat numbers, fidelity, flux_grid), built
+// once alongside the PNG/CSV/grid during the sweep itself whenever the
+// sweep both asked for one (include_secondary_flux) and its optics has a
+// secondary flux map at all (axicon/Cassegrain). 404s otherwise -- prime
+// focus, a step the receiver-grid cap skipped, or a run saved before this
+// endpoint existed -- same has_flux_map/404 rules as getDayFluxGrid, plus
+// its own narrower "this step never got a secondary blob" case.
+export function getDaySecondaryGrid(jobId, stepIndex, signal) {
+  return getJSON(`/day/flux/${encodeURIComponent(jobId)}/${stepIndex}.secondary.json`, signal);
+}
+
 // `hour_step` is a MAXIMUM spacing: the server divides sunrise-to-sunset into
 // equal intervals no larger than it, so both ends are always sampled. The
 // request's own sun angles are ignored -- the sweep computes its own per step.
@@ -179,6 +236,7 @@ export function buildDayRequest(doc, ui, opts) {
   const body = buildTraceRequest(doc, ui);
   body.site = opts.site;
   body.hour_step = opts.hour_step;
+  if (opts.min_elevation_deg != null) body.min_elevation_deg = opts.min_elevation_deg;
   return body;
 }
 
@@ -207,6 +265,12 @@ export function buildYearRequest(doc, ui, opts) {
   const body = buildTraceRequest(doc, ui);
   body.site = opts.site;
   body.fast_mode = opts.fastMode !== false;
+  // Same "Timestep (h)" control the day sweep uses -- YearTraceRequest takes
+  // hour_step itself (default 1.0, same as DayTraceRequest's), so without
+  // this the year job silently traced at 1 h regardless of what the day
+  // sweep's own field said.
+  if (opts.hour_step != null) body.hour_step = opts.hour_step;
+  if (opts.min_elevation_deg != null) body.min_elevation_deg = opts.min_elevation_deg;
   return body;
 }
 
@@ -260,14 +324,23 @@ export function expandCustomVertices(vertices, mirror) {
   return sketch.concat(mirrored);
 }
 
-// The three optical-error fields ride flat inside a design document/payload
-// (wire units: reflectance as a 0-1 fraction) while the store keeps them
-// under doc.design.errors with reflectance as a percent. These two exports
-// are the only place that mapping lives -- currentDesignPayload writes it
+// The optical-error fields ride flat inside a design document/payload (wire
+// units: reflectance as a 0-1 fraction) while the store keeps them under
+// doc.design.errors with reflectance as a percent. These two exports are
+// the only place that mapping lives -- currentDesignPayload writes it
 // outbound, and library.js/project.js use them to route the fields back
 // into doc.design.errors when loading, instead of letting them land as
-// stray keys in doc.designParams.
-export const DESIGN_ERROR_KEYS = ["slope_error_mrad", "specularity_mrad", "reflectance"];
+// stray keys in doc.designParams. error_map (docs/ui-spec-v0.2.md §E) rides
+// the same way, verbatim (an object or null) -- there is no percent/unit
+// conversion for it, unlike the others. pointing_error_mrad (§F) rides like
+// slope_error_mrad/specularity_mrad -- a plain mrad number, no conversion.
+export const DESIGN_ERROR_KEYS = [
+  "slope_error_mrad",
+  "specularity_mrad",
+  "reflectance",
+  "pointing_error_mrad",
+  "error_map",
+];
 
 export function errorsFromDesignDocument(d) {
   return {
@@ -278,6 +351,10 @@ export function errorsFromDesignDocument(d) {
     // fresh-document 90% default, or an old project would trace 10% dimmer
     // than it used to.
     reflectance_pct: (d && d.reflectance != null ? d.reflectance : 1.0) * 100,
+    // Absent means the document predates §F -- 0 mrad (a perfect tracker)
+    // reproduces its old, pointing-error-free trace exactly.
+    pointing_error_mrad: d && d.pointing_error_mrad != null ? d.pointing_error_mrad : 0,
+    error_map: (d && d.error_map) || null,
   };
 }
 
@@ -292,6 +369,8 @@ export function currentDesignPayload(doc) {
     slope_error_mrad: errors.slope_error_mrad || 0,
     specularity_mrad: errors.specularity_mrad || 0,
     reflectance: (errors.reflectance_pct != null ? errors.reflectance_pct : 90) / 100,
+    pointing_error_mrad: errors.pointing_error_mrad || 0,
+    error_map: errors.error_map || null,
   };
   if (type === "custom") {
     const custom = doc.designParams.custom || {};
@@ -448,6 +527,20 @@ export function buildTraceRequest(doc, ui) {
     solar_az_deg: doc.sun.az,
     solar_el_deg: doc.sun.el,
     optics_params: currentOpticsParams(doc),
+    // §M.3: the 3D receiver drape's raw texture data (see app.py's
+    // _flux_grid_payload) -- opt-in on the request so callers that only
+    // want the rendered PNG (buildFluxCsvRequest below builds its own,
+    // separate body and does not set this) never pay for it.
+    include_flux_grid: true,
+    // Spec §C: the secondary's own irradiance map + absorbed-heat readout
+    // (mockup M9's Receiver | Secondary selector). Declared on every
+    // TraceRequest-family model (heliostat.web.app's _TraceRequestBase), so
+    // this is safe to always ask for -- a no-op response field for
+    // prime_focus (server test: test_include_secondary_flux_is_absent_for_
+    // prime_focus) and for a day/year sweep, which does not read it at all.
+    // No new ray tracing either way (docs/secondary-irradiance-plan.md):
+    // it reuses hits the trace already computed.
+    include_secondary_flux: true,
   };
   if (ui.fidelity === "monte_carlo" && ui.mcRays) body.n_rays = ui.mcRays;
   if (doc.field.mode === "field") {
@@ -544,6 +637,61 @@ export async function postDesignSag(body, signal, includeCant = true) {
     peakToValleyMm: floatHeader(resp, "X-Peak-To-Valley-Mm"),
     slantRangeM: floatHeader(resp, "X-Slant-Range-M"),
   };
+}
+
+// docs/ui-spec-v0.2.md §D: the sag map's own "Export CSV for FEA" button --
+// /api/design/sag.csv is a sibling of /api/design/sag above (same solve,
+// same design, same sampling grid; only the file format differs), so it
+// takes the identical body and `cant` flag.
+export function postSagFeaCsv(body, signal, includeCant = true) {
+  const path = includeCant ? "/design/sag.csv" : "/design/sag.csv?cant=false";
+  return postForBlob(path, body, signal).then((resp) => resp.blob());
+}
+
+// docs/ui-spec-v0.2.md §E: "Measured error map -- Import CSV..." -- posts
+// the raw CSV text (read client-side via FileReader.readAsText, since this
+// app has no multipart upload anywhere else) and gets back what the server
+// read: grid size, aperture coverage, the implied RMS slope error, and the
+// raw grid itself under `grid` -- store that verbatim as
+// doc.design.errors.error_map (see DESIGN_ERROR_KEYS below); it rides
+// through currentDesignPayload unchanged and is exactly what a client
+// hands back on the next trace/save, never rebuilt by hand.
+export function postErrorMapImport(csvText, signal) {
+  return postJSON("/design/errormap/import", { csv: csvText }, signal);
+}
+
+// Sibling of postErrorMapImport for a grid the client already has (loaded
+// from the Library or a project) rather than a fresh CSV -- same three
+// numbers back, so the chip in js/tabs/shape.js reads the same whichever
+// way the map arrived.
+export function postErrorMapStats(grid, signal) {
+  return postJSON("/design/errormap/stats", { grid }, signal);
+}
+
+// docs/ui-spec-v0.2.md §E2: the SECONDARY's own sag map -- nominal figure +
+// parametric warp + imported map, summed (heliostat.web.app._secondary_sag_grid_mm)
+// -- a sibling of postDesignSag/postSagFeaCsv above, but the body is just
+// {optics, optics_params}: unlike the heliostat's own sag map, the
+// secondary's figure depends on none of design/sun/heliostat position, only
+// the tower geometry. The map import itself reuses postErrorMapImport/
+// postErrorMapStats verbatim (the endpoint is domain-agnostic -- see their
+// own comments) -- a caller just stores the returned grid under
+// doc.opticsParams[optics].secondary_error_map instead of
+// doc.design.errors.error_map.
+export async function postSecondarySag(optics, opticsParams, signal) {
+  const resp = await postForBlob("/secondary/sag", { optics, optics_params: opticsParams }, signal);
+  const blob = await resp.blob();
+  return {
+    blob,
+    contourIntervalMm: floatHeader(resp, "X-Contour-Interval-Mm"),
+    peakToValleyMm: floatHeader(resp, "X-Peak-To-Valley-Mm"),
+  };
+}
+
+// §D "Export CSV for FEA" sibling of postSecondarySag -- same body, same
+// exact surface, only the file format differs (see _secondary_sag_fea_csv).
+export function postSecondarySagFeaCsv(optics, opticsParams, signal) {
+  return postForBlob("/secondary/sag.csv", { optics, optics_params: opticsParams }, signal).then((resp) => resp.blob());
 }
 
 // The sag map is always for ONE named heliostat (docs/ui-spec.md 3), never

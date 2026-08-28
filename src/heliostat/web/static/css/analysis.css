@@ -191,6 +191,107 @@
 .an-fluxpanel {
   flex: 0 0 auto;
 }
+/* §D FEA export link, beside the map -- same idiom as .an-energyfoot's
+   "Export day CSV" above. */
+.an-fea-export {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+/* Spec §C / mockup M9: Receiver | Secondary selector in the map panel's own
+   header row, and the map + absorbed-heat readout side by side underneath
+   -- same .mapbody/.readout layout mockup M9 draws. */
+.an-fluxhead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.an-fluxhead h2 {
+  margin: 0;
+}
+.an-surfaceseg {
+  margin-bottom: 0;
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+/* docs/ui-spec-v0.2.md §N, mockup M18c: one click deeper to the richer 3D
+   View viewers (drape, aperture, FEA export) -- sits after the seg, which
+   already carries margin-left: auto. */
+.an-open3d {
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+.an-mapbody {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+.an-mapbody .frame {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.an-secondarycanvas {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+}
+.an-secondaryreadout {
+  flex: 0 0 230px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px;
+  background: var(--bg);
+}
+.an-secondaryreadout h3 {
+  margin: 0 0 10px 0;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  font-weight: 600;
+}
+.an-secondaryreadout .rmetric {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 7px 0;
+  border-bottom: 1px solid #eef1f4;
+}
+.an-secondaryreadout .rmetric:last-of-type {
+  border-bottom: none;
+}
+.an-secondaryreadout .rnum {
+  font-size: 15px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+.an-secondaryreadout .rlbl {
+  font-size: 11.5px;
+  color: var(--muted);
+  text-align: right;
+}
+.an-secondaryreadout .rformula {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+  font-size: 11px;
+  color: var(--muted);
+  font-family: ui-monospace, Consolas, monospace;
+}
+/* Fidelity disclosure (docs/secondary-irradiance-plan.md: "UI must say
+   coarse in cone modes, exact in Monte Carlo wherever the secondary map
+   shows") -- stated as visible text, not a tooltip. */
+.an-secondaryreadout .rfidelity {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+  font-size: 11.5px;
+  color: var(--text);
+  line-height: 1.4;
+}
 
 /* -- saved runs bar (docs/ui-spec.md 4) ------------------------------------- */
 
@@ -299,4 +400,164 @@
   flex: 0 0 auto;
   display: flex;
   gap: 6px;
+}
+
+/* -- compass rider (docs/ui-spec-v0.2.md §M) -------------------------------
+   Quiet caption text under the map, same idiom as .caption -- not a pixel
+   overlay on the matplotlib PNG, which carries chrome (axes/colorbar/title)
+   this tab has no exact pixel geometry for. */
+.an-compass {
+  margin-top: 2px;
+}
+
+/* -- sweep drill-down to one heliostat (docs/ui-spec-v0.2.md §M.2) --------- */
+
+.an-drillpanel {
+  flex: 0 0 auto;
+}
+.an-drillidrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.an-drillidrow label {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.an-drillidrow input.val {
+  width: 100px;
+}
+.an-drillrow {
+  display: flex;
+  gap: 10px;
+}
+.an-drillcard {
+  flex: 1 1 50%;
+  min-width: 0;
+}
+.an-drillhead {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.an-drillframe {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  height: 110px;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+.an-drillframe svg,
+.an-drillframe img {
+  width: 100%;
+  height: 100%;
+}
+.an-drillframe img {
+  object-fit: contain;
+}
+.an-drillframe p.placeholder {
+  color: var(--muted);
+  font-size: 11px;
+  padding: 8px;
+  text-align: center;
+}
+
+/* -- analysis aperture (docs/ui-spec-v0.2.md §M.4) ------------------------- */
+
+.an-aperturepanel {
+  flex: 0 0 auto;
+}
+.an-aperturepanel > p.placeholder {
+  color: var(--muted);
+  font-size: 12.5px;
+  margin: 0 0 6px 0;
+}
+.an-aperturebody {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+.an-aperturecanvaswrap {
+  flex: 1 1 auto;
+  min-width: 220px;
+}
+.an-aperturecanvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #000;
+  cursor: grab;
+  touch-action: none;
+}
+.an-aperturecanvas:active {
+  cursor: grabbing;
+}
+.an-aperturepanel .readout {
+  flex: 0 0 230px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px;
+  background: var(--bg);
+}
+.an-aperturepanel .readout h3 {
+  margin: 0 0 10px 0;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  font-weight: 600;
+}
+.an-aperturepanel .rmetric {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 7px 0;
+  border-bottom: 1px solid #eef1f4;
+}
+.an-aperturepanel .rmetric:last-of-type {
+  border-bottom: none;
+}
+.an-aperturepanel .rnum {
+  font-size: 15px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+.an-aperturepanel .rlbl {
+  font-size: 11.5px;
+  color: var(--muted);
+  text-align: right;
+}
+.an-aperturepanel .rformula {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+  font-size: 11px;
+  color: var(--muted);
+  font-family: ui-monospace, Consolas, monospace;
+}
+.an-aperturepanel .hint {
+  margin-top: 8px;
+}
+.an-aperturecurveframe {
+  margin-top: 14px;
+}
+.an-aperturecurvecanvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  margin-top: 6px;
 }

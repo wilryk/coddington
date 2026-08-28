@@ -22,8 +22,13 @@
       <img class="logo-mark" src="/static/img/coddington-icon.svg" alt="Coddington" />
       <h1>Coddington</h1>
       <span class="tag" id="optics-tag">Axicon</span>
+      <!-- docs/ui-spec-v0.2.md §N, mockup M18: the old single Workspace tab
+           splits into an authoring tab (Design) and an observing/simulating
+           tab (3D View) -- the app opens on 3D View (main.js's DEFAULT_UI.tab
+           in store.js). Heliostat Shape and Analysis are unchanged. -->
       <div class="apptabs">
-        <div class="tab active" id="apptab-workspace">Workspace</div>
+        <div class="tab" id="apptab-design">Design</div>
+        <div class="tab active" id="apptab-3dview">3D View</div>
         <div class="tab" id="apptab-shape">Heliostat Shape</div>
         <div class="tab" id="apptab-analysis">Analysis</div>
       </div>
@@ -33,7 +38,30 @@
       </div>
     </div>
 
-    <div class="shell">
+    <!-- Field-trace status: a sibling of every tab section, not inside the
+         3D View trace bar (#runbar), so it stays visible and cancellable no
+         matter which app tab is active -- a running field trace (or an
+         Analysis-tab sweep/year job) can take minutes and the user may
+         switch tabs while it runs. In-flow (not position:fixed/absolute) so
+         it displaces the tab content below it rather than covering the tab
+         bar or any tab's own controls; main.js's renderTraceBar owns
+         everything inside and keeps it hidden except while a job is live. -->
+    <div id="tracebar" class="tracebar" hidden>
+      <span class="tracebar-label" id="tracebar-label"></span>
+      <div class="tracebar-track" id="tracebar-track" hidden>
+        <div class="tracebar-fill" id="tracebar-fill"></div>
+      </div>
+      <div class="btn" id="tracebar-cancel" hidden>Cancel</div>
+    </div>
+
+    <!-- docs/ui-spec-v0.2.md §N, mockup M18a: Design -- the authoring tab.
+         The full four-stage sidebar (unchanged from the old Workspace
+         sidebar) beside a precision 2D canvas with an explicit Plan view /
+         Elevation toggle (design-view-toggle below) -- replacing the old
+         expand-a-stage auto-morph, which retires (main.js no longer switches
+         ui.view when a sidebar stage expands/collapses). No trace
+         instruments here -- those live in 3D View. -->
+    <section id="tab-design" class="shell" hidden>
       <aside class="sidebar">
         <div id="stage-heliostat"></div>
         <div id="stage-field"></div>
@@ -45,43 +73,82 @@
         </div>
       </aside>
 
-      <div class="viewport">
-        <div id="scene-container"></div>
-        <!-- docs/ui-spec.md 2.1/2.2: plan (Field stage) and elevation
-             (Receiver & Tower stage) views, siblings of #scene-container so
-             the 3D scene keeps running underneath instead of being disposed
-             on switch (main.js shows exactly one via [hidden]). -->
-        <div id="plan-view" hidden></div>
-        <div id="elevation-view" hidden></div>
-        <div class="banner" id="sun-banner" hidden>
-          Sun below the horizon at this time — heliostats hold their last pose, rays hidden.
+      <div class="mainarea">
+        <div class="canvashead">
+          <div class="seg" id="design-view-toggle">
+            <button type="button" id="design-view-plan">Plan view</button>
+            <button type="button" id="design-view-elevation">Elevation</button>
+          </div>
+          <span class="hint" id="design-view-explainer">explicit switch -- replaces the old expand-a-stage auto-morph, which retires</span>
         </div>
-        <div class="error-strip" id="geometry-error-strip" hidden></div>
-        <div id="inspector" hidden></div>
-        <div class="chip" id="rays-chip">
-          <label id="rays-toggle-label" style="pointer-events: auto; cursor: pointer; margin-right: 8px" hidden>
-            <input type="checkbox" id="rays-toggle" checked style="vertical-align: -1px" /> Rays
-          </label>
-          <span id="rays-chip-text">Corner chief rays — viewing aid, no shading</span>
-        </div>
-        <div class="chip" id="refresh-pill" style="bottom: 46px" hidden>Updating…</div>
-        <div class="viewhint" id="orbit-hint">drag to orbit · right-drag to pan · scroll to zoom · click an object to edit it</div>
-        <div class="viewpill" id="view-pill" hidden>
-          <span class="mode" id="view-pill-mode">Plan</span>
-          <span style="color: var(--muted)">·</span>
-          <a href="#" id="view-pill-back">back to 3D</a>
+        <div class="viewport">
+          <!-- docs/ui-spec.md 2.1/2.2: plan (Field stage) and elevation
+               (Receiver & Tower stage) views, shown one at a time via
+               [hidden] and switched only by the explicit toggle above. -->
+          <div id="plan-view" hidden></div>
+          <div id="elevation-view" hidden></div>
+          <div class="chip" id="design-hint-chip"></div>
         </div>
       </div>
-    </div>
+    </section>
+
+    <!-- docs/ui-spec-v0.2.md §N, mockup M18b: 3D View -- the app opens here.
+         The live 3D scene (edits from Design land instantly, since scene3d.js
+         keeps receiving geometry updates regardless of which tab is active)
+         with a condensed trace bar above it and a results dock at right.
+         Click-to-edit (#inspector) and a compact sun chip stay here; the
+         full control surface is Design's. -->
+    <section id="tab-3dview" class="tabpage">
+      <div id="runbar" class="runbar"></div>
+
+      <div class="tab3d-body">
+        <div class="viewport">
+          <div id="scene-container"></div>
+          <div class="banner" id="sun-banner" hidden>
+            Sun below the horizon at this time — heliostats hold their last pose, rays hidden.
+          </div>
+          <div class="error-strip" id="geometry-error-strip" hidden></div>
+          <div id="inspector" hidden></div>
+          <div class="chip" id="rays-chip">
+            <label id="rays-toggle-label" style="pointer-events: auto; cursor: pointer; margin-right: 8px">
+              <input type="checkbox" id="rays-toggle" checked style="vertical-align: -1px" /> Rays
+            </label>
+            <span id="rays-chip-text">Corner chief rays — viewing aid, no shading</span>
+          </div>
+          <div class="chip" id="refresh-pill" style="bottom: 46px" hidden>Updating…</div>
+          <div class="viewhint" id="orbit-hint">drag to orbit · right-drag to pan · scroll to zoom · click an object to edit it</div>
+          <!-- §N/M18b: compact sun chip -- top-left (not top-right, where
+               mockup M18b draws it) so it never sits under the floating
+               #inspector, which is fixed top-right (docs/ui-spec.md's
+               established idiom, unchanged here). Read-only; click the sun
+               arrow in the scene for the editable inspector. -->
+          <div class="suncompact" id="sun-chip-compact" hidden></div>
+        </div>
+
+        <!-- Results dock (§N, M16's ~380px width): the same run-bar results
+             (flux thumbnail -> full overlay, peak/mean/intercept, stale
+             chip, CSV exports) js/panels/run.js has always built, just
+             docked at the side instead of a full-width bottom bar. The
+             draft §M.1/§M.3-toggle/§M.4-in-dock instruments mockup M18b also
+             draws (plan-view power coloring, a drape on/off toggle, a
+             standalone aperture panel) are not yet implemented anywhere in
+             the app -- see the build report; nothing here removes or hides
+             a capability that existed before this restructure. -->
+        <aside class="dock" id="results-dock">
+          <div class="dockpanel">
+            <h2>Irradiance map &amp; results</h2>
+            <div id="results-dock-body"></div>
+          </div>
+        </aside>
+      </div>
+    </section>
 
     <!-- docs/ui-spec.md 3, mockup M6: full-screen Heliostat Shape tab. A
-         sibling of .shell (not inside it) so main.js can show/hide the two
+         sibling of the other tab sections so main.js can show/hide them
          mutually exclusively without touching the 3D scene, which keeps
          running underneath -- js/tabs/shape.js owns everything inside. -->
     <section id="tab-shape" class="tabpage" hidden></section>
     <section id="tab-analysis" class="tabpage" hidden></section>
-
-    <div id="runbar" class="runbar"></div>
   </div>
 
   <!-- docs/ui-spec.md 5, mockup M5: the Library slide-over. Fixed/full-app
@@ -94,7 +161,74 @@
   <div id="flux-overlay" class="overlay" hidden>
     <div class="overlay-panel">
       <button type="button" class="overlay-close" id="flux-overlay-close" aria-label="Close">&times;</button>
-      <img id="flux-overlay-img" alt="Flux map" />
+      <!-- Spec §C / mockup M9: Receiver | Secondary map selector -- only
+           enabled while the current optics has a secondary flux map
+           (axicon/Cassegrain trace with a "secondary" response block);
+           main.js's paintFluxOverlay() toggles it and its disabled/tooltip
+           state. -->
+      <div class="overlay-head">
+        <div class="seg" id="flux-surfaceseg">
+          <button type="button" id="flux-surface-receiver">Receiver</button>
+          <button type="button" id="flux-surface-secondary">Secondary</button>
+        </div>
+      </div>
+      <div class="overlay-body">
+        <div class="overlay-mapcol">
+          <!-- v0.2 §M compass rider: N/E/S/W on a flat window's edges, quiet
+               annotations matching .tabcontent .caption's style -- main.js's
+               openFluxOverlay() shows/hides these against the traced
+               receiver's kind. Receiver-map only -- the secondary has no
+               compass convention of its own (§C's u/v is arc length/radius,
+               not north-seam azimuth). -->
+          <div class="flux-map-frame" id="flux-map-frame">
+            <img id="flux-overlay-img" alt="Flux map" />
+            <!-- Secondary map: no server-rendered PNG (opt-in flux_grid
+                 only, app.py's _secondary_payload) -- painted client-side,
+                 same magma ramp/orientation as scene3d.js's receiver drape
+                 texture (see main.js's paintSecondaryCanvas). -->
+            <canvas id="flux-secondary-canvas" hidden></canvas>
+            <span class="compass-label compass-n" id="flux-compass-n" hidden>N</span>
+            <span class="compass-label compass-s" id="flux-compass-s" hidden>S</span>
+            <span class="compass-label compass-e" id="flux-compass-e" hidden>E</span>
+            <span class="compass-label compass-w" id="flux-compass-w" hidden>W</span>
+          </div>
+          <!-- Unwrapped cylinder/frustum maps instead: the u-axis labelled in
+               compass terms, seam to seam (main.js fills this with N . W . S .
+               E . N -- see its own comment for the az convention that order
+               comes from). -->
+          <div class="compass-axis" id="flux-compass-axis" hidden></div>
+          <div class="caption" id="flux-secondary-caption" hidden></div>
+        </div>
+        <!-- Spec §C: absorbed-heat readout, shown beside the secondary map
+             only (the receiver map already has its own peak/mean/intercept
+             trio in the results dock's own strip) -- incident power, absorbed
+             power at the trace's own secondary_reflectance, peak absorbed
+             flux density, and the fidelity disclosure (coarse in cone
+             modes, exact in Monte Carlo) stated in plain text, not a
+             tooltip. -->
+        <div class="readout" id="flux-secondary-readout" hidden>
+          <h3>Secondary readout</h3>
+          <div class="rmetric">
+            <div class="rlbl">incident</div>
+            <div class="rnum" id="flux-sec-incident">—</div>
+          </div>
+          <div class="rmetric">
+            <div class="rlbl" id="flux-sec-absorbed-lbl">absorbed</div>
+            <div class="rnum" id="flux-sec-absorbed">—</div>
+          </div>
+          <div class="rmetric">
+            <div class="rlbl">peak absorbed</div>
+            <div class="rnum" id="flux-sec-peakabsorbed">—</div>
+          </div>
+          <div class="rformula">absorbed = (1 − R) × incident</div>
+          <div class="rfidelity" id="flux-sec-fidelity"></div>
+          <!-- docs/ui-spec-v0.2.md §C leftover: the secondary's own
+               "Export CSV for FEA", same idiom as the dock's receiver
+               export (js/panels/run.js's exportFeaLink) -- just calling
+               /api/trace/secondary_flux_fea.csv instead. -->
+          <a href="#" id="flux-sec-fea-export" class="an-fea-export" hidden>Export CSV for FEA</a>
+        </div>
+      </div>
     </div>
   </div>
 

@@ -10,6 +10,7 @@ import {
   numberRow,
   setVal,
   segButton,
+  sectionHeaderRow,
   HELIOSTAT_SURFACE_OPTIONS,
   RECEIVER_FIELD_TABLE,
   OPTICS_LABELS,
@@ -73,8 +74,19 @@ function build(container) {
   const surfaceSeg = document.createElement("div");
   surfaceSeg.className = "seg";
   const surfaceBtns = {};
+  const SURFACE_TOOLTIPS = {
+    twisting: "Re-solves each facet's figure as the sun moves, so it stays perfectly focused at every instant.",
+    spherical: "Freezes one figure — a long focal gives a weakly focusing, not-quite-flat facet that no longer re-solves with the sun.",
+    flat: "No curvature by default — a true flat panel, though a facet grid can still be given a gentle fixed curvature.",
+  };
   for (const [key, label] of HELIOSTAT_SURFACE_OPTIONS) {
-    surfaceBtns[key] = segButton(surfaceSeg, label, key === "twisting", () => store.set("doc.design.surface", key));
+    surfaceBtns[key] = segButton(
+      surfaceSeg,
+      label,
+      key === "twisting",
+      () => store.set("doc.design.surface", key),
+      SURFACE_TOOLTIPS[key]
+    );
   }
   helioWrap.appendChild(surfaceSeg);
 
@@ -124,6 +136,16 @@ function build(container) {
     const rows = {};
     let warnBox = null;
     for (const field of fields) {
+      // See panels/receiver.js's identical handling -- keeps the floating
+      // inspector's fields visually identical to the sidebar's.
+      if (field.sectionHeader) sectionHeaderRow(wrap, field.sectionHeader, field.sectionHeaderBadge);
+      // secondary_error_map (§E2) has no numberRow -- a grid object isn't a
+      // number -- and no compact-inspector equivalent of the sidebar's
+      // import-chip UI; this floating panel skips it and shows only the
+      // numeric warp fields below it, keeping the inspector's promise of
+      // "the full control surface is Design's" (§N) for anything bigger
+      // than a plain number.
+      if (field.custom) continue;
       const input = numberRow(wrap, field);
       inputs[field.key] = input;
       rows[field.key] = input.parentElement;
@@ -189,7 +211,7 @@ function heliostatDistanceLabel(id, geometry) {
   const h = list.find((x) => x.id === id);
   if (!h) return "";
   const rM = Math.hypot(h.x_mm, h.y_mm) / 1000;
-  return `r ${rM.toFixed(1)} m`;
+  return `r ${rM.toFixed(2)} m`;
 }
 
 export function render(container, ctx) {

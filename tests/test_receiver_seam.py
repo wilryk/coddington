@@ -344,3 +344,178 @@ def test_frustum_aim_point_is_reachable_and_on_the_true_wall():
         assert np.allclose(
             mirror_pos + np.linalg.norm(aim - mirror_pos) * d, aim, atol=1e-3
         )
+
+
+class TestSeamIsInvisibleInsideACavity:
+    """The aperture-clipped (cavity) receiver forwards uv, extent and bin
+    areas to its inner surface -- and must forward `u_period_mm` too, or the
+    tracer sees no periodicity and treats the cavity cylinder's seam as a
+    hard edge: a spot straddling it behind the aperture loses its wrapped
+    share, the release-night seam bug in cavity form. An aperture so large
+    it clips nothing must be optically invisible: the cavity trace has to
+    match the bare cylinder at every bearing, seam included.
+    """
+
+    def _cavity(self, cylinder):
+        from heliostat.geometry.receiver import ApertureClippedReceiver, FlatWindowReceiver
+
+        return ApertureClippedReceiver(
+            aperture=FlatWindowReceiver(
+                z_mm=20000.0, half_u_mm=1.0e6, half_v_mm=1.0e6, facing="down"
+            ),
+            inner=cylinder,
+        )
+
+    def test_period_delegates_to_the_inner_surface(self):
+        cylinder = CylinderReceiver(center_z_mm=20000.0, radius_mm=3000.0, height_mm=6000.0)
+        assert self._cavity(cylinder).u_period_mm == cylinder.u_period_mm
+
+    def test_a_seam_heliostat_keeps_its_power_behind_a_clipless_aperture(self):
+        cylinder = CylinderReceiver(center_z_mm=20000.0, radius_mm=3000.0, height_mm=6000.0)
+        cavity = self._cavity(cylinder)
+        for bearing in (0.0, 1.0, 5.0, 180.0):
+            x, y, solar_az = _rotated_case(bearing)
+            bare = _trace(cylinder, x, y, solar_az)
+            clipped = _trace(cavity, x, y, solar_az)
+            assert clipped["power_w"] == pytest.approx(bare["power_w"], rel=1e-6), (
+                f"bearing {bearing}: cavity {clipped['power_w']} W vs bare {bare['power_w']} W"
+            )
+            assert float(clipped["flux"].max()) == pytest.approx(
+                float(bare["flux"].max()), rel=1e-6
+            ), f"bearing {bearing}: cavity peak differs from bare"
+
+
+class TestMonteCarloRefereesTheCavitySeam:
+    """Monte Carlo is an INDEPENDENT referee for the cavity seam fix: MC
+    rays are points, each landing in exactly one bin, so MC never needed
+    the wrap machinery and never had the seam bug -- agreement with it
+    validates the cone backend against exact geometry, not against a
+    second copy of the same code path.
+
+    Comparing the cone/MC collected-power ratio at the seam bearing to the
+    same ratio at a seam-free bearing cancels every normalisation
+    difference between the backends; pre-fix that double ratio was ~0.5
+    (the cone cavity lost the wrapped half of its spot), and any wrap
+    regression drags it off 1 again.
+    """
+
+    def _mc_power_w(self, receiver, x, y, solar_az, n_rays=200_000):
+        from heliostat.trace.mc import trace_heliostat
+
+        sol = solve_prime_focus_to_receiver(x, y, solar_az, _BASE_SOLAR_EL_DEG, receiver)
+        out = trace_heliostat(
+            x,
+            y,
+            sol.rot_az_deg,
+            sol.rot_el_deg,
+            sol.c3,
+            sol.c4,
+            sol.c5,
+            solar_az,
+            _BASE_SOLAR_EL_DEG,
+            _SECONDARY,
+            receiver,
+            n_rays,
+            np.random.default_rng(20260826),
+        )
+        return out["watts_per_ray"] * out["counters"]["in_window"]
+
+    def test_cone_to_mc_ratio_is_bearing_independent_for_the_cavity(self):
+        from heliostat.geometry.receiver import ApertureClippedReceiver, FlatWindowReceiver
+
+        cylinder = CylinderReceiver(center_z_mm=20000.0, radius_mm=3000.0, height_mm=6000.0)
+        cavity = ApertureClippedReceiver(
+            aperture=FlatWindowReceiver(
+                z_mm=20000.0, half_u_mm=1.0e6, half_v_mm=1.0e6, facing="down"
+            ),
+            inner=cylinder,
+        )
+
+        ratios = {}
+        for bearing in (0.0, 180.0):  # dead on the seam vs. as far from it as possible
+            x, y, solar_az = _rotated_case(bearing)
+            cone_power = _trace(cavity, x, y, solar_az)["power_w"]
+            mc_power = self._mc_power_w(cavity, x, y, solar_az)
+            assert mc_power > 0
+            ratios[bearing] = cone_power / mc_power
+
+        # 2% tolerance: MC shot noise at 2e5 rays plus genuine backend
+        # differences, both bearing-independent -- the seam deficit this
+        # guards against was a factor of ~2, not percent-scale.
+        assert ratios[0.0] == pytest.approx(ratios[180.0], rel=0.02), (
+            f"cone/MC ratio depends on seam proximity: {ratios}"
+        )
+
+
+class TestNodeFallbackWrapsAtTheSeam:
+    """Bearing invariance with the node-fallback path ENGAGED -- coverage
+    the rotation-invariance suite above lacked (its focused solves never
+    lose a chief ray, so the fallback branch went untested end to end).
+
+    The fallback's node landing points are azimuth-unwrapped for stencil
+    continuity, so a node's ``u`` can sit past the chart edge; the deposit
+    wraps its column modulo the count, like the main deposit's ``wrap_u``.
+    Honest scope note: on a bare surface of revolution the wrap-vs-clamp
+    distinction is measured kernel-tail negligible (~1e-11 of peak here) --
+    a chief near the seam always INTERSECTS the surface, so fallback fires
+    only at tangent-miss limbs where out-of-chart nodes carry the kernel's
+    outermost weights (instrumented: node columns -6..137 on this 128
+    chart at bearing 45, all tail nodes). This pin therefore BOUNDS any
+    fallback-placement wrongness below 1e-6 of peak across bearings rather
+    than discriminating the historical clamp; the case where clamping WAS
+    measurable (+3.7% seam peak) lived on the bspline path's coarse control
+    grid and is separately pinned in tests/test_bspline_deposit.py.
+    """
+
+    def _flat_mirror_trace(self, receiver, x, y, solar_az):
+        """A FLAT mirror throws a mirror-sized beam; against a narrow
+        cylinder the beam's edge band has chief rays that tangent-miss the
+        body while their sun cones still clip it -- the only geometry that
+        actually reaches the fallback path (a focused solve keeps every
+        chief on the wall, so rim spill lands in `masked` instead)."""
+        sol = solve_prime_focus_to_receiver(x, y, solar_az, _BASE_SOLAR_EL_DEG, receiver)
+        return trace_heliostat_cone(
+            x,
+            y,
+            sol.rot_az_deg,
+            sol.rot_el_deg,
+            0.0,
+            0.0,
+            0.0,
+            solar_az,
+            _BASE_SOLAR_EL_DEG,
+            _SECONDARY,
+            receiver,
+            _KERNEL,
+            order=1,
+        )
+
+    def test_fallback_mass_lands_in_the_wrapped_column(self):
+        # Bearings 45 vs 225: bearing 45's fallback band unwraps across the
+        # seam (instrumented) while the rigidly-identical 225 keeps its band
+        # mid-chart -- the maximal-contrast pair. 45 deg is exactly 16
+        # columns on this grid, so the rotation is an exact circular shift
+        # and sorted values must match bin for bin.
+        receiver = CylinderReceiver(center_z_mm=20000.0, radius_mm=1000.0, height_mm=6000.0)
+        fluxes = {}
+        for bearing in (45.0, 225.0):
+            x, y, solar_az = _rotated_case(bearing)
+            out = self._flat_mirror_trace(receiver, x, y, solar_az)
+            assert out["counters"]["node_fallback"] > 0, (
+                "geometry failed to engage the node-fallback path -- test is vacuous"
+            )
+            fluxes[bearing] = np.sort(out["flux"].ravel())
+
+        # Peak-scaled absolute tolerance: a per-element relative tolerance
+        # explodes on the map's near-zero bins. Measured agreement is
+        # ~2e-11 of peak; the bar leaves five orders of headroom while
+        # still catching any future fallback-placement wrongness at
+        # per-node-share scale.
+        peak = float(fluxes[45.0].max())
+        np.testing.assert_allclose(
+            fluxes[45.0],
+            fluxes[225.0],
+            rtol=0.0,
+            atol=1e-6 * peak,
+            err_msg="seam bearing's flux distribution differs from the seam-free bearing's",
+        )

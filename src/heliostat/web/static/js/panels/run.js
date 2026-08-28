@@ -1,7 +1,11 @@
-// Run bar: fidelity, Run button, results strip (docs/ui-spec.md 2.5).
-// Trace-shaped network calls live in main.js (this module only builds DOM
-// and calls back into the `actions` it is given), so this file stays a
-// pure view over the store plus those callbacks.
+// Trace bar (fidelity, Run button, stale/error chips) + results dock (the
+// flux thumbnail -> full overlay, peak/mean/intercept, CSV exports)
+// (docs/ui-spec.md 2.5; docs/ui-spec-v0.2.md §N/mockup M18b: the same
+// content, just split across two containers now -- a condensed bar above
+// the 3D scene and a ~380px dock beside it, instead of one full-width
+// bottom bar). Trace-shaped network calls live in main.js (this module only
+// builds DOM and calls back into the `actions` it is given), so this file
+// stays a pure view over the store plus those callbacks.
 import { store } from "../store.js";
 
 const FIDELITY = [
@@ -9,6 +13,17 @@ const FIDELITY = [
   ["fast_accurate", "Fast accurate"],
   ["monte_carlo", "Monte Carlo"],
 ];
+
+// docs/ui-spec-v0.2.md §A: one-line purpose subtitle plus what each mode
+// trades away, verbatim from the signed-off table.
+const FIDELITY_TOOLTIPS = {
+  ultra_fast:
+    "Field design optimization — explore layouts and geometry quickly. Trades away exact shadowing/blocking during sweeps (interpolated between anchors) and a small map-detail residual.",
+  fast_accurate:
+    "Compare a selected few options with confidence. Deterministic and noise-free, at roughly twice Ultra fast's cost.",
+  monte_carlo:
+    "Model the final design with precision, including all error sources. Noise falls as 1/√rays; the only mode that applies measured error maps and pointing error per ray.",
+};
 
 let built = false;
 let els = {};
@@ -22,24 +37,26 @@ function fmt(x, digits) {
   return x.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
 }
 
-// The response carries peak_flux_kw_m2, power_w, incident_power_w and
-// per-stage ray counters (heliostat.web.app's /api/trace and
-// /api/field/trace) but no literal "mean flux" or "intercept efficiency"
-// field. Mean flux is derived from power over the receiver window's own
-// area (optics_resolved's window_half_u/v_mm, echoed by both endpoints);
-// intercept is power/incident for the cone backends, or in_window/
-// hit_secondary from the counters for Monte Carlo, which carries no
-// incident_power_w. Both are judgment calls, noted in the build report.
+// The response carries peak_flux_kw_m2, mean_flux_kw_m2, power_w,
+// incident_power_w and per-stage ray counters (heliostat.web.app's
+// /api/trace and /api/field/trace) but no literal "intercept efficiency"
+// field. mean_flux_kw_m2 is the backend's own area-weighted mean over the
+// receiver's full modeled surface (see app.py's _mean_flux_kw_m2) -- this
+// used to be derived here from power_w over a box built from
+// optics_resolved's window_half_u/v_mm, but those describe the ENTRANCE
+// APERTURE (see PrimeFocusOptics), not the absorbing surface behind it;
+// for a curved receiver (cylinder/frustum) that box has nothing to do with
+// the receiver's true area, so the derived "mean" could land above the
+// correctly-normalised peak (observed: peak 1007.1 kW/m^2, mean
+// 1393.1 kW/m^2). Reading the backend's own field keeps both numbers drawn
+// from the same flux grid, so peak >= mean always. Intercept is
+// power/incident for the cone backends, or in_window/hit_secondary from
+// the counters for Monte Carlo, which carries no incident_power_w -- a
+// judgment call, noted in the build report.
 function deriveMetrics(data) {
   const out = { peak: null, mean: null, intercept: null };
   if (data.peak_flux_kw_m2 != null) out.peak = data.peak_flux_kw_m2;
-  const resolved = data.optics_resolved || {};
-  const halfU = resolved.window_half_u_mm;
-  const halfV = resolved.window_half_v_mm;
-  if (halfU && halfV && data.power_w != null) {
-    const areaM2 = ((halfU * 2) / 1000) * ((halfV * 2) / 1000);
-    if (areaM2 > 0) out.mean = data.power_w / areaM2 / 1000;
-  }
+  if (data.mean_flux_kw_m2 != null) out.mean = data.mean_flux_kw_m2;
   if (data.incident_power_w != null && data.incident_power_w > 0) {
     // The kernel integration can land a fraction of a percent above the
     // analytic incident power, and "100.1 %" reads as a bug rather than
@@ -51,9 +68,10 @@ function deriveMetrics(data) {
   return out;
 }
 
-function build(container, actions) {
+function build(container, dockContainer, actions) {
   container.innerHTML = "";
   container.className = "runbar";
+  dockContainer.innerHTML = "";
 
   const seg = document.createElement("div");
   seg.className = "seg";
@@ -62,6 +80,7 @@ function build(container, actions) {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.textContent = label;
+    btn.title = FIDELITY_TOOLTIPS[key];
     btn.addEventListener("click", () => store.set("ui.fidelity", key));
     seg.appendChild(btn);
     fidelityBtns[key] = btn;
@@ -80,6 +99,7 @@ function build(container, actions) {
   raysInput.style.width = "84px";
   raysInput.placeholder = "120000";
   raysInput.min = "100";
+  raysRow.title = "Number of Monte Carlo rays traced -- more rays reduce noise (falls as 1/√rays) at the cost of trace time.";
   raysInput.addEventListener("input", () => {
     const v = parseInt(raysInput.value, 10);
     store.set("ui.mcRays", Number.isFinite(v) && v > 0 ? v : null);
@@ -97,30 +117,11 @@ function build(container, actions) {
   });
   container.appendChild(runBtn);
 
-  // Only a field trace runs as a cancellable job (main.js's runFieldTraceJob)
-  // -- a single-heliostat trace is one request/response with nothing to
-  // cancel, so this stays hidden for it (see render(), keyed on
-  // ui.traceProgress being non-null).
-  const cancelBtn = document.createElement("div");
-  cancelBtn.className = "btn";
-  cancelBtn.textContent = "Cancel";
-  cancelBtn.hidden = true;
-  cancelBtn.addEventListener("click", () => {
-    if (cancelBtn.classList.contains("disabled-link")) return;
-    cancelBtn.classList.add("disabled-link");
-    actions.onCancelTrace();
-  });
-  container.appendChild(cancelBtn);
-
-  // While a field trace's job is running this shows its live progress
-  // (done/total heliostats + ETA, from heliostat.web.jobs' Job.snapshot);
-  // otherwise hidden -- there is no honest pre-run estimate once the trace
-  // is parallel, since wall clock now depends on core count.
-  const costHint = document.createElement("div");
-  costHint.className = "hint";
-  costHint.style.margin = "0 0 0 4px";
-  costHint.hidden = true;
-  container.appendChild(costHint);
+  // The cancel control and live progress hint for a running field trace used
+  // to live here, but this bar only ever shows on the 3D View tab (see
+  // main.js's renderTabs) -- a field trace can run for minutes, so both
+  // moved to #tracebar (main.js's renderTraceBar), which stays visible from
+  // every tab. This bar keeps only the Run button's own "Running…" label.
 
   const staleChip = document.createElement("div");
   staleChip.className = "stalechip";
@@ -133,6 +134,8 @@ function build(container, actions) {
   traceErr.hidden = true;
   container.appendChild(traceErr);
 
+  // Everything below lives in the results dock (docs/ui-spec-v0.2.md §N,
+  // mockup M18b), not the trace bar -- see this file's header comment.
   const results = document.createElement("div");
   results.className = "results";
 
@@ -184,19 +187,29 @@ function build(container, actions) {
     e.preventDefault();
     actions.onExportCsv();
   });
+  // docs/ui-spec-v0.2.md §D: the ANSYS-oriented FEA CSV grid, beside (never
+  // instead of) the mm/kW-m2 export above -- same idiom, different file.
+  const exportFeaLink = document.createElement("a");
+  exportFeaLink.href = "#";
+  exportFeaLink.textContent = "Export CSV for FEA";
+  exportFeaLink.style.fontSize = "12px";
+  exportFeaLink.style.marginLeft = "10px";
+  exportFeaLink.addEventListener("click", (e) => {
+    e.preventDefault();
+    actions.onExportFeaCsv();
+  });
   stampWrap.appendChild(stamp);
   stampWrap.appendChild(exportLink);
+  stampWrap.appendChild(exportFeaLink);
   results.appendChild(stampWrap);
 
-  container.appendChild(results);
+  dockContainer.appendChild(results);
 
   els = {
-    costHint,
     fidelityBtns,
     raysRow,
     raysInput,
     runBtn,
-    cancelBtn,
     staleChip,
     traceErr,
     results,
@@ -208,12 +221,13 @@ function build(container, actions) {
     axisCaption,
     stamp,
     exportLink,
+    exportFeaLink,
   };
   built = true;
 }
 
-export function render(container, actions, ctx) {
-  if (!built) build(container, actions);
+export function render(container, dockContainer, actions, ctx) {
+  if (!built) build(container, dockContainer, actions);
   const ui = store.get("ui");
 
   for (const [key, btn] of Object.entries(els.fidelityBtns)) {
@@ -227,31 +241,9 @@ export function render(container, actions, ctx) {
   els.runBtn.textContent = ui.traceBusy ? "Running…" : "Run trace";
   els.runBtn.classList.toggle("disabled-link", ui.traceBusy);
 
-  // A field trace runs as a cancellable background job (main.js's
-  // runFieldTraceJob); a single-heliostat trace is one plain request with no
-  // job behind it to cancel. ui.traceProgress is only ever set for the
-  // former, so it doubles as "is this run cancellable".
-  const progress = ui.traceProgress;
-  const cancellable = ui.traceBusy && !!progress;
-  els.cancelBtn.hidden = !cancellable;
-  if (!cancellable) els.cancelBtn.classList.remove("disabled-link");
-
-  // Once the trace is parallel, wall clock depends on core count -- there is
-  // no honest pre-run estimate the way a fixed seconds-per-heliostat number
-  // was. So this now shows only the running job's own live progress
-  // (heliostat.web.jobs' Job.snapshot: done/total heliostats, detail, ETA),
-  // nothing before Run is pressed.
-  if (cancellable) {
-    let label = progress.detail || `${progress.done} / ${progress.total} heliostats`;
-    if (progress.eta_s != null) {
-      const etaS = Math.round(progress.eta_s);
-      label += etaS >= 90 ? `, about ${Math.round(etaS / 60)} min left` : `, about ${etaS}s left`;
-    }
-    els.costHint.textContent = label;
-    els.costHint.hidden = false;
-  } else {
-    els.costHint.hidden = true;
-  }
+  // The cancel control and live progress hint for a running field trace now
+  // live in #tracebar (main.js's renderTraceBar), visible from every tab --
+  // see the comment where they used to be built, above.
 
   els.traceErr.hidden = !ui.traceError;
   if (ui.traceError) els.traceErr.textContent = ui.traceError;
@@ -260,6 +252,7 @@ export function render(container, actions, ctx) {
   els.staleChip.hidden = !(ui.staleResults && data);
   els.results.classList.toggle("stale", !!(ui.staleResults && data));
   els.exportLink.style.display = data ? "" : "none";
+  els.exportFeaLink.style.display = data ? "" : "none";
 
   if (data) {
     const metrics = deriveMetrics(data);

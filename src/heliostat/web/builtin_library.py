@@ -66,9 +66,10 @@ BUILTIN_RECEIVERS: dict[str, dict] = {
 #: document is the shape app.DesignParams validates (a RectParams dict).
 #: ``reflectance`` is the manuscript's own 90% mirror reflectance, spelled
 #: out rather than left to the model's 100%-reflectance default; the other
-#: two optical-error fields are spelled out at their own (zero-error)
-#: default alongside it, so all three read as deliberate choices rather
-#: than fields the built-in simply predates.
+#: three optical-error fields (slope, specularity, pointing -- §F) are
+#: spelled out at their own (zero-error) default alongside it, so all four
+#: read as deliberate choices rather than fields the built-in simply
+#: predates.
 BUILTIN_DESIGNS: dict[str, dict] = {
     f"Manuscript 5 x 3 m — {surface}": {
         "type": "rect",
@@ -78,6 +79,7 @@ BUILTIN_DESIGNS: dict[str, dict] = {
         "slope_error_mrad": 0.0,
         "specularity_mrad": 0.0,
         "reflectance": 0.9,
+        "pointing_error_mrad": 0.0,
     }
     for surface in ("twisting", "spherical", "flat")
 }

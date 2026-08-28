@@ -30,6 +30,7 @@ from heliostat.dni import ClearSkyDNI  # noqa: E402
 from heliostat.geometry.design import _petal_at_angle, flower, grid_facets  # noqa: E402
 from heliostat.geometry.heliostat import zernike_sag_and_slopes  # noqa: E402
 from heliostat.geometry.secondary import solve_cassegrain_relay  # noqa: E402
+from heliostat.solar import build_time_grid  # noqa: E402
 from heliostat.trace.mc import MIRROR_HALF_X_MM, MIRROR_HALF_Y_MM  # noqa: E402
 from heliostat.web import app as app_module  # noqa: E402
 from heliostat.web.app import (  # noqa: E402
@@ -62,6 +63,8 @@ from heliostat.web.app import (  # noqa: E402
     FermatLayout,
     FlowerParams,
     RadialStaggeredLayout,
+    YearTraceRequest,
+    _aperture_metrics,
     _build_trace_design,
     _day_flux_step_indices,
     _day_timesteps,
@@ -69,6 +72,8 @@ from heliostat.web.app import (  # noqa: E402
     _geometry_for,
     _slant_range_mm,
     _solve_for,
+    _year_energy_cfg,
+    _year_trace_dates,
     create_app,
     resolve_optics_params,
 )
@@ -220,6 +225,75 @@ def test_trace_tower_reflector_optics(client):
     assert resp.status_code == 200
     resp = client.post("/api/trace", json=_trace_payload(RECT_DESIGN, optics="cassegrain"))
     assert resp.status_code == 200
+
+
+def test_trace_flux_grid_is_opt_in(client):
+    """`flux_grid` (spec §M.3's raw texture data for the 3D receiver drape)
+    is absent unless a request asks for it -- every existing caller of
+    /api/trace that doesn't know about it, this file's own payloads
+    included, pays nothing extra for it."""
+    resp = client.post("/api/trace", json=_trace_payload(RECT_DESIGN))
+    assert resp.status_code == 200
+    assert resp.json().get("flux_grid") is None
+
+
+def test_trace_flux_grid_shape_and_extent(client):
+    payload = _trace_payload(RECT_DESIGN)
+    payload["include_flux_grid"] = True
+    resp = client.post("/api/trace", json=payload)
+    assert resp.status_code == 200
+    data = resp.json()
+    grid = data["flux_grid"]
+    assert grid is not None
+    assert grid["unit"] == "kW/m2"
+    assert grid["n_u"] * grid["n_v"] == len(grid["values"])
+    # Downsampled from FLUX_GRID (128) -- see _flux_grid_payload -- never
+    # coarser than requested and never finer than the stored map itself.
+    assert 0 < grid["n_u"] <= FLUX_GRID
+    assert 0 < grid["n_v"] <= FLUX_GRID
+    # prime_focus's default flat window (RECT_DESIGN, no optics_params
+    # override): FlatWindowReceiver.uv_extent is +-WINDOW_MM on both axes.
+    assert grid["u_min_mm"] == pytest.approx(-WINDOW_MM)
+    assert grid["u_max_mm"] == pytest.approx(WINDOW_MM)
+    assert grid["v_min_mm"] == pytest.approx(-WINDOW_MM)
+    assert grid["v_max_mm"] == pytest.approx(WINDOW_MM)
+    values = [v for v in grid["values"] if v is not None]
+    assert values and all(v >= 0 for v in values)
+    # A block-averaged grid can only ever read at or below the true peak
+    # (peak_flux_kw_m2 is the single hottest FLUX_GRID bin; averaging
+    # several of those into one coarser bin never raises the max).
+    assert max(values) <= data["peak_flux_kw_m2"] + 1e-6
+
+
+def test_trace_flux_grid_matches_a_curved_receiver_extent(client):
+    """Same opt-in field, a cylinder receiver this time -- extent must come
+    from CylinderReceiver.uv_extent (+-pi*radius, +-height/2), not the flat
+    window's."""
+    payload = _trace_payload(RECT_DESIGN)
+    payload["optics_params"] = {"receiver_type": "cylinder"}
+    payload["include_flux_grid"] = True
+    resp = client.post("/api/trace", json=payload)
+    assert resp.status_code == 200
+    grid = resp.json()["flux_grid"]
+    assert grid["u_min_mm"] == pytest.approx(-math.pi * PRIME_FOCUS_CYLINDER_RADIUS_MM, rel=1e-3)
+    assert grid["u_max_mm"] == pytest.approx(math.pi * PRIME_FOCUS_CYLINDER_RADIUS_MM, rel=1e-3)
+    assert grid["v_min_mm"] == pytest.approx(-PRIME_FOCUS_CYLINDER_HEIGHT_MM / 2.0, rel=1e-3)
+    assert grid["v_max_mm"] == pytest.approx(PRIME_FOCUS_CYLINDER_HEIGHT_MM / 2.0, rel=1e-3)
+
+
+def test_field_trace_flux_grid_opt_in(client):
+    """Same opt-in contract on the whole-field endpoint (a small, 4-heliostat
+    field -- see CLAUDE.md's resource rule against tracing the real field for
+    verification)."""
+    without = client.post("/api/field/trace", json=_field_payload(layout={"type": "fermat", "n": 4})).json()
+    assert without.get("flux_grid") is None
+
+    payload = _field_payload(layout={"type": "fermat", "n": 4})
+    payload["include_flux_grid"] = True
+    with_grid = client.post("/api/field/trace", json=payload).json()
+    grid = with_grid["flux_grid"]
+    assert grid is not None
+    assert grid["n_u"] * grid["n_v"] == len(grid["values"])
 
 
 def test_trace_elevation_at_or_below_horizon_is_422(client):
@@ -424,9 +498,17 @@ def test_scene_is_deterministic_and_does_not_disturb_the_trace(client, mode):
 # arrived, by 15 parts per million. It now lands exactly on the incident
 # power, which is the physical bound for a spot that all falls on the
 # receiver.
-PIN_DEFAULT_RECT_POWER_W = 8225.854187898512
-PIN_DEFAULT_RECT_RMS_MM = 505.26411781070186  # moved 3e-10 relative by the same fix
-PIN_DEFAULT_RECT_INCIDENT_W = 8225.854187898514
+# Re-pinned 2026-08-26 for the ultra_fast adoption (density-based 12/m2
+# sampling -> a (17, 10) grid on the default mirror, plus the B-spline
+# deposit): incident moved 1e-7 relative (170 area weights summed in a
+# different order than 240 -- same physical mirror area), rms moved 5e-4
+# relative (the sparser layout's spot statistics, inside the adoption's
+# measured 0.073% accuracy envelope), and power now equals incident
+# BITWISE -- the B-spline evaluation clamps its undershoot and rescales to
+# the deposit's exact total, so the full-pass bound holds exactly.
+PIN_DEFAULT_RECT_POWER_W = 8225.855000744928
+PIN_DEFAULT_RECT_RMS_MM = 505.51851375643406
+PIN_DEFAULT_RECT_INCIDENT_W = 8225.855000744928
 PIN_DEFAULT_RECT_SLANT_M = 96.32411487265273
 
 # Fields whose value must be identical between two requests that describe the
@@ -494,6 +576,22 @@ def test_default_rect_matches_the_pinned_legacy_path(client):
                 "receiver_z_mm": AXICON_RECEIVER_Z_MM,
                 "window_half_u_mm": WINDOW_MM,
                 "window_half_v_mm": WINDOW_MM,
+                # spec §C: explicit secondary reflectance, default 0.90 --
+                # see docs/secondary-irradiance-plan.md.
+                "secondary_reflectance": 0.90,
+                # spec §E2: rigid-body misalignment of the secondary,
+                # defaults all zero.
+                "secondary_dx_mm": 0.0,
+                "secondary_dy_mm": 0.0,
+                "secondary_dz_mm": 0.0,
+                "secondary_tip_mrad": 0.0,
+                "secondary_tilt_mrad": 0.0,
+                # spec §E2 remainder: measured map + parametric warp,
+                # Monte Carlo only, defaults off.
+                "secondary_error_map": None,
+                "secondary_defocus_um": 0.0,
+                "secondary_astig_um": 0.0,
+                "secondary_astig_axis_deg": 0.0,
             },
         ),
         (
@@ -506,6 +604,16 @@ def test_default_rect_matches_the_pinned_legacy_path(client):
                 "aperture_radius_mm": CASSEGRAIN_APERTURE_RADIUS_MM,
                 "window_half_u_mm": WINDOW_MM,
                 "window_half_v_mm": WINDOW_MM,
+                "secondary_reflectance": 0.90,
+                "secondary_dx_mm": 0.0,
+                "secondary_dy_mm": 0.0,
+                "secondary_dz_mm": 0.0,
+                "secondary_tip_mrad": 0.0,
+                "secondary_tilt_mrad": 0.0,
+                "secondary_error_map": None,
+                "secondary_defocus_um": 0.0,
+                "secondary_astig_um": 0.0,
+                "secondary_astig_axis_deg": 0.0,
             },
         ),
     ],
@@ -549,6 +657,20 @@ def test_optics_resolved_echoes_the_defaults(client, optics):
             "aperture_radius_mm",
             "window_half_u_mm",
             "window_half_v_mm",
+            # spec §C: explicit secondary reflectance, default 0.90.
+            "secondary_reflectance",
+            # spec §E2: rigid-body misalignment of the secondary, defaults
+            # all zero.
+            "secondary_dx_mm",
+            "secondary_dy_mm",
+            "secondary_dz_mm",
+            "secondary_tip_mrad",
+            "secondary_tilt_mrad",
+            # spec §E2 remainder: measured map + parametric warp (MC only).
+            "secondary_error_map",
+            "secondary_defocus_um",
+            "secondary_astig_um",
+            "secondary_astig_axis_deg",
         }
         assert resolved["vertex_z_mm"] == CASSEGRAIN_VERTEX_Z_MM
         assert resolved["focus_height_mm"] == CASSEGRAIN_FOCUS_HEIGHT_MM
@@ -786,6 +908,110 @@ def test_reflectance_scales_power_and_flux_not_incident_power(client):
     assert dimmed["power_w"] == pytest.approx(0.9 * default["power_w"], rel=1e-9)
     assert dimmed["peak_flux_kw_m2"] == pytest.approx(0.9 * default["peak_flux_kw_m2"], rel=1e-9)
     assert dimmed["incident_power_w"] == pytest.approx(default["incident_power_w"], rel=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# spec §C: secondary-mirror irradiance and absorbed heat
+# (docs/secondary-irradiance-plan.md)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("optics", ["axicon", "cassegrain"])
+@pytest.mark.parametrize("mode", ["ultra_fast", "monte_carlo"])
+def test_include_secondary_flux_reports_absorbed_heat(client, optics, mode):
+    """The opt-in secondary map reports a fidelity tag (coarse for cone
+    modes, exact for Monte Carlo -- spec §C's own disclosure) and an
+    absorbed-heat readout consistent with the default secondary_reflectance
+    (0.90): absorbed = 0.1 * incident, both as total power and peak flux."""
+    payload = _trace_payload(RECT_DESIGN, optics=optics, mode=mode)
+    payload["include_secondary_flux"] = True
+    if mode == "monte_carlo":
+        payload["n_rays"] = 4000
+    data = client.post("/api/trace", json=payload).json()
+    sec = data["secondary"]
+    assert sec is not None
+    assert sec["fidelity"] == ("exact" if mode == "monte_carlo" else "coarse")
+    assert sec["secondary_reflectance"] == 0.90
+    assert sec["power_w"] > 0.0
+    assert sec["absorbed_power_w"] == pytest.approx(0.1 * sec["power_w"], rel=1e-9)
+    assert sec["peak_absorbed_kw_m2"] == pytest.approx(0.1 * sec["peak_flux_kw_m2"], rel=1e-9)
+
+
+def test_include_secondary_flux_is_absent_for_prime_focus(client):
+    """Prime focus has no secondary -- the opt-in flag is a no-op rather
+    than an error, so a caller can pass it unconditionally regardless of
+    which optics the request ends up naming."""
+    payload = _trace_payload(RECT_DESIGN, optics="prime_focus")
+    payload["include_secondary_flux"] = True
+    data = client.post("/api/trace", json=payload).json()
+    assert data["secondary"] is None
+
+
+def test_include_secondary_flux_does_not_change_the_receiver_result(client):
+    """Opting into the secondary map must not perturb the existing receiver
+    map/power -- it is purely additive. ``flux_png`` is deliberately NOT
+    compared here: it embeds a wall-clock "traced in Xms" caption (see
+    ``_VOLATILE_TRACE_KEYS`` below), which legitimately differs because the
+    secondary map costs extra time to compute -- the underlying numeric
+    receiver-path bit-identity is proven at the trace_heliostat_cone level
+    instead (tests/test_secondary_flux.py::
+    test_return_secondary_flux_does_not_change_receiver_result)."""
+    payload = _trace_payload(RECT_DESIGN, optics="axicon")
+    without = client.post("/api/trace", json=payload).json()
+    with_secondary = client.post(
+        "/api/trace", json={**payload, "include_secondary_flux": True}
+    ).json()
+    assert without["power_w"] == with_secondary["power_w"]
+    assert without["peak_flux_kw_m2"] == with_secondary["peak_flux_kw_m2"]
+    assert without["mean_flux_kw_m2"] == with_secondary["mean_flux_kw_m2"]
+    assert without["rms_radius_mm"] == with_secondary["rms_radius_mm"]
+    assert without["centroid_mm"] == with_secondary["centroid_mm"]
+    assert without.get("secondary") is None
+
+
+def test_secondary_reflectance_scales_only_the_absorbed_readout(client):
+    """secondary_reflectance changes the absorbed-heat split without moving
+    the incident secondary map or the receiver's own power -- it is a NEW
+    readout, not a new loss in the existing trace physics (see
+    AxiconOptics.secondary_reflectance's own docstring)."""
+    payload = _trace_payload(RECT_DESIGN, optics="axicon")
+    payload["include_secondary_flux"] = True
+    default = client.post("/api/trace", json=payload).json()
+    lossy = client.post(
+        "/api/trace",
+        json={**payload, "optics_params": {"secondary_reflectance": 0.5}},
+    ).json()
+    assert default["power_w"] == lossy["power_w"]
+    assert default["secondary"]["power_w"] == pytest.approx(lossy["secondary"]["power_w"], rel=1e-9)
+    assert lossy["secondary"]["secondary_reflectance"] == 0.5
+    assert lossy["secondary"]["absorbed_power_w"] == pytest.approx(
+        0.5 * lossy["secondary"]["power_w"], rel=1e-9
+    )
+
+
+def test_field_include_secondary_flux_matches_single_trace_summed(client):
+    """A one-heliostat field's secondary payload is a single trace with
+    extra bookkeeping, same invariant test_field_of_one_equals_the_single_trace
+    already proves for the receiver map -- traced at the field's own
+    (randomly-placed) heliostat position, not the single endpoint's own
+    default, exactly as that test does."""
+    field_payload = _field_payload(
+        RECT_DESIGN, optics="cassegrain", layout={"type": "fermat", "n": 1}
+    )
+    field_payload["include_secondary_flux"] = True
+    field = client.post("/api/field/trace", json=field_payload).json()
+    row = field["heliostats"][0]
+
+    single_payload = {
+        **_trace_payload(RECT_DESIGN, optics="cassegrain"),
+        "heliostat_x_mm": row["x_mm"],
+        "heliostat_y_mm": row["y_mm"],
+        "include_secondary_flux": True,
+    }
+    single = client.post("/api/trace", json=single_payload).json()
+
+    assert field["secondary"]["power_w"] == pytest.approx(single["secondary"]["power_w"], rel=1e-9)
+    assert field["secondary"]["fidelity"] == single["secondary"]["fidelity"]
 
 
 def test_mc_slope_error_grows_the_spot(client):
@@ -2228,6 +2454,195 @@ def test_sag_headers_report_contour_interval_peak_to_valley_and_slant_range(clie
     assert slant_range_m == pytest.approx(expected_slant_m, abs=5e-4)
 
 
+# -- §D FEA CSV exports -------------------------------------------------------
+
+
+def _parse_fea_csv(text: str) -> tuple[list[str], list[tuple[float, ...]]]:
+    """``(comment_lines, data_rows)`` for a §D-convention export: every
+    ``#``-prefixed line, verbatim, and every other non-blank line parsed as
+    a tuple of floats."""
+    comments = []
+    rows = []
+    for line in text.splitlines():
+        if not line:
+            continue
+        if line.startswith("#"):
+            comments.append(line)
+        else:
+            rows.append(tuple(float(x) for x in line.split(",")))
+    return comments, rows
+
+
+def test_sag_csv_matches_the_png_endpoints_grid(client):
+    """The FEA sag export must describe the exact same surface the sag PNG
+    draws -- checked here by an invariant that does not require decoding
+    pixels: the CSV's own peak-to-valley (max z_sag - min z_sag) must equal
+    the PNG endpoint's X-Peak-To-Valley-Mm header for the identical
+    request, since both are sampled by the same _sag_grid_mm grid."""
+    payload = _trace_payload(RECT_DESIGN)
+    png_resp = client.post("/api/design/sag", json=payload)
+    assert png_resp.status_code == 200
+    expected_span = float(png_resp.headers["X-Peak-To-Valley-Mm"])
+
+    csv_resp = client.post("/api/design/sag.csv", json=payload)
+    assert csv_resp.status_code == 200
+    assert csv_resp.headers["content-type"].startswith("text/csv")
+    _comments, rows = _parse_fea_csv(csv_resp.text)
+    assert rows
+    z = [r[2] for r in rows]
+    span = max(z) - min(z)
+    assert span == pytest.approx(expected_span, abs=5e-4)
+
+
+def test_sag_csv_header_states_units_subject_and_grid(client):
+    """§D: units, heliostat/sun/mode/timestamp, and grid dimensions are
+    always three separate `#` comment lines -- never left implied."""
+    payload = _trace_payload(RECT_DESIGN)
+    resp = client.post("/api/design/sag.csv", json=payload)
+    assert resp.status_code == 200
+    comments, rows = _parse_fea_csv(resp.text)
+    assert len(comments) >= 3
+
+    units_line = next(c for c in comments if c.startswith("# units:"))
+    assert "meters" in units_line
+    assert "z_sag_mm" in units_line and "millimeters" in units_line
+
+    subject_line = next(c for c in comments if c.startswith("# heliostat:"))
+    assert "sun:" in subject_line and "mode:" in subject_line and "timestamp:" in subject_line
+    assert f"az={payload['solar_az_deg']:.2f}" in subject_line
+
+    grid_line = next(c for c in comments if c.startswith("# grid:"))
+    assert "x" in grid_line
+
+    # x, y columns are meters -- well inside the mirror's own half-extent in
+    # metres, never the millimetre numbers the PNG's u/v axes use.
+    half_x_m = MIRROR_HALF_X_MM / 1000.0
+    half_y_m = MIRROR_HALF_Y_MM / 1000.0
+    assert all(abs(r[0]) <= half_x_m + 1e-6 for r in rows)
+    assert all(abs(r[1]) <= half_y_m + 1e-6 for r in rows)
+
+
+def test_sag_csv_rejects_a_sun_below_the_horizon(client):
+    resp = client.post("/api/design/sag.csv", json=_trace_payload(RECT_DESIGN, solar_el_deg=0.0))
+    assert resp.status_code == 422
+
+
+def test_flux_fea_csv_is_a_meters_and_w_m2_point_grid(client):
+    """The new FEA convention must never be confused with the existing
+    kW/m2 millimetre matrix export: same trace, different file. Cross-checked
+    against /api/trace/flux.csv's own peak (kW/m2) so a unit slip (a factor
+    of 1000, or mm vs m) would fail this test."""
+    payload = _trace_payload(RECT_DESIGN)
+    matrix_resp = client.post("/api/trace/flux.csv", json=payload)
+    assert matrix_resp.status_code == 200
+    matrix_rows = list(csv.reader(StringIO(matrix_resp.text)))
+    matrix_peak_kw_m2 = max(
+        float(x) for row in matrix_rows[1:] for x in row[1:]
+    )
+
+    resp = client.post("/api/trace/flux_fea.csv", json=payload)
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/csv")
+    comments, rows = _parse_fea_csv(resp.text)
+    assert len(rows) == FLUX_GRID * FLUX_GRID
+
+    units_line = next(c for c in comments if c.startswith("# units:"))
+    assert "meters" in units_line
+    assert "flux_w_m2" in units_line and "W/m" in units_line
+
+    grid_line = next(c for c in comments if c.startswith("# grid:"))
+    assert f"{FLUX_GRID}" in grid_line
+
+    peak_w_m2 = max(r[2] for r in rows)
+    assert peak_w_m2 == pytest.approx(matrix_peak_kw_m2 * 1000.0, rel=1e-4)
+    assert all(r[2] >= 0 for r in rows)
+
+
+def test_flux_fea_csv_notes_curved_receiver_unrolling(client):
+    """A cylinder/frustum receiver's x/y are really an unrolled (arc length,
+    height-or-slant) grid -- ANSYS maps flat coordinates, so §D requires the
+    header to say so explicitly rather than leave "x" looking like a plain
+    world coordinate."""
+    flat_payload = _trace_payload(RECT_DESIGN)
+    flat_resp = client.post("/api/trace/flux_fea.csv", json=flat_payload)
+    assert flat_resp.status_code == 200
+    flat_comments, _ = _parse_fea_csv(flat_resp.text)
+    assert not any("arc length" in c for c in flat_comments)
+
+    cyl_payload = _trace_payload(RECT_DESIGN)
+    cyl_payload["optics_params"] = {"receiver_type": "cylinder"}
+    cyl_resp = client.post("/api/trace/flux_fea.csv", json=cyl_payload)
+    assert cyl_resp.status_code == 200
+    cyl_comments, _ = _parse_fea_csv(cyl_resp.text)
+    assert any("arc length" in c for c in cyl_comments)
+
+
+@pytest.mark.parametrize("optics", ["axicon", "cassegrain"])
+def test_secondary_flux_fea_csv_is_a_meters_and_w_m2_point_grid_with_absorbed(client, optics):
+    """Spec §C/§D: the secondary's own irradiance map export carries a
+    fourth ``absorbed`` column -- ``(1 - secondary_reflectance) * flux`` --
+    on top of the receiver export's ``x, y, flux`` (docs/
+    secondary-irradiance-plan.md build step 6)."""
+    payload = _trace_payload(RECT_DESIGN, optics=optics)
+    resp = client.post("/api/trace/secondary_flux_fea.csv", json=payload)
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/csv")
+    comments, rows = _parse_fea_csv(resp.text)
+    assert rows
+    assert all(len(r) == 4 for r in rows)  # x, y, flux, absorbed
+
+    units_line = next(c for c in comments if c.startswith("# units:"))
+    assert "meters" in units_line and "secondary_reflectance=0.9" in units_line
+    assert any("aperture rim" in c for c in comments)  # secondary u/v note
+
+    assert all(r[2] >= 0 for r in rows)
+    for _x, _y, flux_w_m2, absorbed_w_m2 in rows:
+        assert absorbed_w_m2 == pytest.approx(flux_w_m2 * 0.1, rel=1e-9, abs=1e-9)
+
+
+def test_secondary_flux_fea_csv_404s_when_there_is_no_secondary(client):
+    """Prime focus has no secondary at all -- the export 404s rather than
+    silently returning an empty/meaningless file."""
+    payload = _trace_payload(RECT_DESIGN, optics="prime_focus")
+    resp = client.post("/api/trace/secondary_flux_fea.csv", json=payload)
+    assert resp.status_code == 404
+
+
+def test_day_flux_fea_csv_matches_the_stored_pngs_peak(client):
+    """The day-sweep timestep export is built once, alongside the PNG,
+    during the sweep -- never a re-trace -- so its peak must agree with the
+    PNG-adjacent peak_flux_kw_m2 already reported for that step."""
+    job_id, data = _run_day(client, hour_step=2.0)
+    kept = [i for i, s in enumerate(data["steps"]) if s["has_flux_map"]]
+    assert kept
+    step = data["steps"][kept[0]]
+
+    resp = client.get(f"/api/day/flux/{job_id}/{kept[0]}.csv")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/csv")
+    comments, rows = _parse_fea_csv(resp.text)
+    assert rows
+    units_line = next(c for c in comments if c.startswith("# units:"))
+    assert "meters" in units_line and "W/m" in units_line
+
+    peak_w_m2 = max(r[2] for r in rows)
+    assert peak_w_m2 == pytest.approx(step["peak_flux_kw_m2"] * 1000.0, rel=1e-3)
+
+
+def test_day_flux_fea_csv_404s_for_a_step_without_a_stored_map(client, monkeypatch):
+    monkeypatch.setattr(app_module, "MAX_DAY_FLUX_MAPS", 3)
+    job_id, data = _run_day(client, hour_step=1.0)
+    steps = data["steps"]
+    assert len(steps) > 3
+    skipped = [i for i, s in enumerate(steps) if not s["has_flux_map"]]
+    assert skipped
+    assert client.get(f"/api/day/flux/{job_id}/{skipped[0]}.csv").status_code == 404
+
+
+def test_day_flux_fea_csv_404s_for_unknown_job(client):
+    assert client.get("/api/day/flux/nosuchjob/0.csv").status_code == 404
+
+
 # -- ray budget, day sweeps and exports --------------------------------------
 
 
@@ -2290,6 +2705,31 @@ def test_day_energy_is_the_integral_of_its_own_power_curve(client):
     # agree to more than that. The point is that it is the same integral,
     # not a different quantity.
     assert data["energy_kwh"] == pytest.approx(float(np.trapz(power_kw, hours)), rel=1e-4)
+
+
+def test_min_elevation_deg_excludes_low_sun_and_never_increases_day_energy(client):
+    """Pins heliostat.solar.build_time_grid's min_elevation_deg contract end
+    to end, through the real /api/day/start path.
+
+    Every surviving timestep must sit at or above the floor. And since the
+    day sweep's headline energy_kwh is a plain trapezoid over just the
+    surviving (non-negative-power) samples (heliostat.web.app
+    ._day_energy_kwh -- no zero-anchored wings, unlike
+    heliostat.energy.traced_day_energy), shrinking the sampled window can
+    only remove area from that integral, never add to it: a 5 deg floor
+    must score <= a 0 deg floor, and -- given the default site/date really
+    has traced power near the horizon -- strictly less, not just equal.
+    """
+    _job0, data0 = _run_day(client, hour_step=1.0, min_elevation_deg=0.0)
+    _job5, data5 = _run_day(client, hour_step=1.0, min_elevation_deg=5.0)
+
+    steps5 = data5["steps"]
+    assert steps5, "the floored sweep traced nothing"
+    assert all(s["solar_el_deg"] >= 5.0 - 1e-6 for s in steps5)
+    # The floor actually excluded some low-sun timesteps at this site/date.
+    assert len(steps5) < len(data0["steps"])
+
+    assert data5["energy_kwh"] < data0["energy_kwh"]
 
 
 def test_day_progress_is_reported_and_result_waits_for_it(client):
@@ -2531,6 +2971,37 @@ def _run_year(client, **overrides):
     return job_id, client.get(f"/api/year/result/{job_id}").json()
 
 
+def test_year_hour_step_scales_the_time_grid_like_the_day_sweep_does():
+    """The Analysis tab's "Timestep (h)" field drives the day sweep and,
+    since bug fix, the year estimate too -- YearTraceRequest.hour_step
+    (default 1.0, same field/semantics as DayTraceRequest's) must actually
+    coarsen or refine the traced time grid, not just be accepted and
+    ignored (which is what shipped: the year estimate always traced at a
+    hardcoded ~1 h regardless of what the day sweep's own field said).
+
+    Pinned through heliostat.web.app's own _year_energy_cfg/
+    _year_trace_dates/build_time_grid -- the exact three calls
+    /api/year/start makes before it ever starts tracing -- rather than
+    running a real (background-job) year estimate, so this is cheap and
+    needs no polling loop.
+    """
+
+    def n_steps(hour_step):
+        req = YearTraceRequest.model_validate(_year_payload(hour_step=hour_step, fast_mode=True))
+        cfg = _year_energy_cfg(req)
+        trace_dates = _year_trace_dates(cfg, req.site.year, req.fast_mode)
+        cfg.sweep.dates = trace_dates
+        return len(build_time_grid(cfg, trace_dates))
+
+    n_fine = n_steps(0.5)
+    n_coarse = n_steps(3.0)
+    assert n_fine > n_coarse
+    # Not just "more" -- roughly the 6x the hour_step ratio implies, which
+    # is what pins the field as actually wired through rather than merely
+    # nudging the count by some unrelated side effect.
+    assert n_fine / n_coarse == pytest.approx(6.0, rel=0.35)
+
+
 def test_year_start_reports_a_plausible_finite_annual_total(client):
     _job_id, data = _run_year(client)
     assert math.isfinite(data["annual_energy_mwh"])
@@ -2706,3 +3177,317 @@ def test_flux_csv_export_is_a_labelled_grid(client):
     u_axis = [float(x) for x in rows[0][1:]]
     assert u_axis == sorted(u_axis)
     assert max(float(x) for x in rows[1][1:]) >= 0.0
+
+
+# ---------------------------------------------------------------------------
+# docs/ui-spec-v0.2.md §M.4: the analysis aperture. _aperture_metrics is the
+# Python reference implementation js/tabs/analysis.js's own apertureMetrics
+# mirrors bin for bin -- see that function's docstring for why this repo
+# checks the formula here rather than in JS (no JS test runner). Both tests
+# below build a SYNTHETIC grid directly (no trace, no client, no job) --
+# exactly the "post-processing only" contract §M.4 asks for: the aperture
+# math must stand on its own as pure arithmetic over a grid.
+# ---------------------------------------------------------------------------
+
+
+def _synthetic_uniform_grid(flux_w_m2: float, n: int, half_extent_mm: float) -> tuple:
+    """An n x n grid of constant flux over a square centred on the origin --
+    ``(flux_array, u_min_mm, u_max_mm, v_min_mm, v_max_mm)``, the exact
+    positional arguments :func:`_aperture_metrics` takes."""
+    flux = np.full((n, n), flux_w_m2, dtype=float)
+    return flux, -half_extent_mm, half_extent_mm, -half_extent_mm, half_extent_mm
+
+
+def test_aperture_metrics_whole_grid_is_exact():
+    """No circular-clipping ambiguity at all: the aperture radius is large
+    enough that EVERY bin of a uniform-flux grid falls inside it, so the
+    summed power has one unambiguous exact answer -- flux times the grid's
+    own rectangular area, to floating-point precision, not just "close".
+    Average flux then divides by the APERTURE's own ideal circular area
+    (pi * r^2), which is much bigger than the grid it fully encloses -- this
+    is what pins down that avg flux is not silently "whatever's inside
+    divided by whatever's inside" but the aperture's own declared area.
+    """
+    flux_w_m2 = 850.0
+    half_extent_mm = 1000.0
+    flux, u0, u1, v0, v1 = _synthetic_uniform_grid(flux_w_m2, n=200, half_extent_mm=half_extent_mm)
+    huge_radius_mm = 10.0 * half_extent_mm * math.sqrt(2)  # exceeds the grid's own half-diagonal
+
+    out = _aperture_metrics(flux, u0, u1, v0, v1, center_u_mm=0.0, center_v_mm=0.0, radius_mm=huge_radius_mm)
+
+    grid_area_m2 = ((u1 - u0) / 1000.0) * ((v1 - v0) / 1000.0)
+    expected_power_w = flux_w_m2 * grid_area_m2
+    assert out["power_w"] == pytest.approx(expected_power_w, rel=1e-9)
+    assert out["n_bins_inside"] == flux.size  # every bin, none clipped
+
+    expected_avg_flux = expected_power_w / (math.pi * (huge_radius_mm / 1000.0) ** 2)
+    assert out["avg_flux_w_m2"] == pytest.approx(expected_avg_flux, rel=1e-9)
+    # The aperture is mostly empty space beyond the grid, so its average
+    # flux reads far below the field's own uniform value -- confirms this
+    # isn't accidentally averaging over just the populated bins.
+    assert out["avg_flux_w_m2"] < flux_w_m2
+
+
+def test_aperture_metrics_uniform_disk_matches_the_analytic_answer():
+    """The textbook case spec §M.4 calls out by name: a uniform-flux field,
+    read through an aperture that actually clips a circle out of it. For any
+    radius that fits inside the grid, the analytic answer is exact calculus
+    (power = flux * pi * r^2, so avg flux = flux, independent of r) --
+    checked here on a grid fine enough that the Cartesian rasterization of
+    the circle's boundary is a small fraction of its interior, so the
+    numeric answer converges tightly on the analytic one.
+    """
+    flux_w_m2 = 1000.0
+    half_extent_mm = 1000.0
+    # 500 bins across 2000 mm = 4 mm bins; a couple of test radii keep the
+    # boundary-bin fraction (circumference / area, ~ 2/r in bin-widths) well
+    # under 1%.
+    flux, u0, u1, v0, v1 = _synthetic_uniform_grid(flux_w_m2, n=500, half_extent_mm=half_extent_mm)
+
+    for radius_mm in (300.0, 600.0, 900.0):
+        out = _aperture_metrics(flux, u0, u1, v0, v1, center_u_mm=0.0, center_v_mm=0.0, radius_mm=radius_mm)
+        analytic_power_w = flux_w_m2 * math.pi * (radius_mm / 1000.0) ** 2
+        assert out["power_w"] == pytest.approx(analytic_power_w, rel=5e-3)
+        # Average flux of a uniform field over ANY sub-region is the field
+        # value itself -- this is the invariant that makes "uniform disk" a
+        # useful analytic check at all, independent of the radius chosen.
+        assert out["avg_flux_w_m2"] == pytest.approx(flux_w_m2, rel=5e-3)
+
+
+def test_aperture_metrics_off_centre_disk_still_averages_to_the_field_value():
+    """Same invariant as above, off-axis -- avg flux of a uniform field does
+    not depend on where the aperture sits, only on it staying inside the
+    grid (a centre near the grid's own edge would clip against the grid
+    boundary too, which is a different, deliberately untested case)."""
+    flux_w_m2 = 400.0
+    half_extent_mm = 1000.0
+    flux, u0, u1, v0, v1 = _synthetic_uniform_grid(flux_w_m2, n=500, half_extent_mm=half_extent_mm)
+
+    out = _aperture_metrics(flux, u0, u1, v0, v1, center_u_mm=250.0, center_v_mm=-150.0, radius_mm=400.0)
+    assert out["avg_flux_w_m2"] == pytest.approx(flux_w_m2, rel=5e-3)
+
+
+# ---------------------------------------------------------------------------
+# docs/ui-spec-v0.2.md §M.4: the day sweep's own DNI per timestep -- the
+# "avg concentration = avg flux / DNI" readout's denominator.
+# ---------------------------------------------------------------------------
+
+
+def test_day_sweep_reports_dni_per_timestep(client):
+    """dni_w_m2 rides on every timestep row, display/analysis only -- never
+    fed back into the trace."""
+    _job_id, data = _run_day(client, hour_step=2.0)
+    steps = data["steps"]
+    assert steps
+    for step in steps:
+        assert "dni_w_m2" in step
+        # Clear-sky DNI is between "nothing" and the solar constant -- a
+        # loose sanity bound, not a re-derivation of ClearSkyDNI's own model.
+        assert 0.0 < step["dni_w_m2"] < ClearSkyDNI.E0
+    # Higher sun (less atmosphere to cross) means less attenuation -- DNI
+    # should be at least as high at the day's peak elevation as at its
+    # lowest-elevation kept sample.
+    by_elevation = sorted(steps, key=lambda s: s["solar_el_deg"])
+    assert by_elevation[-1]["dni_w_m2"] >= by_elevation[0]["dni_w_m2"]
+
+
+# ---------------------------------------------------------------------------
+# docs/ui-spec-v0.2.md §M.4: the day sweep's raw flux grid, fetched by the
+# Analysis tab's aperture -- same has_flux_map/404 contract as the PNG/CSV
+# siblings, built once alongside them, never re-traced.
+# ---------------------------------------------------------------------------
+
+
+def test_day_flux_grid_json_matches_the_stored_pngs_peak(client):
+    job_id, data = _run_day(client, hour_step=2.0)
+    kept = [i for i, s in enumerate(data["steps"]) if s["has_flux_map"]]
+    assert kept
+    step = data["steps"][kept[0]]
+
+    resp = client.get(f"/api/day/flux/{job_id}/{kept[0]}.grid.json")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("application/json")
+    grid = resp.json()
+    assert grid["n_u"] > 0 and grid["n_v"] > 0
+    assert len(grid["values"]) == grid["n_u"] * grid["n_v"]
+    assert grid["u_max_mm"] > grid["u_min_mm"]
+    assert grid["v_max_mm"] > grid["v_min_mm"]
+
+    peak_kw_m2 = max(v for v in grid["values"] if v is not None)
+    # This is the SAME payload shape _flux_grid_payload builds for §M.3's 3D
+    # drape -- downsampled and rounded to kW/m2 with 2 decimals, so the
+    # match is close but not bit-exact against the full-resolution PNG/CSV
+    # peak: block-averaging a peak bin with its neighbours only ever lowers
+    # the UNROUNDED coarse value below the true peak, but the 2-decimal
+    # rounding on top of that can still nudge the displayed number up to
+    # 0.005 either way -- the +0.02 slack below covers that rounding, not a
+    # real excursion above the true peak.
+    assert peak_kw_m2 <= step["peak_flux_kw_m2"] + 0.02
+    assert peak_kw_m2 == pytest.approx(step["peak_flux_kw_m2"], rel=0.15)
+
+
+def test_day_flux_grid_json_404s_for_a_step_without_a_stored_map(client, monkeypatch):
+    monkeypatch.setattr(app_module, "MAX_DAY_FLUX_MAPS", 3)
+    job_id, data = _run_day(client, hour_step=1.0)
+    steps = data["steps"]
+    assert len(steps) > 3
+    skipped = [i for i, s in enumerate(steps) if not s["has_flux_map"]]
+    assert skipped
+    assert client.get(f"/api/day/flux/{job_id}/{skipped[0]}.grid.json").status_code == 404
+
+
+def test_day_flux_grid_json_404s_for_unknown_job(client):
+    assert client.get("/api/day/flux/nosuchjob/0.grid.json").status_code == 404
+
+
+def test_day_flux_grid_json_404s_for_an_out_of_range_step(client):
+    job_id, data = _run_day(client, hour_step=2.0)
+    out_of_range = len(data["steps"]) + 5
+    assert client.get(f"/api/day/flux/{job_id}/{out_of_range}.grid.json").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# spec §C's remaining honest gap: a stored day-sweep step's own secondary-
+# surface flux map (.secondary.json), same has_flux_map/404 contract as its
+# receiver-grid sibling above, present only when the sweep both asked for one
+# (include_secondary_flux) and its optics has a secondary flux map at all.
+# ---------------------------------------------------------------------------
+
+
+def test_day_flux_secondary_json_matches_a_direct_trace_of_the_same_timestep(client):
+    """The stored secondary blob for a step is built alongside the receiver
+    grid, from the exact same trace -- so it must agree with a direct
+    /api/trace at that step's own (unrounded) sun angles, the same
+    determinism check test_day_flux_png_matches_a_direct_trace_of_the_same_
+    timestep already makes for the receiver map. ultra_fast/axicon is a
+    deterministic cone trace (no RNG), so the peak matches to the precision
+    the stored payload rounds to (2 decimals, _flux_grid_payload)."""
+    payload = _trace_payload(RECT_DESIGN, optics="axicon")
+    payload["hour_step"] = 2.0
+    payload["include_secondary_flux"] = True
+    job_id, data = _run_day(client, hour_step=2.0, optics="axicon", include_secondary_flux=True)
+    step = data["steps"][0]
+    assert step["has_flux_map"]
+
+    resp = client.get(f"/api/day/flux/{job_id}/0.secondary.json")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("application/json")
+    stored = resp.json()
+    assert stored["fidelity"] == "coarse"  # ultra_fast is a cone backend
+    grid = stored["flux_grid"]
+    assert grid["n_u"] > 0 and grid["n_v"] > 0
+    assert len(grid["values"]) == grid["n_u"] * grid["n_v"]
+
+    exact_step = _day_timesteps(DayTraceRequest(**payload))[0]
+    direct_payload = _trace_payload(RECT_DESIGN, optics="axicon", solar_el_deg=exact_step.solar_el_deg)
+    direct_payload["solar_az_deg"] = exact_step.solar_az_deg
+    direct_payload["include_secondary_flux"] = True
+    direct = client.post("/api/trace", json=direct_payload).json()
+    assert direct["secondary"] is not None
+    assert stored["peak_flux_kw_m2"] == pytest.approx(direct["secondary"]["peak_flux_kw_m2"], abs=5e-2)
+    assert stored["power_w"] == pytest.approx(direct["secondary"]["power_w"], rel=0.2)
+
+
+def test_day_flux_secondary_json_404s_for_a_prime_focus_sweep(client):
+    """Prime focus has no secondary flux map at all -- the sweep stores no
+    extra blob for it (even though include_secondary_flux was requested),
+    so the endpoint 404s. The receiver grid for the same step is untouched
+    by any of this -- still 200, same shape as before this feature existed."""
+    job_id, data = _run_day(client, hour_step=2.0, include_secondary_flux=True)
+    step = data["steps"][0]
+    assert step["has_flux_map"]
+    assert client.get(f"/api/day/flux/{job_id}/0.secondary.json").status_code == 404
+    assert client.get(f"/api/day/flux/{job_id}/0.grid.json").status_code == 200
+
+
+def test_day_flux_secondary_json_404s_for_a_step_without_a_stored_map(client, monkeypatch):
+    """Above MAX_DAY_FLUX_MAPS, a strided-out step keeps neither the
+    receiver grid nor the secondary one -- one storage cap, not two."""
+    monkeypatch.setattr(app_module, "MAX_DAY_FLUX_MAPS", 3)
+    job_id, data = _run_day(
+        client, hour_step=1.0, optics="axicon", include_secondary_flux=True
+    )
+    steps = data["steps"]
+    assert len(steps) > 3
+    skipped = [i for i, s in enumerate(steps) if not s["has_flux_map"]]
+    assert skipped
+    assert client.get(f"/api/day/flux/{job_id}/{skipped[0]}.secondary.json").status_code == 404
+
+
+def test_day_flux_secondary_json_404s_for_unknown_job(client):
+    assert client.get("/api/day/flux/nosuchjob/0.secondary.json").status_code == 404
+
+
+def test_day_flux_secondary_json_404s_for_an_out_of_range_step(client):
+    job_id, data = _run_day(client, hour_step=2.0, optics="axicon", include_secondary_flux=True)
+    out_of_range = len(data["steps"]) + 5
+    assert (
+        client.get(f"/api/day/flux/{job_id}/{out_of_range}.secondary.json").status_code == 404
+    )
+
+
+# ---------------------------------------------------------------------------
+# docs/ui-spec-v0.2.md §M.4: the aperture annotation round-trips through
+# save/reopen, unrecomputed -- SavedRunDocument.aperture is a loose dict the
+# client already computed; the library layer only has to store and return
+# it byte for byte.
+# ---------------------------------------------------------------------------
+
+
+def test_saved_run_aperture_annotation_round_trips(client):
+    document = {
+        "kind": "day",
+        "project_name": None,
+        "request": {"design": RECT_DESIGN, "mode": "ultra_fast", "optics": "prime_focus"},
+        "result": {"steps": [], "date": "2026-03-21"},
+        "flux_pngs": {},
+        "aperture": {
+            "step_index": 2,
+            "center_u_mm": 12.5,
+            "center_v_mm": -30.0,
+            "radius_mm": 803.6524,
+            "power_w": 133443.515625,
+            "frac_collected_pct": 95.51006886727252,
+            "avg_flux_w_m2": 65767.46622041808,
+            "dni_w_m2": 986.79,
+            "avg_concentration": 66.64788477833996,
+        },
+    }
+    name = "aperture-roundtrip-test"
+    saved = client.post("/api/library/runs", json={"name": name, "document": document})
+    assert saved.status_code == 200, saved.json()
+
+    loaded = client.get(f"/api/library/runs/{name}")
+    assert loaded.status_code == 200
+    assert loaded.json()["document"]["aperture"] == document["aperture"]
+
+    client.delete(f"/api/library/runs/{name}")
+
+
+def test_saved_run_without_an_aperture_defaults_to_none(client):
+    """A run saved with no aperture drawn (or one saved before §M.4 existed)
+    must still validate -- the field is optional, not a breaking schema
+    change for old saved runs. Library storage round-trips the posted dict
+    verbatim rather than materializing pydantic defaults into it (true of
+    every other optional field here too, e.g. flux_pngs), so an old
+    document that never had the key stays keyless on reload -- the
+    frontend's own `document.aperture || null` read (js/tabs/analysis.js's
+    openSavedRun) already treats a missing key the same as an explicit
+    null, which is what this checks with .get rather than an indexed [].
+    """
+    document = {
+        "kind": "day",
+        "project_name": None,
+        "request": {"design": RECT_DESIGN, "mode": "ultra_fast", "optics": "prime_focus"},
+        "result": {"steps": [], "date": "2026-03-21"},
+        "flux_pngs": {},
+    }
+    name = "aperture-absent-test"
+    saved = client.post("/api/library/runs", json={"name": name, "document": document})
+    assert saved.status_code == 200, saved.json()
+
+    loaded = client.get(f"/api/library/runs/{name}")
+    assert loaded.status_code == 200
+    assert loaded.json()["document"].get("aperture") is None
+
+    client.delete(f"/api/library/runs/{name}")
