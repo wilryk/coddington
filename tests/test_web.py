@@ -3332,6 +3332,86 @@ def test_day_flux_grid_json_404s_for_an_out_of_range_step(client):
 
 
 # ---------------------------------------------------------------------------
+# spec §C's remaining honest gap: a stored day-sweep step's own secondary-
+# surface flux map (.secondary.json), same has_flux_map/404 contract as its
+# receiver-grid sibling above, present only when the sweep both asked for one
+# (include_secondary_flux) and its optics has a secondary flux map at all.
+# ---------------------------------------------------------------------------
+
+
+def test_day_flux_secondary_json_matches_a_direct_trace_of_the_same_timestep(client):
+    """The stored secondary blob for a step is built alongside the receiver
+    grid, from the exact same trace -- so it must agree with a direct
+    /api/trace at that step's own (unrounded) sun angles, the same
+    determinism check test_day_flux_png_matches_a_direct_trace_of_the_same_
+    timestep already makes for the receiver map. ultra_fast/axicon is a
+    deterministic cone trace (no RNG), so the peak matches to the precision
+    the stored payload rounds to (2 decimals, _flux_grid_payload)."""
+    payload = _trace_payload(RECT_DESIGN, optics="axicon")
+    payload["hour_step"] = 2.0
+    payload["include_secondary_flux"] = True
+    job_id, data = _run_day(client, hour_step=2.0, optics="axicon", include_secondary_flux=True)
+    step = data["steps"][0]
+    assert step["has_flux_map"]
+
+    resp = client.get(f"/api/day/flux/{job_id}/0.secondary.json")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("application/json")
+    stored = resp.json()
+    assert stored["fidelity"] == "coarse"  # ultra_fast is a cone backend
+    grid = stored["flux_grid"]
+    assert grid["n_u"] > 0 and grid["n_v"] > 0
+    assert len(grid["values"]) == grid["n_u"] * grid["n_v"]
+
+    exact_step = _day_timesteps(DayTraceRequest(**payload))[0]
+    direct_payload = _trace_payload(RECT_DESIGN, optics="axicon", solar_el_deg=exact_step.solar_el_deg)
+    direct_payload["solar_az_deg"] = exact_step.solar_az_deg
+    direct_payload["include_secondary_flux"] = True
+    direct = client.post("/api/trace", json=direct_payload).json()
+    assert direct["secondary"] is not None
+    assert stored["peak_flux_kw_m2"] == pytest.approx(direct["secondary"]["peak_flux_kw_m2"], abs=5e-2)
+    assert stored["power_w"] == pytest.approx(direct["secondary"]["power_w"], rel=0.2)
+
+
+def test_day_flux_secondary_json_404s_for_a_prime_focus_sweep(client):
+    """Prime focus has no secondary flux map at all -- the sweep stores no
+    extra blob for it (even though include_secondary_flux was requested),
+    so the endpoint 404s. The receiver grid for the same step is untouched
+    by any of this -- still 200, same shape as before this feature existed."""
+    job_id, data = _run_day(client, hour_step=2.0, include_secondary_flux=True)
+    step = data["steps"][0]
+    assert step["has_flux_map"]
+    assert client.get(f"/api/day/flux/{job_id}/0.secondary.json").status_code == 404
+    assert client.get(f"/api/day/flux/{job_id}/0.grid.json").status_code == 200
+
+
+def test_day_flux_secondary_json_404s_for_a_step_without_a_stored_map(client, monkeypatch):
+    """Above MAX_DAY_FLUX_MAPS, a strided-out step keeps neither the
+    receiver grid nor the secondary one -- one storage cap, not two."""
+    monkeypatch.setattr(app_module, "MAX_DAY_FLUX_MAPS", 3)
+    job_id, data = _run_day(
+        client, hour_step=1.0, optics="axicon", include_secondary_flux=True
+    )
+    steps = data["steps"]
+    assert len(steps) > 3
+    skipped = [i for i, s in enumerate(steps) if not s["has_flux_map"]]
+    assert skipped
+    assert client.get(f"/api/day/flux/{job_id}/{skipped[0]}.secondary.json").status_code == 404
+
+
+def test_day_flux_secondary_json_404s_for_unknown_job(client):
+    assert client.get("/api/day/flux/nosuchjob/0.secondary.json").status_code == 404
+
+
+def test_day_flux_secondary_json_404s_for_an_out_of_range_step(client):
+    job_id, data = _run_day(client, hour_step=2.0, optics="axicon", include_secondary_flux=True)
+    out_of_range = len(data["steps"]) + 5
+    assert (
+        client.get(f"/api/day/flux/{job_id}/{out_of_range}.secondary.json").status_code == 404
+    )
+
+
+# ---------------------------------------------------------------------------
 # docs/ui-spec-v0.2.md §M.4: the aperture annotation round-trips through
 # save/reopen, unrecomputed -- SavedRunDocument.aperture is a loose dict the
 # client already computed; the library layer only has to store and return

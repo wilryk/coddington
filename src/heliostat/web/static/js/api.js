@@ -216,6 +216,19 @@ export function getDayFluxGrid(jobId, stepIndex, signal) {
   return getJSON(`/day/flux/${encodeURIComponent(jobId)}/${stepIndex}.grid.json`, signal);
 }
 
+// Spec §C's remaining honest gap, closed: that same stored timestep's
+// SECONDARY-surface flux map (app.py's _secondary_payload -- power_w,
+// peak_flux_kw_m2, the absorbed-heat numbers, fidelity, flux_grid), built
+// once alongside the PNG/CSV/grid during the sweep itself whenever the
+// sweep both asked for one (include_secondary_flux) and its optics has a
+// secondary flux map at all (axicon/Cassegrain). 404s otherwise -- prime
+// focus, a step the receiver-grid cap skipped, or a run saved before this
+// endpoint existed -- same has_flux_map/404 rules as getDayFluxGrid, plus
+// its own narrower "this step never got a secondary blob" case.
+export function getDaySecondaryGrid(jobId, stepIndex, signal) {
+  return getJSON(`/day/flux/${encodeURIComponent(jobId)}/${stepIndex}.secondary.json`, signal);
+}
+
 // `hour_step` is a MAXIMUM spacing: the server divides sunrise-to-sunset into
 // equal intervals no larger than it, so both ends are always sampled. The
 // request's own sun angles are ignored -- the sweep computes its own per step.

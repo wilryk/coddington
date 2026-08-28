@@ -3092,6 +3092,23 @@ def _day_flux_grid_blob_key(step: int) -> str:
     return f"day-flux-grid/{step}"
 
 
+def _day_secondary_grid_blob_key(step: int) -> str:
+    """Same idea as :func:`_day_flux_blob_key`, for that step's secondary-
+    surface flux map (spec §C) instead of the receiver's -- the Analysis
+    tab's Receiver | Secondary selector's remaining honest gap: a stored day-
+    sweep step used to carry no secondary data at all (only a live re-trace
+    did), leaving the selector disabled with a tooltip for every stored
+    step, always. Reuses :func:`_secondary_payload` verbatim (the same
+    absorbed-heat numbers and ``flux_grid`` a live ``/api/trace`` response's
+    ``secondary`` block carries), computed alongside the PNG/CSV/grid in
+    ``day_start``'s work loop -- present only when that step kept a map at
+    all (``want_flux``, same :data:`MAX_DAY_FLUX_MAPS` cap, not a second
+    budget) AND the optics has a secondary flux map
+    (:func:`~heliostat.geometry.secondary.secondary_has_flux_map` --
+    axicon/Cassegrain; prime focus stores nothing extra here, ever)."""
+    return f"day-secondary-grid/{step}"
+
+
 def _day_dni_provider(req: "DayTraceRequest") -> ClearSkyDNI:
     """Clear-sky DNI source for a day sweep's own per-timestep
     ``dni_w_m2`` -- §M.4's average-concentration readout (avg flux / DNI)
@@ -3136,6 +3153,7 @@ def _trace_instant_metrics(
     solar_az_deg: float,
     solar_el_deg: float,
     want_flux: bool = False,
+    want_secondary_flux: bool = False,
     should_cancel: Callable[[], bool] | None = None,
     step_key: int | None = None,
 ) -> dict:
@@ -3150,6 +3168,17 @@ def _trace_instant_metrics(
     for the grid back too, under ``flux``/``u_edges``/``v_edges``, so a
     caller that already paid for this trace can render a PNG from it instead
     of tracing the timestep again.
+
+    ``want_secondary_flux`` is the same idea for spec §C's secondary-surface
+    map -- summed across every heliostat exactly like
+    :func:`_trace_field_heliostats`'s own ``return_secondary_flux`` does
+    (same :func:`_secondary_maps_from_result`/``eta``-weighted sum), and
+    silently a no-op (no ``secondary_*`` keys in the result) when
+    ``secondary`` has no flux map, same as everywhere else §C touches. Kept
+    as its own flag rather than folded into ``want_flux`` because a caller
+    (``day_start``) wants the receiver grid and the secondary grid gated by
+    two different conditions -- the day sweep's own kept-step cap, and
+    whether the request asked for a secondary map at all.
 
     ``step_key`` is this call's own timestep discriminator inside a day/year
     sweep -- the caller's own loop index (int, distinct per timestep and
@@ -3211,6 +3240,18 @@ def _trace_instant_metrics(
 
     flux = np.zeros((len(v_edges) - 1, len(u_edges) - 1))
     power_w = 0.0
+    # Spec §C -- same "built once, summed with an eta-weighted add per
+    # heliostat" shape as the receiver flux above and as
+    # _trace_field_heliostats's own want_field_secondary/consume(); the
+    # secondary's own grid is fixed by `secondary` alone, so every
+    # heliostat's per-trace map already shares one (u, v) edge set.
+    want_secondary = want_secondary_flux and secondary_has_flux_map(secondary)
+    secondary_flux = secondary_power_w = secondary_u_edges = secondary_v_edges = None
+    secondary_fidelity = None
+    if want_secondary:
+        secondary_u_edges, secondary_v_edges, _sec_bin_area_m2 = _secondary_flux_edges(secondary)
+        secondary_flux = np.zeros((len(secondary_v_edges) - 1, len(secondary_u_edges) - 1))
+        secondary_power_w = 0.0
     for i in range(len(ids)):
         # Checked per heliostat, not per timestep: one timestep of a large
         # field runs for minutes, and a cancel that waits for it reads as a
@@ -3242,6 +3283,7 @@ def _trace_instant_metrics(
             error_map=error_map,
             pointing_error_mrad=req.design.pointing_error_mrad,
             pointing_rng=pointing_rng,
+            return_secondary_flux=want_secondary_flux,
             **secondary_perturb_kwargs,
         )
         eta = float(eta_union[i])
@@ -3252,6 +3294,13 @@ def _trace_instant_metrics(
         else:
             flux += result["flux"] * eta
             power_w += result["power_w"] * eta
+        if want_secondary:
+            sec_maps = _secondary_maps_from_result(result, secondary)
+            if sec_maps is not None:
+                s_flux, _s_u, _s_v, s_power_w, s_fidelity = sec_maps
+                secondary_flux = secondary_flux + s_flux * eta
+                secondary_power_w += s_power_w * eta
+                secondary_fidelity = s_fidelity
 
     rms_mm, centroid = _cone_metrics(flux, u_edges, v_edges)
     out = {
@@ -3269,6 +3318,16 @@ def _trace_instant_metrics(
         out["flux"] = flux
         out["u_edges"] = u_edges
         out["v_edges"] = v_edges
+    # None (rather than absent) only if secondary_fidelity never got set --
+    # every heliostat failed, or the field traced zero of them; a real day
+    # sweep step traces at least one, so this is a belt-and-suspenders case,
+    # not the common one.
+    if want_secondary and secondary_fidelity is not None:
+        out["secondary_flux"] = secondary_flux
+        out["secondary_u_edges"] = secondary_u_edges
+        out["secondary_v_edges"] = secondary_v_edges
+        out["secondary_power_w"] = secondary_power_w
+        out["secondary_fidelity"] = secondary_fidelity
     return out
 
 
@@ -4719,6 +4778,15 @@ def create_app():
                         step.solar_az_deg,
                         step.solar_el_deg,
                         want_flux=want_flux,
+                        # §C's remaining honest gap: a stored step used to
+                        # carry no secondary map at all. Gated on want_flux
+                        # too -- MAX_DAY_FLUX_MAPS is the one storage budget
+                        # both the receiver grid and the secondary grid live
+                        # under, not two separate caps -- and on the
+                        # request's own opt-in (api.js's buildTraceRequest,
+                        # reused verbatim by buildDayRequest, always sets
+                        # it; a caller that doesn't ask pays nothing extra).
+                        want_secondary_flux=want_flux and body.include_secondary_flux,
                         should_cancel=job.cancelled,
                         step_key=index,
                     )
@@ -4754,6 +4822,25 @@ def create_app():
                     job.blobs[_day_flux_grid_blob_key(index)] = json.dumps(
                         _flux_grid_payload(metrics["flux"], metrics["u_edges"], metrics["v_edges"])
                     ).encode("utf-8")
+                    # §C: that same step's secondary-surface map, present in
+                    # `metrics` exactly when _trace_instant_metrics found one
+                    # (optics has a flux map -- axicon/Cassegrain; silently
+                    # absent, so no blob at all, for prime_focus, keeping
+                    # its blobs byte-identical to before this landed).
+                    if "secondary_flux" in metrics:
+                        job.blobs[_day_secondary_grid_blob_key(index)] = json.dumps(
+                            _secondary_payload(
+                                metrics["secondary_flux"],
+                                metrics["secondary_u_edges"],
+                                metrics["secondary_v_edges"],
+                                metrics["secondary_power_w"],
+                                metrics["secondary_fidelity"],
+                                secondary_reflectance=getattr(
+                                    optics_params, "secondary_reflectance", 0.90
+                                ),
+                                include_flux_grid=True,
+                            )
+                        ).encode("utf-8")
                 rows.append(
                     {
                         "key": step.key,
@@ -4763,7 +4850,19 @@ def create_app():
                         **{
                             k: (None if v is None or not np.isfinite(v) else round(float(v), 4))
                             for k, v in metrics.items()
-                            if k not in ("centroid_mm", "n_heliostats", "flux", "u_edges", "v_edges")
+                            if k
+                            not in (
+                                "centroid_mm",
+                                "n_heliostats",
+                                "flux",
+                                "u_edges",
+                                "v_edges",
+                                "secondary_flux",
+                                "secondary_u_edges",
+                                "secondary_v_edges",
+                                "secondary_power_w",
+                                "secondary_fidelity",
+                            )
                         },
                         "n_heliostats": metrics["n_heliostats"],
                         "has_flux_map": want_flux,
@@ -4896,6 +4995,44 @@ def create_app():
         if grid_bytes is None:
             raise HTTPException(status_code=404, detail="no stored flux map for that timestep")
         return Response(content=grid_bytes, media_type="application/json")
+
+    @app.get("/api/day/flux/{job_id}/{step}.secondary.json")
+    def day_flux_secondary_json(job_id: str, step: int) -> Response:
+        """That same timestep's secondary-surface flux map (spec §C), the
+        Analysis tab's Receiver | Secondary selector's own stored-step gap:
+        a stored day-sweep step used to carry no secondary data at all
+        (only a live re-trace of that step's own sun angles did), leaving
+        the selector disabled with a tooltip no matter what the sweep's
+        optics was. Same shape as ``.../{step}.grid.json`` -- a
+        :func:`_secondary_payload` block (``power_w``, ``peak_flux_kw_m2``,
+        the absorbed-heat numbers, ``fidelity``, ``flux_grid``), built once
+        alongside the PNG/FEA-CSV/grid during the sweep itself (see
+        ``day_start``), never a re-trace.
+
+        Same job-state rules and step-range 404 as ``.../{step}.grid.json``,
+        plus its own narrower 404: this step's own blob is present only
+        when ``day_start`` was asked for one (``include_secondary_flux``)
+        AND the sweep's optics has a secondary flux map at all
+        (axicon/Cassegrain -- prime focus, or a run finished before this
+        endpoint existed, both 404 here exactly like a step the receiver
+        grid cap left out).
+        """
+        job = JOBS.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"no job {job_id!r}")
+        if job.state == "running":
+            raise HTTPException(status_code=409, detail="still running")
+        if job.state == "error":
+            raise HTTPException(status_code=500, detail=job.error or "the run failed")
+        steps = (job.result or {}).get("steps") or []
+        if not 0 <= step < len(steps):
+            raise HTTPException(status_code=404, detail=f"no timestep {step} in that day's run")
+        secondary_bytes = job.blobs.get(_day_secondary_grid_blob_key(step))
+        if secondary_bytes is None:
+            raise HTTPException(
+                status_code=404, detail="no stored secondary flux map for that timestep"
+            )
+        return Response(content=secondary_bytes, media_type="application/json")
 
     @app.get("/api/day/export/{job_id}.csv")
     def day_export(job_id: str) -> Response:

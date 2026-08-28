@@ -35,6 +35,7 @@ import {
   dayFluxFeaCsvUrl,
   deleteLibraryEntry,
   getDayFluxGrid,
+  getDaySecondaryGrid,
   getDayResult,
   getDayStatus,
   getLibrary,
@@ -112,17 +113,27 @@ let fluxPngBase64 = null;
 let fluxSrcUrl = null;
 let fluxPeakKwM2 = null;
 // Spec §C: the current step's "secondary" response block (app.py's
-// _secondary_payload), when there is one -- only ever set from a live
-// re-trace (the cache/fetch branch of scheduleFluxFetch below), because
-// that is the only path whose response body this module actually sees. A
-// step served from the sweep's own stored PNG (fluxSrcUrl) or a reopened
-// saved run's flux_pngs never carries one -- see scheduleFluxFetch's own
-// comment on each of those branches.
+// _secondary_payload), when there is one -- set either from a live re-trace
+// (the cache/fetch branch of scheduleFluxFetch below) or, now that the
+// stored-step gap is closed, from that step's own stored secondary blob
+// (getDaySecondaryGrid, fetched in the has_flux_map/resultJobId branch).
+// Absent (null) for a reopened saved run's flux_pngs, which carry no
+// secondary data either way -- see scheduleFluxFetch's own comment there.
 let fluxSecondary = null;
 let fluxLoading = false;
 let fluxError = null;
 let fluxTimer = null;
 let fluxController = null;
+// A stored step's own secondary blob, cached per `${jobId}:${stepIndex}`
+// once fetched -- a finished run's blob never changes, same idiom as
+// fluxCache/apertureGridCache. `null` means "fetched, and this step has
+// none" (prime focus, an older run), distinct from "not fetched yet" (key
+// absent) so a confirmed absence is never refetched.
+const storedSecondaryCache = new Map();
+// True only while a stored step's own secondary blob is in flight --
+// paintFluxSurfaceSelector uses it to show a "loading" tooltip instead of
+// the honest "carries none" one during that brief window.
+let storedSecondaryLoading = false;
 
 // -- analysis aperture (docs/ui-spec-v0.2.md §M.4) --------------------------
 // A draggable/resizable circle on the selected timestep's own flux grid,
@@ -728,6 +739,7 @@ function scheduleFluxFetch() {
     fluxSrcUrl = null;
     fluxPeakKwM2 = null;
     fluxSecondary = null;
+    storedSecondaryLoading = false;
     fluxError = null;
     fluxLoading = false;
     paintIfVisible();
@@ -744,6 +756,7 @@ function scheduleFluxFetch() {
     fluxSrcUrl = null;
     fluxPeakKwM2 = null;
     fluxSecondary = null;
+    storedSecondaryLoading = false;
     fluxError = png ? null : "This saved run kept no irradiance map for that timestep.";
     fluxLoading = false;
     paintIfVisible();
@@ -751,16 +764,49 @@ function scheduleFluxFetch() {
   }
   // The sweep already traced and rendered this timestep -- serve its own
   // map straight from the server, instantly, instead of re-tracing it.
-  // /api/day/* was not extended for spec §C (docs/secondary-irradiance-
-  // plan.md's build order stopped at the single/field trace endpoints), so
-  // this stored PNG carries no secondary data either -- same as above.
   if (step.has_flux_map && resultJobId != null) {
     fluxPngBase64 = null;
     fluxSrcUrl = dayFluxUrl(resultJobId, selectedStepIndex);
     fluxPeakKwM2 = null; // the row's own peak_flux_kw_m2 covers the caption
-    fluxSecondary = null;
     fluxError = null;
     fluxLoading = false;
+    // Spec §C's stored-step gap, closed: day_start now stores this step's
+    // own secondary blob too, whenever the sweep asked for one and its
+    // optics has a flux map (app.py's _day_secondary_grid_blob_key). Fetch
+    // it here, cached per step since a finished run's blob never changes;
+    // a 404 (prime focus, an older run from before this landed, or a step
+    // the receiver-grid cap itself skipped) leaves fluxSecondary null, the
+    // same honest disabled-selector state paintFluxSurfaceSelector already
+    // renders -- just no longer a foregone conclusion for every stored step.
+    const secKey = `${resultJobId}:${selectedStepIndex}`;
+    if (storedSecondaryCache.has(secKey)) {
+      fluxSecondary = storedSecondaryCache.get(secKey);
+      storedSecondaryLoading = false;
+    } else {
+      fluxSecondary = null;
+      storedSecondaryLoading = true;
+      const jobIdAtRequest = resultJobId;
+      const stepIndexAtRequest = selectedStepIndex;
+      getDaySecondaryGrid(jobIdAtRequest, stepIndexAtRequest)
+        .then((secondary) => {
+          storedSecondaryCache.set(secKey, secondary);
+          if (resultJobId === jobIdAtRequest && selectedStepIndex === stepIndexAtRequest) {
+            fluxSecondary = secondary;
+            storedSecondaryLoading = false;
+            paintIfVisible();
+          }
+        })
+        .catch(() => {
+          // No stored blob for this step -- a routine, expected outcome
+          // (not every step/optics has one), so cache the absence and move
+          // on silently rather than surfacing it as a fluxError.
+          storedSecondaryCache.set(secKey, null);
+          if (resultJobId === jobIdAtRequest && selectedStepIndex === stepIndexAtRequest) {
+            storedSecondaryLoading = false;
+            paintIfVisible();
+          }
+        });
+    }
     paintIfVisible();
     return;
   }
@@ -3028,9 +3074,11 @@ function paintSecondaryFluxCanvas(canvas, grid) {
 // currently-loaded map actually carries a secondary block, and returns
 // whether the secondary map should be the one shown. Secondary stays
 // disabled (with a tooltip explaining why) for prime_focus, for a step
-// still loading/erroring, and for the common case of a sweep-stored PNG or
-// a reopened saved run -- neither carries the raw grid the client-side
-// paint needs (see scheduleFluxFetch's own comments on those branches).
+// still loading/erroring, for a reopened saved run (SavedRunDocument keeps
+// PNG bytes only, no secondary blob), and for a stored sweep step whose own
+// secondary fetch (scheduleFluxFetch, via getDaySecondaryGrid) came back
+// empty -- an older run from before the stored-step gap closed, a step the
+// receiver-grid cap itself skipped, or a prime-focus sweep.
 function paintFluxSurfaceSelector() {
   const doc = store.get("doc");
   const hasSecondaryOptics = doc.optics === "axicon" || doc.optics === "cassegrain";
@@ -3039,8 +3087,10 @@ function paintFluxSurfaceSelector() {
   let tip = "";
   if (!available) {
     if (!hasSecondaryOptics) tip = "Only axicon and Cassegrain layouts have a secondary flux map.";
-    else if (fluxSrcUrl || reopenedDayFluxPngs) {
-      tip = "This stored sweep step carries no secondary flux data — only a freshly-traced map does.";
+    else if (fluxSrcUrl && storedSecondaryLoading) {
+      tip = "Loading this step's secondary flux data…";
+    } else if (fluxSrcUrl || reopenedDayFluxPngs) {
+      tip = "This stored sweep step carries no secondary flux data.";
     } else tip = "This trace carried no secondary flux map.";
   }
   els.fluxSurfaceSecondaryBtn.title = tip;
@@ -3092,10 +3142,14 @@ function paintFluxPanel() {
     els.secAbsorbedRow.num.textContent = fmtPower(fluxSecondary.absorbed_power_w);
     els.secPeakAbsorbedRow.num.textContent = fmtFlux(fluxSecondary.peak_absorbed_kw_m2);
     els.fluxSecFidelity.textContent = secondaryFidelityNote(fluxSecondary.fidelity);
-    // No stored-job grid for the secondary (unlike the receiver's
-    // dayFluxFeaCsvUrl below) -- always the live single-heliostat endpoint,
-    // via exportSecondaryFluxFeaCsvForStep above. Available exactly when
-    // showSecondary is true, since that already required fluxSecondary.flux_grid.
+    // Deliberately still the live single-heliostat re-trace endpoint
+    // (exportSecondaryFluxFeaCsvForStep above), not a stored-blob URL like
+    // the receiver's dayFluxFeaCsvUrl below, even now that a stored step
+    // can carry its own secondary blob for the ON-SCREEN map/readout --
+    // the FEA export's job is an ANSYS-ready grid at full trace fidelity,
+    // which the downsampled stored blob was never meant to serve. Available
+    // exactly when showSecondary is true, since that already required
+    // fluxSecondary.flux_grid.
     els.fluxFeaCsv.hidden = true;
     els.fluxSecFeaCsv.hidden = false;
   } else {
