@@ -87,6 +87,16 @@
                [hidden] and switched only by the explicit toggle above. -->
           <div id="plan-view" hidden></div>
           <div id="elevation-view" hidden></div>
+          <!-- Shares ui.showRays with 3D View's #rays-toggle (js/main.js's
+               setRaysVisible) -- toggling either one toggles the same
+               corner rays this view and the 3D scene both draw. Stacked
+               above #design-hint-chip the way 3D View's #refresh-pill
+               stacks above its own #rays-chip. -->
+          <div class="chip" id="design-rays-chip" style="bottom: 46px">
+            <label id="design-rays-toggle-label" style="pointer-events: auto; cursor: pointer">
+              <input type="checkbox" id="design-rays-toggle" checked style="vertical-align: -1px" /> Rays
+            </label>
+          </div>
           <div class="chip" id="design-hint-chip"></div>
         </div>
       </div>

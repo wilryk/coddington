@@ -64,6 +64,10 @@ const elevationContainer = document.getElementById("elevation-view");
 const designViewPlanBtn = document.getElementById("design-view-plan");
 const designViewElevationBtn = document.getElementById("design-view-elevation");
 const designHintChip = document.getElementById("design-hint-chip");
+// Design's own rays checkbox -- shares ui.showRays with 3D View's raysToggle
+// below (see setRaysVisible/render3DScene/renderDesignView) rather than
+// keeping a copy, so toggling either one is toggling the same thing.
+const designRaysToggle = document.getElementById("design-rays-toggle");
 
 const stageHeliostat = document.getElementById("stage-heliostat");
 const stageField = document.getElementById("stage-field");
@@ -297,6 +301,10 @@ function renderDesignView() {
   elevationContainer.hidden = view !== "elevation";
   designViewPlanBtn.classList.toggle("active", view === "plan");
   designViewElevationBtn.classList.toggle("active", view === "elevation");
+  // Shared with 3D View's raysToggle (see setRaysVisible) -- keeps this
+  // checkbox honest even when the store changed some other way (the 3D
+  // View checkbox, or a fresh page load's DEFAULT_UI.showRays).
+  designRaysToggle.checked = raysVisible();
 
   if (view === "plan") {
     designHintChip.textContent = "Plan view — click a heliostat to inspect it · drag-to-move lands with the layout picker";
@@ -314,6 +322,9 @@ function renderDesignView() {
 function render3DScene() {
   const heliostats = (lastGeometryResponse && lastGeometryResponse.heliostats) || [];
   const count = `${heliostats.length.toLocaleString()} heliostat${heliostats.length === 1 ? "" : "s"}`;
+  // Shared with Design's designRaysToggle (see setRaysVisible) -- keeps
+  // this checkbox honest even when the store changed some other way.
+  raysToggle.checked = raysVisible();
   raysChipText.textContent = raysVisible()
     ? `Corner chief rays — viewing aid, no shading · ${count}`
     : `Rays hidden · ${count}`;
@@ -338,20 +349,42 @@ let lastRaysResponse = null;
 const scheduleGeometry = createGeometryRequester(300);
 const scheduleRays = createGeometryRequester(450);
 
-// ui.showRays is undefined until the toggle is first used, which reads as on.
 function raysVisible() {
   return store.get("ui.showRays") !== false;
 }
 
-raysToggle.addEventListener("change", () => {
-  store.set("ui.showRays", raysToggle.checked);
+// Single handler for both rays checkboxes (3D View's raysToggle, Design's
+// designRaysToggle) so there is exactly one place that decides what
+// flipping the shared ui.showRays flag actually does.
+//
+// The bug this fixes: handleGeometrySuccess() (the cheap shapes-only pass
+// that every doc edit triggers) unconditionally nulls lastRaysResponse,
+// because a fresh geometry response invalidates whatever rays were drawn
+// against the previous one. While rays are hidden, requestRays() below
+// deliberately skips fetching a replacement (no point tracing rays nobody
+// sees) -- so any doc edit made while rays are off leaves lastRaysResponse
+// null. Turning rays back on used to only call applyRayVisibility(), which
+// re-applies that cache to the scene; with the cache null, that call is a
+// no-op and the scene stays empty even though the checkbox reads "on" --
+// until the next unrelated doc edit happens to refetch rays and the scene
+// catches up. That's the reported "sometimes working" intermittency. The
+// fix: re-enabling rays with no cache to fall back on asks for a fresh
+// pass right away instead of waiting on the next incidental edit.
+function setRaysVisible(visible) {
+  store.set("ui.showRays", visible);
   applyRayVisibility();
+  if (visible && !lastRaysResponse) requestRays();
   // Refreshes whichever of Design's two 2D views is currently showing (its
   // rays just got re-pushed by applyRayVisibility above) and 3D View's rays
-  // chip text -- same pair renderAllPanels always calls together.
+  // chip text -- same pair renderAllPanels always calls together. Also
+  // syncs both checkboxes' [checked] to the store, so the one that was not
+  // clicked follows along.
   renderDesignView();
   render3DScene();
-});
+}
+
+raysToggle.addEventListener("change", () => setRaysVisible(raysToggle.checked));
+designRaysToggle.addEventListener("change", () => setRaysVisible(designRaysToggle.checked));
 
 // The plan and elevation views draw the same corner rays the 3D scene does,
 // so they are fed from whichever pass last landed: the ray-bearing one when

@@ -196,6 +196,13 @@ const DEFAULT_UI = {
   traceProgress: null,
   staleResults: false,
   fluxOverlayOpen: false,
+  // Corner-ray visibility in the 3D scene (and the same rays drawn in
+  // Design's plan/elevation views) -- one flag shared by both tabs' rays
+  // checkboxes (main.js's raysToggle in 3D View, designRaysToggle in
+  // Design). Explicit here (rather than left undefined and read as "on")
+  // so both controls' [checked] state and the store agree on a real value
+  // from first paint, instead of each control guessing the same default.
+  showRays: true,
   // In-scene selection + miss warnings.
   selection: null, // null | { kind: "heliostat" | "secondary" | "receiver" | "sun", id: number|null }
   miss: null, // /api/scene/geometry's top-level `miss` key, verbatim (or null if absent/not-yet-live)
