@@ -145,14 +145,17 @@ const DEFAULT_DOC = {
 };
 
 const DEFAULT_UI = {
-  // All collapsed on open: the workspace opens on the 3D scene, and an
-  // expanded Field or Receiver stage would immediately swap it for that
-  // stage's own plan or elevation view.
+  // All collapsed on open (docs/ui-spec-v0.2.md §N): the app opens on the
+  // 3D View tab, and the Design tab's sidebar stages no longer drive which
+  // 2D view shows (that auto-morph retired -- see ui.view below).
   expanded: { heliostat: false, field: false, receiver: false, sun: false },
-  // "3d" | "plan" | "elevation". Not derived fresh from ui.expanded on
-  // read, so a manual "back to 3D" isn't clobbered by an already-expanded
-  // stage.
-  view: "3d",
+  // "plan" | "elevation" -- which of Design's two 2D views is showing,
+  // switched only by its own explicit toggle (main.js's design-view-plan /
+  // design-view-elevation buttons). 3D View has no view state of its own:
+  // it always shows the 3D scene. Pre-§N this also held "3d" and was
+  // coupled to ui.expanded.field/receiver (the "auto-morph" mockup M18a
+  // retires); that coupling is gone.
+  view: "plan",
   fidelity: "fast_accurate",
   mcRays: null,
   geometryPending: false,
@@ -178,11 +181,14 @@ const DEFAULT_UI = {
   libraryTab: "receivers", // "designs" | "receivers" | "projects"
   projectName: null,
   dirty: false,
-  // Which full-screen tab is showing -- "workspace" | "shape" | "analysis".
-  // `shapeHeliostatId` is which heliostat the Heliostat Shape tab previews;
-  // null means "no explicit pick yet", so js/tabs/shape.js falls back to a
-  // deterministic median-radius heliostat from the live field.
-  tab: "workspace",
+  // Which top-level tab is showing -- "design" | "3dview" | "shape" |
+  // "analysis" (docs/ui-spec-v0.2.md §N: the old single "workspace" tab
+  // split into Design, the authoring tab, and 3D View, the observing/
+  // simulating tab the app now opens on). `shapeHeliostatId` is which
+  // heliostat the Heliostat Shape tab previews; null means "no explicit
+  // pick yet", so js/tabs/shape.js falls back to a deterministic
+  // median-radius heliostat from the live field.
+  tab: "3dview",
   shapeHeliostatId: null,
   // Spec §C / mockup M9: Receiver | Secondary selector shown wherever a
   // trace flux map is on screen (run bar's flux overlay, Analysis tab's

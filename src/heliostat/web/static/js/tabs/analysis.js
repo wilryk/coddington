@@ -1947,10 +1947,10 @@ function build(container) {
   const subjDesign = document.createElement("strong");
   const subjLink = document.createElement("a");
   subjLink.href = "#";
-  subjLink.textContent = "change in Workspace →";
+  subjLink.textContent = "change in Design →";
   subjLink.addEventListener("click", (e) => {
     e.preventDefault();
-    store.set("ui.tab", "workspace");
+    store.set("ui.tab", "design");
   });
   subject.appendChild(subjOptics);
   subject.appendChild(subjSep1);
@@ -2418,6 +2418,24 @@ function build(container) {
     store.set("ui.fluxSurface", "secondary");
   });
   fluxHead.appendChild(fluxSurfaceSeg);
+  // docs/ui-spec-v0.2.md §N, mockup M18c: this inline map stays here for
+  // fast scrubbing (decided, not moved) -- this link is the one-click-deeper
+  // path to the richer 3D View viewers (drape, aperture, FEA export) mockup
+  // M18c describes. The timestep itself isn't carried over (3D View shows
+  // the live design's current trace, not a re-play of one sweep step) --
+  // switching tabs is the same "closest existing idiom" every other
+  // tab-jump link in the app already uses (js/inspector.js's "View shape",
+  // js/panels/heliostat.js's "Edit shape…").
+  const openIn3DLink = document.createElement("a");
+  openIn3DLink.href = "#";
+  openIn3DLink.className = "an-open3d";
+  openIn3DLink.textContent = "Open in 3D View →";
+  openIn3DLink.title = "3D View has the drape, per-heliostat inspector, and FEA export for the live design's own trace.";
+  openIn3DLink.addEventListener("click", (e) => {
+    e.preventDefault();
+    store.set("ui.tab", "3dview");
+  });
+  fluxHead.appendChild(openIn3DLink);
   fluxPanel.appendChild(fluxHead);
 
   const fluxMapBody = document.createElement("div");
@@ -2749,6 +2767,7 @@ function build(container) {
     fluxPlaceholder,
     fluxCaption,
     fluxCompass,
+    openIn3DLink,
     fluxFeaCsv,
     fluxSecFeaCsv,
     drillPanel,
@@ -3045,6 +3064,7 @@ function paintFluxPanel() {
     els.fluxPlaceholder.textContent = text;
     els.fluxCaption.textContent = "";
     els.fluxCompass.textContent = "";
+    els.openIn3DLink.hidden = true;
     els.fluxFeaCsv.hidden = true;
     els.fluxSecFeaCsv.hidden = true;
   }
@@ -3055,6 +3075,7 @@ function paintFluxPanel() {
   if (!(fluxSrcUrl || fluxPngBase64)) return showPlaceholder("Click a timestep to render its irradiance map.");
 
   els.fluxPlaceholder.hidden = true;
+  els.openIn3DLink.hidden = false;
 
   if (showSecondary) {
     els.fluxImg.hidden = true;

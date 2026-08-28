@@ -50,23 +50,33 @@ const raysToggle = document.getElementById("rays-toggle");
 const refreshPill = document.getElementById("refresh-pill");
 const orbitHint = document.getElementById("orbit-hint");
 const inspectorEl = document.getElementById("inspector");
+// docs/ui-spec-v0.2.md §N, mockup M18b: compact, read-only sun chip -- the
+// editable fields are one click away (click the sun arrow -> #inspector,
+// or the Sun stage in Design).
+const sunChipCompact = document.getElementById("sun-chip-compact");
 
-// docs/ui-spec.md 2.1: "the viewport follows the active stage" -- the plan
-// and elevation views are siblings of #scene-container (index.html), shown
-// one at a time via [hidden] so the 3D scene is never disposed on switch.
+// docs/ui-spec.md 2.1/2.2 + v0.2 §N: the plan and elevation views now live in
+// the Design tab exclusively, switched by their own explicit toggle
+// (design-view-plan/design-view-elevation) instead of the old expand-a-stage
+// auto-morph, which retired -- see the store subscriber below.
 const planContainer = document.getElementById("plan-view");
 const elevationContainer = document.getElementById("elevation-view");
-const viewPill = document.getElementById("view-pill");
-const viewPillMode = document.getElementById("view-pill-mode");
-const viewPillBack = document.getElementById("view-pill-back");
+const designViewPlanBtn = document.getElementById("design-view-plan");
+const designViewElevationBtn = document.getElementById("design-view-elevation");
+const designHintChip = document.getElementById("design-hint-chip");
 
 const stageHeliostat = document.getElementById("stage-heliostat");
 const stageField = document.getElementById("stage-field");
 const stageReceiver = document.getElementById("stage-receiver");
 const stageSun = document.getElementById("stage-sun");
+// The 3D View trace bar (fidelity + Run + stale/error) and its results dock
+// (thumbnail -> full overlay, peak/mean/intercept, CSV exports) -- split
+// across two containers now (docs/ui-spec-v0.2.md §N, mockup M18b), both
+// still owned entirely by panels/run.js.
 const runbar = document.getElementById("runbar");
+const resultsDockBody = document.getElementById("results-dock-body");
 
-// -- trace status bar: relocated out of #runbar (Workspace-tab-only, see
+// -- trace status bar: relocated out of #runbar (3D-View-tab-only, see
 // renderTabs) so a running field trace's progress and cancel control stay
 // visible and usable from every app tab -----------------------------------
 const tracebar = document.getElementById("tracebar");
@@ -96,14 +106,20 @@ libraryBtn.addEventListener("click", () => {
   store.set("ui.libraryOpen", !store.get("ui.libraryOpen"));
 });
 
-const apptabWorkspace = document.getElementById("apptab-workspace");
+// docs/ui-spec-v0.2.md §N: the old single Workspace tab split into Design
+// (authoring) and 3D View (observing/simulating, where the app opens) --
+// see store.js's DEFAULT_UI.tab.
+const apptabDesign = document.getElementById("apptab-design");
+const apptab3dView = document.getElementById("apptab-3dview");
 const apptabShape = document.getElementById("apptab-shape");
 const apptabAnalysis = document.getElementById("apptab-analysis");
+const tabDesignSection = document.getElementById("tab-design");
+const tab3dviewSection = document.getElementById("tab-3dview");
 const tabShapeSection = document.getElementById("tab-shape");
 const tabAnalysisSection = document.getElementById("tab-analysis");
-const shellEl = document.querySelector(".shell");
 
-apptabWorkspace.addEventListener("click", () => store.set("ui.tab", "workspace"));
+apptabDesign.addEventListener("click", () => store.set("ui.tab", "design"));
+apptab3dView.addEventListener("click", () => store.set("ui.tab", "3dview"));
 apptabShape.addEventListener("click", () => store.set("ui.tab", "shape"));
 apptabAnalysis.addEventListener("click", () => store.set("ui.tab", "analysis"));
 
@@ -111,23 +127,14 @@ apptabAnalysis.addEventListener("click", () => store.set("ui.tab", "analysis"));
 // visibility toggles, nothing is destroyed. A tab module is rendered only
 // while its own section is visible; both fetch on open rather than while
 // hidden.
-// Closing one stage while the other is still open hands the viewport to
-// whichever stage remains, rather than dropping to 3D with the view pill
-// hidden and an expanded stage that no longer matches what is shown.
-function viewForOpenStage() {
-  const expanded = store.get("ui.expanded");
-  if (expanded.field) return "plan";
-  if (expanded.receiver) return "elevation";
-  return "3d";
-}
-
 function renderTabs() {
   const tab = store.get("ui.tab");
-  apptabWorkspace.classList.toggle("active", tab === "workspace");
+  apptabDesign.classList.toggle("active", tab === "design");
+  apptab3dView.classList.toggle("active", tab === "3dview");
   apptabShape.classList.toggle("active", tab === "shape");
   apptabAnalysis.classList.toggle("active", tab === "analysis");
-  shellEl.hidden = tab !== "workspace";
-  runbar.hidden = tab !== "workspace";
+  tabDesignSection.hidden = tab !== "design";
+  tab3dviewSection.hidden = tab !== "3dview";
   tabShapeSection.hidden = tab !== "shape";
   tabAnalysisSection.hidden = tab !== "analysis";
   if (tab === "shape") {
@@ -251,7 +258,7 @@ function renderAllPanels() {
   fieldPanel.render(stageField);
   receiverPanel.render(stageReceiver);
   sunPanel.render(stageSun);
-  runPanel.render(runbar, runActions, {
+  runPanel.render(runbar, resultsDockBody, runActions, {
     heliostatCount: (lastGeometryResponse && lastGeometryResponse.heliostats && lastGeometryResponse.heliostats.length) || 0,
   });
   // Needs the last geometry response (not store state) for a selected
@@ -271,43 +278,51 @@ function renderAllPanels() {
   // open both show up live.
   paintFluxOverlay();
 
-  renderViewportMode();
+  renderDesignView();
+  render3DScene();
 }
 
-// docs/ui-spec.md 2.1: shows exactly one of scene-container/plan-view/
-// elevation-view per ui.view, updates the view pill and the bottom-left
-// chip's view-specific text, and re-renders whichever view is actually
-// showing -- at the same cadence as the sidebar panels (called from
-// renderAllPanels, which every store change already triggers). The other
-// two views simply don't render while hidden -- no wasted SVG rebuilds.
-function renderViewportMode() {
+// docs/ui-spec-v0.2.md §N: Design's own 2D canvas -- shows exactly one of
+// plan-view/elevation-view per ui.view (now "plan" | "elevation" only; 3D
+// View owns the 3D scene exclusively, see render3DScene below), switched by
+// the explicit toggle (design-view-plan/design-view-elevation, wired in the
+// store subscriber further down) instead of the old expand-a-stage
+// auto-morph, and re-renders whichever view is actually showing -- at the
+// same cadence as the sidebar panels (called from renderAllPanels, which
+// every store change already triggers). The other view simply doesn't
+// render while hidden -- no wasted SVG rebuilds.
+function renderDesignView() {
   const view = store.get("ui.view");
-  sceneContainer.hidden = view !== "3d";
   planContainer.hidden = view !== "plan";
   elevationContainer.hidden = view !== "elevation";
-  // The orbit/pan/zoom hint describes the 3D controls only -- in plan or
-  // elevation it would sit on top of the view's own chip and mislead.
-  orbitHint.hidden = view !== "3d";
+  designViewPlanBtn.classList.toggle("active", view === "plan");
+  designViewElevationBtn.classList.toggle("active", view === "elevation");
 
-  viewPill.hidden = view === "3d";
-  if (view === "plan") viewPillMode.textContent = "Plan";
-  else if (view === "elevation") viewPillMode.textContent = "Elevation";
-
-  raysToggleLabel.hidden = view !== "3d";
-  if (view === "3d") {
-    const heliostats = (lastGeometryResponse && lastGeometryResponse.heliostats) || [];
-    const count = `${heliostats.length.toLocaleString()} heliostat${heliostats.length === 1 ? "" : "s"}`;
-    raysChipText.textContent = raysVisible()
-      ? `Corner chief rays — viewing aid, no shading · ${count}`
-      : `Rays hidden · ${count}`;
-  } else if (view === "plan") {
-    raysChipText.textContent = "Plan view — click a heliostat to inspect it · drag-to-move lands with the layout picker";
+  if (view === "plan") {
+    designHintChip.textContent = "Plan view — click a heliostat to inspect it · drag-to-move lands with the layout picker";
+    planView.render(planContainer);
   } else {
-    raysChipText.textContent = "Elevation — dimensions are live and referenced to the heliostat plane";
+    designHintChip.textContent = "Elevation — dimensions are live and referenced to the heliostat plane";
+    elevationView.render(elevationContainer);
   }
+}
 
-  if (view === "plan") planView.render(planContainer);
-  else if (view === "elevation") elevationView.render(elevationContainer);
+// 3D View's own viewport chrome: the rays chip's live count/label and the
+// compact, read-only sun chip (docs/ui-spec-v0.2.md §N, mockup M18b). The
+// 3D scene itself needs no visibility switch any more -- it's the only
+// thing #tab-3dview's viewport ever shows.
+function render3DScene() {
+  const heliostats = (lastGeometryResponse && lastGeometryResponse.heliostats) || [];
+  const count = `${heliostats.length.toLocaleString()} heliostat${heliostats.length === 1 ? "" : "s"}`;
+  raysChipText.textContent = raysVisible()
+    ? `Corner chief rays — viewing aid, no shading · ${count}`
+    : `Rays hidden · ${count}`;
+
+  const sun = store.get("doc.sun");
+  if (sun) {
+    sunChipCompact.hidden = false;
+    sunChipCompact.textContent = `☀ Az ${sun.az.toFixed(1)}° · El ${sun.el.toFixed(1)}°`;
+  }
 }
 
 // -- geometry: live scene refresh on every doc edit ------------------------
@@ -331,7 +346,11 @@ function raysVisible() {
 raysToggle.addEventListener("change", () => {
   store.set("ui.showRays", raysToggle.checked);
   applyRayVisibility();
-  renderViewportMode();
+  // Refreshes whichever of Design's two 2D views is currently showing (its
+  // rays just got re-pushed by applyRayVisibility above) and 3D View's rays
+  // chip text -- same pair renderAllPanels always calls together.
+  renderDesignView();
+  render3DScene();
 });
 
 // The plan and elevation views draw the same corner rays the 3D scene does,
@@ -896,18 +915,12 @@ const runActions = {
   onOpenFlux: openFluxOverlay,
 };
 
-// docs/ui-spec.md 2.1: "a view pill in the corner ... offers 'back to 3D'
-// at all times" -- the owning stage stays expanded (only ui.view resets).
-viewPillBack.addEventListener("click", (e) => {
-  e.preventDefault();
-  // Collapsing the stage that opened this view is what returns to 3D (the
-  // store subscriber below does it), and it leaves the sidebar showing only
-  // what is still relevant.
-  const view = store.get("ui.view");
-  if (view === "plan") store.set("ui.expanded.field", false);
-  else if (view === "elevation") store.set("ui.expanded.receiver", false);
-  else store.set("ui.view", "3d");
-});
+// docs/ui-spec-v0.2.md §N, mockup M18a: the explicit Plan view / Elevation
+// toggle that replaces the old "view pill + back to 3D" -- there is no 3D to
+// back to from Design any more (3D View is its own tab), so this is a plain
+// two-way switch, not a stack to pop.
+designViewPlanBtn.addEventListener("click", () => store.set("ui.view", "plan"));
+designViewElevationBtn.addEventListener("click", () => store.set("ui.view", "elevation"));
 
 fluxOverlayClose.addEventListener("click", closeFluxOverlay);
 fluxOverlay.addEventListener("click", (e) => {
@@ -920,11 +933,15 @@ document.addEventListener("keydown", (e) => {
     // and only deselects (docs/ui-spec.md 2.4) once it's already shut.
     if (store.get("ui.libraryOpen")) {
       store.set("ui.libraryOpen", false);
-    } else if (store.get("ui.tab") !== "workspace") {
+    } else if (store.get("ui.tab") === "shape" || store.get("ui.tab") === "analysis") {
       // Phase 3c wave 1: Esc backs out of a full-screen tab (docs/ui-spec.md
-      // 3's "Done -- back to workspace" has a keyboard equivalent) -- one
-      // layer per keypress, like the overlay and drawer above it.
-      store.set("ui.tab", "workspace");
+      // 3's "Done -- back to..." has a keyboard equivalent) -- one layer per
+      // keypress, like the overlay and drawer above it. §N: Shape/Analysis
+      // are detours from the main view now split across Design and 3D
+      // View -- 3D View is the closer analogue of the old single Workspace
+      // (it's what the app opens on), so Esc/Done return there rather than
+      // trying to remember which of the two the user came from.
+      store.set("ui.tab", "3dview");
     } else {
       store.set("ui.selection", null);
     }
@@ -934,27 +951,16 @@ document.addEventListener("keydown", (e) => {
 // -- store wiring ------------------------------------------------------------
 
 store.subscribe((path, value) => {
-  // docs/ui-spec.md 2.1: "the viewport follows the active stage" -- wired
-  // on the specific expand/collapse events (not derived from ui.expanded
-  // as a whole), so the view pill's manual "back to 3D" isn't silently
-  // re-overridden by a stage that's simply still open. Expanding switches
-  // to that stage's view; collapsing only resets to "3d" if that stage was
-  // the one currently showing (collapsing Field while in elevation, say,
-  // must not touch it).
+  // docs/ui-spec-v0.2.md §N, mockup M18a: the old "viewport follows the
+  // active stage" auto-morph retires -- expanding/collapsing the Field or
+  // Receiver & Tower stage no longer touches ui.view (that's the explicit
+  // Plan view/Elevation toggle's job now, wired above). Only the v0.2 fix
+  // wave item 2 rule survives, on its own: Field and Receiver & Tower stay
+  // mutually exclusive in the sidebar so at most one is expanded at a time.
   if (path === "ui.expanded.field") {
-    if (value) {
-      store.set("ui.view", "plan");
-      // v0.2 fix wave item 2: Field and Receiver & Tower are mutually
-      // exclusive -- expanding one collapses the other so the viewport
-      // (just switched to this stage's own view, above) is never left
-      // showing a stage that isn't actually the one on screen.
-      if (store.get("ui.expanded.receiver")) store.set("ui.expanded.receiver", false);
-    } else if (store.get("ui.view") === "plan") store.set("ui.view", viewForOpenStage());
+    if (value && store.get("ui.expanded.receiver")) store.set("ui.expanded.receiver", false);
   } else if (path === "ui.expanded.receiver") {
-    if (value) {
-      store.set("ui.view", "elevation");
-      if (store.get("ui.expanded.field")) store.set("ui.expanded.field", false);
-    } else if (store.get("ui.view") === "elevation") store.set("ui.view", viewForOpenStage());
+    if (value && store.get("ui.expanded.field")) store.set("ui.expanded.field", false);
   }
 
   if (path === "ui.fidelity") {

@@ -1,7 +1,11 @@
-// Run bar: fidelity, Run button, results strip (docs/ui-spec.md 2.5).
-// Trace-shaped network calls live in main.js (this module only builds DOM
-// and calls back into the `actions` it is given), so this file stays a
-// pure view over the store plus those callbacks.
+// Trace bar (fidelity, Run button, stale/error chips) + results dock (the
+// flux thumbnail -> full overlay, peak/mean/intercept, CSV exports)
+// (docs/ui-spec.md 2.5; docs/ui-spec-v0.2.md §N/mockup M18b: the same
+// content, just split across two containers now -- a condensed bar above
+// the 3D scene and a ~380px dock beside it, instead of one full-width
+// bottom bar). Trace-shaped network calls live in main.js (this module only
+// builds DOM and calls back into the `actions` it is given), so this file
+// stays a pure view over the store plus those callbacks.
 import { store } from "../store.js";
 
 const FIDELITY = [
@@ -64,9 +68,10 @@ function deriveMetrics(data) {
   return out;
 }
 
-function build(container, actions) {
+function build(container, dockContainer, actions) {
   container.innerHTML = "";
   container.className = "runbar";
+  dockContainer.innerHTML = "";
 
   const seg = document.createElement("div");
   seg.className = "seg";
@@ -113,7 +118,7 @@ function build(container, actions) {
   container.appendChild(runBtn);
 
   // The cancel control and live progress hint for a running field trace used
-  // to live here, but this bar only ever shows on the Workspace tab (see
+  // to live here, but this bar only ever shows on the 3D View tab (see
   // main.js's renderTabs) -- a field trace can run for minutes, so both
   // moved to #tracebar (main.js's renderTraceBar), which stays visible from
   // every tab. This bar keeps only the Run button's own "Running…" label.
@@ -129,6 +134,8 @@ function build(container, actions) {
   traceErr.hidden = true;
   container.appendChild(traceErr);
 
+  // Everything below lives in the results dock (docs/ui-spec-v0.2.md §N,
+  // mockup M18b), not the trace bar -- see this file's header comment.
   const results = document.createElement("div");
   results.className = "results";
 
@@ -196,7 +203,7 @@ function build(container, actions) {
   stampWrap.appendChild(exportFeaLink);
   results.appendChild(stampWrap);
 
-  container.appendChild(results);
+  dockContainer.appendChild(results);
 
   els = {
     fidelityBtns,
@@ -219,8 +226,8 @@ function build(container, actions) {
   built = true;
 }
 
-export function render(container, actions, ctx) {
-  if (!built) build(container, actions);
+export function render(container, dockContainer, actions, ctx) {
+  if (!built) build(container, dockContainer, actions);
   const ui = store.get("ui");
 
   for (const [key, btn] of Object.entries(els.fidelityBtns)) {

@@ -456,7 +456,7 @@ function build(container) {
   nameEl.className = "name";
   const fromEl = document.createElement("span");
   fromEl.className = "from";
-  fromEl.textContent = "updates live in the workspace field";
+  fromEl.textContent = "updates live in the shared design";
 
   const chip = document.createElement("span");
   chip.className = "previewchip";
@@ -484,7 +484,7 @@ function build(container) {
   const popHint = document.createElement("div");
   popHint.className = "hint";
   popHint.style.margin = "6px 0 0 0";
-  popHint.textContent = "or click a heliostat in the Workspace and choose View shape";
+  popHint.textContent = "or click a heliostat in 3D View or Design's plan view and choose View shape";
   popover.appendChild(popRow);
   popover.appendChild(popApply);
   popover.appendChild(popHint);
@@ -571,8 +571,13 @@ function build(container) {
 
   const doneBtn = document.createElement("div");
   doneBtn.className = "btn primary";
-  doneBtn.textContent = "Done — back to workspace";
-  doneBtn.addEventListener("click", () => store.set("ui.tab", "workspace"));
+  // docs/ui-spec-v0.2.md §N: entered from either Design's sidebar ("Edit
+  // shape...") or 3D View's inspector ("View shape ->") -- 3D View is the
+  // closer analogue of the old single Workspace (it's what the app opens
+  // on), so Done returns there rather than trying to remember which of the
+  // two tabs the user came from.
+  doneBtn.textContent = "Done — back to 3D View";
+  doneBtn.addEventListener("click", () => store.set("ui.tab", "3dview"));
 
   rightWrap.appendChild(saveWrap);
   rightWrap.appendChild(doneBtn);
@@ -1358,8 +1363,8 @@ function renderSagCaption(doc) {
   els.cantToggle.parentElement.hidden = !faceted;
   els.sagCaption2.textContent = faceted && !sagShowCant
     ? "Each facet measured from its own mounting plane — what a facet fabricator works to. Tick the box to see the mirror as one shape."
-    : "Figure solved for the workspace's current sun and this heliostat's slant range. Pick another heliostat from the " +
-      "locator above, the ▾ selector, or by clicking one in the workspace and choosing “View shape”.";
+    : "Figure solved for the current sun and this heliostat's slant range. Pick another heliostat from the " +
+      "locator above, the ▾ selector, or by clicking one in 3D View and choosing “View shape”.";
   els.sagExportBtn.textContent = sagExportBusy ? "Exporting…" : "Export CSV for FEA";
   els.sagExportBtn.classList.toggle("disabled-link", sagExportBusy);
   els.sagExportErrEl.hidden = !sagExportError;

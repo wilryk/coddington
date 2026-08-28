@@ -216,6 +216,14 @@
   margin-left: auto;
   flex: 0 0 auto;
 }
+/* docs/ui-spec-v0.2.md §N, mockup M18c: one click deeper to the richer 3D
+   View viewers (drape, aperture, FEA export) -- sits after the seg, which
+   already carries margin-left: auto. */
+.an-open3d {
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  white-space: nowrap;
+}
 .an-mapbody {
   display: flex;
   gap: 14px;
