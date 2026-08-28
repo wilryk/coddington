@@ -223,6 +223,7 @@ function build(container) {
       if (!field) continue;
       const wrap = document.createElement("div");
       wrap.className = "callout";
+      if (field.tooltip) wrap.title = field.tooltip;
       const input = document.createElement("input");
       input.type = "number";
       input.className = "val";

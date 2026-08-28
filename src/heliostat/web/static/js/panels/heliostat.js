@@ -44,8 +44,19 @@ function build(container) {
   const surfaceSeg = document.createElement("div");
   surfaceSeg.className = "seg";
   const surfaceBtns = {};
+  const SURFACE_TOOLTIPS = {
+    twisting: "Re-solves each facet's figure as the sun moves, so it stays perfectly focused at every instant.",
+    spherical: "Freezes one figure — a long focal gives a weakly focusing, not-quite-flat facet that no longer re-solves with the sun.",
+    flat: "No curvature by default — a true flat panel, though a facet grid can still be given a gentle fixed curvature.",
+  };
   for (const [key, label] of HELIOSTAT_SURFACE_OPTIONS) {
-    surfaceBtns[key] = segButton(surfaceSeg, label, key === "twisting", () => store.set("doc.design.surface", key));
+    surfaceBtns[key] = segButton(
+      surfaceSeg,
+      label,
+      key === "twisting",
+      () => store.set("doc.design.surface", key),
+      SURFACE_TOOLTIPS[key]
+    );
   }
   body.appendChild(surfaceSeg);
 

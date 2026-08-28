@@ -22,12 +22,25 @@ export function resolvePath(path, doc) {
   return typeof path === "function" ? path(doc) : path;
 }
 
+// docs/ui-spec-v0.2.md §H: a position/radius field stored in mm can declare
+// `unit: "m"` to display and edit in meters (rounded to 0.01 m on display --
+// storage keeps full mm precision; a typed value converts back to mm on
+// write, at any precision the user types). metersFromMm is exported so
+// non-numberRow readouts (plan view, inspector) round the same way.
+export function metersFromMm(mm) {
+  if (mm == null || !Number.isFinite(mm)) return null;
+  return Math.round(mm / 10) / 100; // nearest 0.01 m
+}
+
 // Builds one <div class="frow"><label>...</label><input class="val"></div>
 // row wired straight to the field's store path, with setVal's focus guard
-// applied on every render.
+// applied on every render. `field.tooltip`, when present, becomes the row's
+// native hover title -- the one mechanism docs/ui-spec-v0.2.md §G asks for,
+// since every sidebar/inspector field already renders through here.
 export function numberRow(parent, field) {
   const row = document.createElement("div");
   row.className = "frow";
+  if (field.tooltip) row.title = field.tooltip;
   const lab = document.createElement("label");
   lab.textContent = field.label;
   const input = document.createElement("input");
@@ -35,13 +48,15 @@ export function numberRow(parent, field) {
   input.className = "val";
   input.dataset.key = field.key;
   if (field.step !== undefined) input.step = field.step;
+  else if (field.unit === "m") input.step = 0.01;
   if (field.min !== undefined) input.min = field.min;
   if (field.max !== undefined) input.max = field.max;
   input.addEventListener("input", () => {
     const v = parseFloat(input.value);
     if (Number.isFinite(v)) {
       const doc = store.get("doc");
-      store.set(resolvePath(field.path, doc), v);
+      const stored = field.unit === "m" ? v * 1000 : v;
+      store.set(resolvePath(field.path, doc), stored);
     }
   });
   row.appendChild(lab);
@@ -50,11 +65,12 @@ export function numberRow(parent, field) {
   return input;
 }
 
-export function segButton(parent, label, active, onClick) {
+export function segButton(parent, label, active, onClick, tooltip) {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.textContent = label;
   btn.className = active ? "active" : "";
+  if (tooltip) btn.title = tooltip;
   btn.addEventListener("click", onClick);
   parent.appendChild(btn);
   return btn;
@@ -104,44 +120,97 @@ export function apertureSummaryText(doc) {
 // -- Field stage: single-heliostat (x, y), Fermat-spiral and radial-
 // staggered fields -----------------------------------------------------
 
+// docs/ui-spec-v0.2.md §H: heliostat positions display and edit in meters
+// (rounded to 0.01 m) though storage stays full-precision mm -- unit: "m"
+// tells numberRow to convert on read/write (see its own comment above).
 export const FIELD_SINGLE_FIELDS = [
-  { key: "x_mm", label: "X (mm)", path: "doc.field.single.x_mm" },
-  { key: "y_mm", label: "Y (mm)", path: "doc.field.single.y_mm" },
+  {
+    key: "x_mm",
+    label: "X (m)",
+    path: "doc.field.single.x_mm",
+    unit: "m",
+    tooltip: "East/west position of this heliostat, relative to the tower axis.",
+  },
+  {
+    key: "y_mm",
+    label: "Y (m)",
+    path: "doc.field.single.y_mm",
+    unit: "m",
+    tooltip: "North/south position of this heliostat, relative to the tower axis.",
+  },
 ];
 
 export const FIELD_FERMAT_FIELDS = [
-  { key: "n", label: "Heliostats", path: "doc.field.fermat.n", min: 1, max: 10000, step: 1 },
-  { key: "r_min_m", label: "Nearest radius (m)", path: "doc.field.fermat.r_min_m", min: 0 },
-  { key: "r_max_m", label: "Farthest radius (m)", path: "doc.field.fermat.r_max_m", min: 0 },
+  { key: "n", label: "Heliostats", path: "doc.field.fermat.n", min: 1, max: 10000, step: 1, tooltip: "How many heliostats the spiral places." },
+  {
+    key: "r_min_m",
+    label: "Nearest radius (m)",
+    path: "doc.field.fermat.r_min_m",
+    min: 0,
+    step: 0.01,
+    tooltip: "Radius from the tower axis where the spiral starts placing heliostats.",
+  },
+  {
+    key: "r_max_m",
+    label: "Farthest radius (m)",
+    path: "doc.field.fermat.r_max_m",
+    min: 0,
+    step: 0.01,
+    tooltip: "Radius from the tower axis where the spiral stops placing heliostats.",
+  },
 ];
 
 // Rings per band and heliostats per ring, one pair per band -- the field's
 // radii are not user-editable here (see api.js's radialStaggerPayload for
 // how an edited ring count reshapes them).
 export const FIELD_RADIAL_STAGGER_FIELDS = [
-  { key: "band0Rings", label: "Inner rings", path: "doc.field.radialStagger.band0Rings", min: 1, step: 1 },
+  {
+    key: "band0Rings",
+    label: "Inner rings",
+    path: "doc.field.radialStagger.band0Rings",
+    min: 1,
+    step: 1,
+    tooltip: "Number of concentric rings in the innermost band, closest to the tower.",
+  },
   {
     key: "band0Count",
     label: "Inner heliostats/ring",
     path: "doc.field.radialStagger.band0Count",
     min: 1,
     step: 1,
+    tooltip: "Heliostats staggered around each ring of the inner band.",
   },
-  { key: "band1Rings", label: "Middle rings", path: "doc.field.radialStagger.band1Rings", min: 1, step: 1 },
+  {
+    key: "band1Rings",
+    label: "Middle rings",
+    path: "doc.field.radialStagger.band1Rings",
+    min: 1,
+    step: 1,
+    tooltip: "Number of concentric rings in the middle band.",
+  },
   {
     key: "band1Count",
     label: "Middle heliostats/ring",
     path: "doc.field.radialStagger.band1Count",
     min: 1,
     step: 1,
+    tooltip: "Heliostats staggered around each ring of the middle band.",
   },
-  { key: "band2Rings", label: "Outer rings", path: "doc.field.radialStagger.band2Rings", min: 1, step: 1 },
+  {
+    key: "band2Rings",
+    label: "Outer rings",
+    path: "doc.field.radialStagger.band2Rings",
+    min: 1,
+    step: 1,
+    tooltip: "Number of concentric rings in the outermost band, farthest from the tower.",
+  },
   {
     key: "band2Count",
     label: "Outer heliostats/ring",
     path: "doc.field.radialStagger.band2Count",
     min: 1,
     step: 1,
+    tooltip: "Heliostats staggered around each ring of the outer band.",
   },
 ];
 
@@ -163,29 +232,52 @@ function opticsPath(key) {
 // when that absorbing surface is itself the flat window (v0.2 fix wave
 // item 1: they don't apply -- visibly -- to a cylinder/frustum receiver,
 // so they hide there; values are preserved and reappear under Flat).
+// Tooltips below are one-sentence restatements of this table's own labels
+// and the design comments that used to be the only place this prose lived
+// (docs/ui-spec-v0.2.md §G). Receiver/tower fields stay in mm throughout --
+// docs/ui-spec-v0.2.md §H confirms mirror/receiver *dimensions* are
+// fabrication numbers, unlike heliostat positions.
 export const RECEIVER_FIELD_TABLE = {
   prime_focus: [
-    { key: "focus_height_mm", label: "Focus height (mm)", path: opticsPath("focus_height_mm") },
+    {
+      key: "focus_height_mm",
+      label: "Focus height (mm)",
+      path: opticsPath("focus_height_mm"),
+      tooltip: "Height above the heliostat plane where the primary field focuses its beam.",
+    },
     {
       key: "window_half_u_mm",
       label: "Window ½ w (mm)",
       path: opticsPath("window_half_u_mm"),
       group: "flat",
+      tooltip: "Half-width of the flat entrance aperture the receiver looks through.",
     },
     {
       key: "window_half_v_mm",
       label: "Window ½ h (mm)",
       path: opticsPath("window_half_v_mm"),
       group: "flat",
+      tooltip: "Half-height of the flat entrance aperture the receiver looks through.",
     },
-    { key: "receiver_center_x_mm", label: "Receiver centre X (mm)", path: opticsPath("receiver_center_x_mm") },
-    { key: "receiver_center_y_mm", label: "Receiver centre Y (mm)", path: opticsPath("receiver_center_y_mm") },
+    {
+      key: "receiver_center_x_mm",
+      label: "Receiver centre X (mm)",
+      path: opticsPath("receiver_center_x_mm"),
+      tooltip: "East/west offset of the receiver's centre from the tower axis.",
+    },
+    {
+      key: "receiver_center_y_mm",
+      label: "Receiver centre Y (mm)",
+      path: opticsPath("receiver_center_y_mm"),
+      tooltip: "North/south offset of the receiver's centre from the tower axis.",
+    },
     {
       key: "aperture_to_receiver_mm",
       label: "Aperture → receiver (mm)",
       path: opticsPath("aperture_to_receiver_mm"),
       min: 0,
       group: "flat",
+      tooltip: "Distance from the flat entrance aperture back to the absorbing surface behind it.",
     },
     {
       key: "cylinder_radius_mm",
@@ -193,6 +285,7 @@ export const RECEIVER_FIELD_TABLE = {
       path: opticsPath("cylinder_radius_mm"),
       min: 1,
       group: "cylinder",
+      tooltip: "Radius of the cylindrical absorbing surface.",
     },
     {
       key: "cylinder_height_mm",
@@ -200,6 +293,7 @@ export const RECEIVER_FIELD_TABLE = {
       path: opticsPath("cylinder_height_mm"),
       min: 1,
       group: "cylinder",
+      tooltip: "Height of the cylindrical absorbing surface.",
     },
     {
       key: "frustum_top_radius_mm",
@@ -207,6 +301,7 @@ export const RECEIVER_FIELD_TABLE = {
       path: opticsPath("frustum_top_radius_mm"),
       min: 1,
       group: "frustum",
+      tooltip: "Radius at the top of the conical (frustum) absorbing surface.",
     },
     {
       key: "frustum_bottom_radius_mm",
@@ -214,6 +309,7 @@ export const RECEIVER_FIELD_TABLE = {
       path: opticsPath("frustum_bottom_radius_mm"),
       min: 1,
       group: "frustum",
+      tooltip: "Radius at the bottom of the conical (frustum) absorbing surface.",
     },
     {
       key: "frustum_height_mm",
@@ -221,15 +317,46 @@ export const RECEIVER_FIELD_TABLE = {
       path: opticsPath("frustum_height_mm"),
       min: 1,
       group: "frustum",
+      tooltip: "Height of the conical (frustum) absorbing surface.",
     },
   ],
   axicon: [
-    { key: "apex_height_mm", label: "Apex height (mm)", path: opticsPath("apex_height_mm") },
-    { key: "half_angle_deg", label: "Half angle (°)", path: opticsPath("half_angle_deg") },
-    { key: "aperture_radius_mm", label: "Aperture radius (mm)", path: opticsPath("aperture_radius_mm") },
-    { key: "receiver_z_mm", label: "Receiver height (mm)", path: opticsPath("receiver_z_mm") },
-    { key: "window_half_u_mm", label: "Window ½ w (mm)", path: opticsPath("window_half_u_mm") },
-    { key: "window_half_v_mm", label: "Window ½ h (mm)", path: opticsPath("window_half_v_mm") },
+    {
+      key: "apex_height_mm",
+      label: "Apex height (mm)",
+      path: opticsPath("apex_height_mm"),
+      tooltip: "Height above the heliostat plane of the axicon secondary's apex.",
+    },
+    {
+      key: "half_angle_deg",
+      label: "Half angle (°)",
+      path: opticsPath("half_angle_deg"),
+      tooltip: "Cone half-angle of the axicon secondary, measured from its axis.",
+    },
+    {
+      key: "aperture_radius_mm",
+      label: "Aperture radius (mm)",
+      path: opticsPath("aperture_radius_mm"),
+      tooltip: "Outer radius of the axicon secondary's reflecting surface.",
+    },
+    {
+      key: "receiver_z_mm",
+      label: "Receiver height (mm)",
+      path: opticsPath("receiver_z_mm"),
+      tooltip: "Height above the heliostat plane of the receiver behind the secondary.",
+    },
+    {
+      key: "window_half_u_mm",
+      label: "Window ½ w (mm)",
+      path: opticsPath("window_half_u_mm"),
+      tooltip: "Half-width of the receiver's flat entrance aperture.",
+    },
+    {
+      key: "window_half_v_mm",
+      label: "Window ½ h (mm)",
+      path: opticsPath("window_half_v_mm"),
+      tooltip: "Half-height of the receiver's flat entrance aperture.",
+    },
     // Spec §C: default 0.90, the value already in use, now a visible input
     // (docs/ui-spec-v0.2.md §K.3) instead of an assumed constant. A plain
     // 0-1 fraction, matching AxiconOptics.secondary_reflectance's own wire
@@ -242,15 +369,46 @@ export const RECEIVER_FIELD_TABLE = {
       min: 0,
       max: 1,
       step: 0.01,
+      tooltip: "Fraction of secondary-incident power the secondary itself reflects back out; absorbed heat is (1 − R) × incident.",
     },
   ],
   cassegrain: [
-    { key: "vertex_z_mm", label: "Secondary vertex height (mm)", path: opticsPath("vertex_z_mm") },
-    { key: "focus_height_mm", label: "Primary focus height (mm)", path: opticsPath("focus_height_mm") },
-    { key: "receiver_z_mm", label: "Receiver height (mm)", path: opticsPath("receiver_z_mm") },
-    { key: "aperture_radius_mm", label: "Aperture radius (mm)", path: opticsPath("aperture_radius_mm") },
-    { key: "window_half_u_mm", label: "Window ½ w (mm)", path: opticsPath("window_half_u_mm") },
-    { key: "window_half_v_mm", label: "Window ½ h (mm)", path: opticsPath("window_half_v_mm") },
+    {
+      key: "vertex_z_mm",
+      label: "Secondary vertex height (mm)",
+      path: opticsPath("vertex_z_mm"),
+      tooltip: "Height above the heliostat plane of the secondary mirror's vertex.",
+    },
+    {
+      key: "focus_height_mm",
+      label: "Primary focus height (mm)",
+      path: opticsPath("focus_height_mm"),
+      tooltip: "Height above the heliostat plane where the primary field would focus without the secondary.",
+    },
+    {
+      key: "receiver_z_mm",
+      label: "Receiver height (mm)",
+      path: opticsPath("receiver_z_mm"),
+      tooltip: "Height above the heliostat plane of the receiver behind the secondary.",
+    },
+    {
+      key: "aperture_radius_mm",
+      label: "Aperture radius (mm)",
+      path: opticsPath("aperture_radius_mm"),
+      tooltip: "Outer radius of the secondary mirror's reflecting surface.",
+    },
+    {
+      key: "window_half_u_mm",
+      label: "Window ½ w (mm)",
+      path: opticsPath("window_half_u_mm"),
+      tooltip: "Half-width of the receiver's flat entrance aperture.",
+    },
+    {
+      key: "window_half_v_mm",
+      label: "Window ½ h (mm)",
+      path: opticsPath("window_half_v_mm"),
+      tooltip: "Half-height of the receiver's flat entrance aperture.",
+    },
     // See axicon's identical field above -- CassegrainOptics.secondary_reflectance.
     {
       key: "secondary_reflectance",
@@ -259,6 +417,7 @@ export const RECEIVER_FIELD_TABLE = {
       min: 0,
       max: 1,
       step: 0.01,
+      tooltip: "Fraction of secondary-incident power the secondary itself reflects back out; absorbed heat is (1 − R) × incident.",
     },
   ],
 };
@@ -287,16 +446,64 @@ export function receiverFieldVisible(field, params) {
 // -- Sun stage ---------------------------------------------------------------
 
 export const SUN_FIELDS = [
-  { key: "az", label: "Azimuth (°)", path: "doc.sun.az", min: 0, max: 360, step: 0.1 },
-  { key: "el", label: "Elevation (°)", path: "doc.sun.el", min: -90, max: 90, step: 0.1 },
+  {
+    key: "az",
+    label: "Azimuth (°)",
+    path: "doc.sun.az",
+    min: 0,
+    max: 360,
+    step: 0.1,
+    tooltip: "Compass bearing the sun is at (0° = North, clockwise).",
+  },
+  {
+    key: "el",
+    label: "Elevation (°)",
+    path: "doc.sun.el",
+    min: -90,
+    max: 90,
+    step: 0.1,
+    tooltip: "Angle of the sun above the horizon.",
+  },
 ];
 
 // Where and when, which the server turns into an azimuth and an elevation.
 export const SUN_SITE_FIELDS = [
-  { key: "latitude_deg", label: "Latitude (°)", path: "doc.sun.site.latitude_deg", min: -90, max: 90, step: 0.0001 },
-  { key: "longitude_deg", label: "Longitude (°)", path: "doc.sun.site.longitude_deg", min: -180, max: 180, step: 0.0001 },
-  { key: "timezone_h", label: "UTC offset (h)", path: "doc.sun.site.timezone_h", min: -14, max: 14, step: 0.25 },
-  { key: "hour", label: "Local time (h)", path: "doc.sun.site.hour", min: 0, max: 23.99, step: 0.25 },
+  {
+    key: "latitude_deg",
+    label: "Latitude (°)",
+    path: "doc.sun.site.latitude_deg",
+    min: -90,
+    max: 90,
+    step: 0.0001,
+    tooltip: "Site latitude, used with date and time to solve the sun's azimuth and elevation.",
+  },
+  {
+    key: "longitude_deg",
+    label: "Longitude (°)",
+    path: "doc.sun.site.longitude_deg",
+    min: -180,
+    max: 180,
+    step: 0.0001,
+    tooltip: "Site longitude, used with date and time to solve the sun's azimuth and elevation.",
+  },
+  {
+    key: "timezone_h",
+    label: "UTC offset (h)",
+    path: "doc.sun.site.timezone_h",
+    min: -14,
+    max: 14,
+    step: 0.25,
+    tooltip: "Hours offset from UTC the site's local time and date are given in.",
+  },
+  {
+    key: "hour",
+    label: "Local time (h)",
+    path: "doc.sun.site.hour",
+    min: 0,
+    max: 23.99,
+    step: 0.25,
+    tooltip: "Local time of day the sun position is solved for.",
+  },
 ];
 
 // -- Aperture-radius miss warning ------------------------------------------

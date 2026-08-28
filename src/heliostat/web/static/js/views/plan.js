@@ -254,7 +254,7 @@ function ringsSvg(doc, proj, heliostats) {
       '" fill="none" stroke="rgba(110,130,150,0.35)" stroke-width="1" stroke-dasharray="3 5"></circle>';
     s +=
       '<text x="' + (proj.cx + r + 4).toFixed(1) + '" y="' + (proj.cy - 4).toFixed(1) +
-      '" font-size="10.5" fill="#64748b">' + rm + " m</text>";
+      '" font-size="10.5" fill="#64748b">' + rm.toFixed(2) + " m</text>";
   }
   return s;
 }
@@ -412,7 +412,7 @@ function selectionSvg(heliostats, ui, proj, w, h) {
     '<g transform="translate(' + cardX.toFixed(1) + ", " + cardY.toFixed(1) + ')">' +
     '<rect width="' + cardW + '" height="' + cardH + '" rx="6" fill="#ffffff" stroke="#d8dee5"></rect>' +
     '<text x="10" y="15" font-size="11" fill="#1f2933" font-weight="600">H-' + helio.id + "</text>" +
-    '<text x="10" y="28" font-size="10.5" fill="#64748b">x ' + xm.toFixed(1) + " m · y " + ym.toFixed(1) + " m · r " + rm.toFixed(1) + " m</text>" +
+    '<text x="10" y="28" font-size="10.5" fill="#64748b">x ' + xm.toFixed(2) + " m · y " + ym.toFixed(2) + " m · r " + rm.toFixed(2) + " m</text>" +
     '<g data-action="view-shape" data-id="' + helio.id + '" style="cursor:pointer">' +
     '<rect x="6" y="36" width="' + (cardW - 12) + '" height="16" rx="4" fill="#f2f7fd" stroke="#d8dee5"></rect>' +
     '<text x="' + (cardW / 2).toFixed(1) + '" y="47" font-size="10.5" fill="#345a80" text-anchor="middle" font-weight="600">View shape →</text>' +

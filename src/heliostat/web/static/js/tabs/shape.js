@@ -38,12 +38,38 @@ import {
 // Optical errors are only edited from this tab, so they don't need a home
 // in fields.js's shared descriptor tables the way the sidebar-shared ones
 // do.
+// docs/ui-spec-v0.2.md §G: the optical-error glossary wording is signed off
+// verbatim -- these three tooltips must not be reworded.
 const ERROR_FIELDS = [
-  { key: "slope_error_mrad", label: "Slope error (mrad)", path: "doc.design.errors.slope_error_mrad", min: 0, step: 0.1 },
-  { key: "specularity_mrad", label: "Specularity (mrad)", path: "doc.design.errors.specularity_mrad", min: 0, step: 0.1 },
+  {
+    key: "slope_error_mrad",
+    label: "Slope error (mrad)",
+    path: "doc.design.errors.slope_error_mrad",
+    min: 0,
+    step: 0.1,
+    tooltip:
+      "Large-scale waviness of the mirror surface: the local surface normal deviates from the design surface by this RMS angle. Broadens the beam (doubled on reflection). Not pointing error (that's the tracker, §F) and not canting error (that's facet aiming).",
+  },
+  {
+    key: "specularity_mrad",
+    label: "Specularity (mrad)",
+    path: "doc.design.errors.specularity_mrad",
+    min: 0,
+    step: 0.1,
+    tooltip:
+      "Micro-scale roughness: scatter of the reflected ray about the ideal specular direction, RMS, isotropic about the reflected beam. The 'polish' term — independent of shape, canting, and tracking.",
+  },
   // The server takes reflectance as a fraction greater than zero: a mirror
   // that reflects nothing is not a mirror, and 0 % would 422 every trace.
-  { key: "reflectance_pct", label: "Reflectance (%)", path: "doc.design.errors.reflectance_pct", min: 0.1, max: 100, step: 0.5 },
+  {
+    key: "reflectance_pct",
+    label: "Reflectance (%)",
+    path: "doc.design.errors.reflectance_pct",
+    min: 0.1,
+    max: 100,
+    step: 0.5,
+    tooltip: "Fraction of incident sunlight the mirror reflects; scales collected power directly.",
+  },
 ];
 
 // cant_focal_mm is aim only: null = per-heliostat slant range, 0 =
@@ -53,6 +79,7 @@ const CANT_FOCAL_FIELD = {
   label: "Field-wide focal (mm)",
   path: "doc.designParams.grid.cant_focal_mm",
   min: 1,
+  tooltip: "The one shared aim distance every heliostat's facets are canted to, instead of each aiming at its own slant range.",
 };
 
 // facet_focal_mm is the facet's own curvature, independent of aim: null =
@@ -62,6 +89,7 @@ const FACET_FOCAL_FIELD = {
   label: "Facet focal (mm)",
   path: "doc.designParams.grid.facet_focal_mm",
   min: 1,
+  tooltip: "The facet's own surface curvature, independent of where it's aimed.",
 };
 
 // -- module state ---------------------------------------------------------
@@ -615,16 +643,27 @@ function build(container) {
   const surfaceSeg = document.createElement("div");
   surfaceSeg.className = "seg";
   const surfaceBtns = {};
+  const SURFACE_TOOLTIPS = {
+    twisting: "Re-solves each facet's figure as the sun moves, so it stays perfectly focused at every instant.",
+    spherical: "Freezes one figure — a long focal gives a weakly focusing, not-quite-flat facet that no longer re-solves with the sun.",
+    flat: "No curvature by default — a true flat panel, though a facet grid can still be given a gentle fixed curvature.",
+  };
   for (const [key, label] of HELIOSTAT_SURFACE_OPTIONS) {
-    surfaceBtns[key] = segButton(surfaceSeg, label, key === "twisting", () => {
-      store.set("doc.design.surface", key);
-      if (key === "twisting") {
-        if (store.get("doc.designParams.grid.cant_focal_mm") !== null) store.set("doc.designParams.grid.cant_focal_mm", null);
-        if (store.get("doc.designParams.grid.facet_focal_mm") !== null) store.set("doc.designParams.grid.facet_focal_mm", null);
-      } else if (key === "flat" && store.get("doc.designParams.grid.facet_focal_mm") === null) {
-        store.set("doc.designParams.grid.facet_focal_mm", 0);
-      }
-    });
+    surfaceBtns[key] = segButton(
+      surfaceSeg,
+      label,
+      key === "twisting",
+      () => {
+        store.set("doc.design.surface", key);
+        if (key === "twisting") {
+          if (store.get("doc.designParams.grid.cant_focal_mm") !== null) store.set("doc.designParams.grid.cant_focal_mm", null);
+          if (store.get("doc.designParams.grid.facet_focal_mm") !== null) store.set("doc.designParams.grid.facet_focal_mm", null);
+        } else if (key === "flat" && store.get("doc.designParams.grid.facet_focal_mm") === null) {
+          store.set("doc.designParams.grid.facet_focal_mm", 0);
+        }
+      },
+      SURFACE_TOOLTIPS[key]
+    );
   }
   controls.appendChild(surfaceSeg);
   const surfaceHint = document.createElement("div");
@@ -648,19 +687,37 @@ function build(container) {
   const curvSeg = document.createElement("div");
   curvSeg.className = "seg";
   const curvBtns = {
-    off: segButton(curvSeg, "No curvature", false, () => {
-      if (curvDisabledNow()) return;
-      store.set("doc.designParams.grid.facet_focal_mm", 0);
-    }),
-    auto: segButton(curvSeg, "Follow canting", false, () => {
-      if (curvDisabledNow()) return;
-      store.set("doc.designParams.grid.facet_focal_mm", null);
-    }),
-    focal: segButton(curvSeg, "Fixed focal…", false, () => {
-      if (curvDisabledNow()) return;
-      const cur = store.get("doc.designParams.grid.facet_focal_mm");
-      if (!(cur > 0)) store.set("doc.designParams.grid.facet_focal_mm", 60000);
-    }),
+    off: segButton(
+      curvSeg,
+      "No curvature",
+      false,
+      () => {
+        if (curvDisabledNow()) return;
+        store.set("doc.designParams.grid.facet_focal_mm", 0);
+      },
+      "Facets are flat panels — no curvature of their own."
+    ),
+    auto: segButton(
+      curvSeg,
+      "Follow canting",
+      false,
+      () => {
+        if (curvDisabledNow()) return;
+        store.set("doc.designParams.grid.facet_focal_mm", null);
+      },
+      "Each facet curves to match its own canting distance, so it focuses exactly where it's aimed."
+    ),
+    focal: segButton(
+      curvSeg,
+      "Fixed focal…",
+      false,
+      () => {
+        if (curvDisabledNow()) return;
+        const cur = store.get("doc.designParams.grid.facet_focal_mm");
+        if (!(cur > 0)) store.set("doc.designParams.grid.facet_focal_mm", 60000);
+      },
+      "One curvature for every facet in the field, independent of where each one is aimed."
+    ),
   };
   controls.appendChild(curvSeg);
   const curvWeakRow = document.createElement("div");
@@ -702,19 +759,37 @@ function build(container) {
     return doc.design.type !== "grid" || doc.design.surface === "twisting";
   }
   const cantBtns = {
-    off: segButton(cantSeg, "Off", false, () => {
-      if (cantDisabledNow()) return;
-      store.set("doc.designParams.grid.cant_focal_mm", 0);
-    }),
-    auto: segButton(cantSeg, "Per heliostat", false, () => {
-      if (cantDisabledNow()) return;
-      store.set("doc.designParams.grid.cant_focal_mm", null);
-    }),
-    focal: segButton(cantSeg, "Fixed focal…", false, () => {
-      if (cantDisabledNow()) return;
-      const cur = store.get("doc.designParams.grid.cant_focal_mm");
-      if (!(cur > 0)) store.set("doc.designParams.grid.cant_focal_mm", 60000);
-    }),
+    off: segButton(
+      cantSeg,
+      "Off",
+      false,
+      () => {
+        if (cantDisabledNow()) return;
+        store.set("doc.designParams.grid.cant_focal_mm", 0);
+      },
+      "Facets stay parallel — the mirror acts as one flat panel, so each facet sends its own separate spot."
+    ),
+    auto: segButton(
+      cantSeg,
+      "Per heliostat",
+      false,
+      () => {
+        if (cantDisabledNow()) return;
+        store.set("doc.designParams.grid.cant_focal_mm", null);
+      },
+      "Each heliostat aims its facets at its own distance to the aim point, so every field position is individually optimal."
+    ),
+    focal: segButton(
+      cantSeg,
+      "Fixed focal…",
+      false,
+      () => {
+        if (cantDisabledNow()) return;
+        const cur = store.get("doc.designParams.grid.cant_focal_mm");
+        if (!(cur > 0)) store.set("doc.designParams.grid.cant_focal_mm", 60000);
+      },
+      "One aim distance for the whole field — every heliostat points its facets the same way, the buildable case at the cost of performance away from that range."
+    ),
   };
   controls.appendChild(cantSeg);
   const cantFocalRow = document.createElement("div");

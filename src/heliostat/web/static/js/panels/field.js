@@ -11,6 +11,7 @@ import {
   numberRow,
   setVal,
   segButton,
+  metersFromMm,
   FIELD_SINGLE_FIELDS,
   FIELD_FERMAT_FIELDS,
   FIELD_RADIAL_STAGGER_FIELDS,
@@ -134,8 +135,8 @@ export function render(container) {
   els.singleFields.style.display = mode === "single" ? "" : "none";
   els.fieldFields.style.display = mode === "field" ? "" : "none";
 
-  setVal(els.singleX, doc.field.single.x_mm);
-  setVal(els.singleY, doc.field.single.y_mm);
+  setVal(els.singleX, metersFromMm(doc.field.single.x_mm));
+  setVal(els.singleY, metersFromMm(doc.field.single.y_mm));
 
   const layout =
     doc.field.layout === "fermat" ? "fermat" : "radial_stagger";

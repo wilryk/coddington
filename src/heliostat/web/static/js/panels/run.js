@@ -10,6 +10,17 @@ const FIDELITY = [
   ["monte_carlo", "Monte Carlo"],
 ];
 
+// docs/ui-spec-v0.2.md §A: one-line purpose subtitle plus what each mode
+// trades away, verbatim from the signed-off table.
+const FIDELITY_TOOLTIPS = {
+  ultra_fast:
+    "Field design optimization — explore layouts and geometry quickly. Trades away exact shadowing/blocking during sweeps (interpolated between anchors) and a small map-detail residual.",
+  fast_accurate:
+    "Compare a selected few options with confidence. Deterministic and noise-free, at roughly twice Ultra fast's cost.",
+  monte_carlo:
+    "Model the final design with precision, including all error sources. Noise falls as 1/√rays; the only mode that applies measured error maps and pointing error per ray.",
+};
+
 let built = false;
 let els = {};
 
@@ -64,6 +75,7 @@ function build(container, actions) {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.textContent = label;
+    btn.title = FIDELITY_TOOLTIPS[key];
     btn.addEventListener("click", () => store.set("ui.fidelity", key));
     seg.appendChild(btn);
     fidelityBtns[key] = btn;
@@ -82,6 +94,7 @@ function build(container, actions) {
   raysInput.style.width = "84px";
   raysInput.placeholder = "120000";
   raysInput.min = "100";
+  raysRow.title = "Number of Monte Carlo rays traced -- more rays reduce noise (falls as 1/√rays) at the cost of trace time.";
   raysInput.addEventListener("input", () => {
     const v = parseInt(raysInput.value, 10);
     store.set("ui.mcRays", Number.isFinite(v) && v > 0 ? v : null);

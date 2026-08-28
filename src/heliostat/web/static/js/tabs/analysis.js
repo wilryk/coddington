@@ -55,6 +55,19 @@ const FIDELITY = [
   ["monte_carlo", "Monte Carlo"],
 ];
 
+// docs/ui-spec-v0.2.md §A: one-line purpose subtitle plus what each mode
+// trades away, verbatim from the signed-off table -- same wording as
+// panels/run.js's own FIDELITY_TOOLTIPS (the workspace run bar and this
+// tab are the same fidelity setting seen from two screens).
+const FIDELITY_TOOLTIPS = {
+  ultra_fast:
+    "Field design optimization — explore layouts and geometry quickly. Trades away exact shadowing/blocking during sweeps (interpolated between anchors) and a small map-detail residual.",
+  fast_accurate:
+    "Compare a selected few options with confidence. Deterministic and noise-free, at roughly twice Ultra fast's cost.",
+  monte_carlo:
+    "Model the final design with precision, including all error sources. Noise falls as 1/√rays; the only mode that applies measured error maps and pointing error per ray.",
+};
+
 const DEFAULT_DATE = "2026-03-21"; // the server's own DaySite default
 const DEFAULT_HOUR_STEP = 0.5;
 const DEFAULT_MIN_ELEVATION_DEG = 5.0; // the server's own DayTraceRequest/YearTraceRequest default
@@ -1955,6 +1968,7 @@ function build(container) {
   const dateInput = document.createElement("input");
   dateInput.type = "date";
   dateInput.className = "val";
+  dateField.title = "The day this sweep steps through, sunrise to sunset.";
   dateInput.addEventListener("input", () => {
     formDate = dateInput.value;
   });
@@ -1971,6 +1985,7 @@ function build(container) {
   stepInput.min = "0.1";
   stepInput.max = "6";
   stepInput.step = "0.1";
+  stepField.title = "Maximum spacing between sampled timesteps -- sunrise and sunset are always sampled, in between the sun divides evenly into steps no larger than this.";
   stepInput.addEventListener("input", () => {
     const v = parseFloat(stepInput.value);
     if (Number.isFinite(v) && v > 0) formHourStep = v;
@@ -2011,9 +2026,15 @@ function build(container) {
   // One fidelity for the whole app: this and the workspace run bar are the
   // same setting seen from two screens.
   for (const [key, label] of FIDELITY) {
-    fidelityBtns[key] = segButton(fidelitySeg, label, key === store.get("ui.fidelity"), () => {
-      store.set("ui.fidelity", key);
-    });
+    fidelityBtns[key] = segButton(
+      fidelitySeg,
+      label,
+      key === store.get("ui.fidelity"),
+      () => {
+        store.set("ui.fidelity", key);
+      },
+      FIDELITY_TOOLTIPS[key]
+    );
   }
 
   const startBtn = document.createElement("div");
@@ -2179,14 +2200,26 @@ function build(container) {
   const yearFastSeg = document.createElement("div");
   yearFastSeg.className = "seg";
   yearFastSeg.style.marginBottom = "0";
-  const yearFastBtn = segButton(yearFastSeg, "Fast (7 traced)", yearFastMode, () => {
-    yearFastMode = true;
-    paintIfVisible();
-  });
-  const yearAllBtn = segButton(yearFastSeg, "All 12 traced", !yearFastMode, () => {
-    yearFastMode = false;
-    paintIfVisible();
-  });
+  const yearFastBtn = segButton(
+    yearFastSeg,
+    "Fast (7 traced)",
+    yearFastMode,
+    () => {
+      yearFastMode = true;
+      paintIfVisible();
+    },
+    "Traces 7 representative days and fills the rest of the year by symmetry -- faster, at the cost of some accuracy on days far from those samples."
+  );
+  const yearAllBtn = segButton(
+    yearFastSeg,
+    "All 12 traced",
+    !yearFastMode,
+    () => {
+      yearFastMode = false;
+      paintIfVisible();
+    },
+    "Traces all 12 sample days directly -- slower, no symmetry fill-in."
+  );
   const yearStartBtn = document.createElement("div");
   yearStartBtn.className = "btn primary";
   yearStartBtn.textContent = "Trace year estimate";
