@@ -26,6 +26,20 @@
 import { store } from "../store.js";
 import { setVal, segButton } from "../fields.js";
 import {
+  receiverKindFor,
+  apertureReceiverIsFlat,
+  apertureDefaultCenter,
+  apertureDefaultRadiusMm,
+  clampToGridAxis,
+  apertureMetrics,
+  apertureCurve,
+  apertureDataToCanvas,
+  apertureCanvasToData,
+  paintApertureCanvas,
+  paintApertureCurve,
+  apertureCanvasEventPoint,
+} from "../aperture.js";
+import {
   buildDayRequest,
   buildFluxCsvRequest,
   buildTraceRequest,
@@ -125,6 +139,17 @@ let fluxPeakKwM2 = null;
 // Absent (null) for a reopened saved run's flux_pngs, which carry no
 // secondary data either way -- see scheduleFluxFetch's own comment there.
 let fluxSecondary = null;
+// v0.2 followups item 1, mockup M15: this step's own per-heliostat rows
+// (id/x_mm/y_mm/power_w/...), when there are any -- ONLY ever set from a
+// live on-demand re-trace of this step (the scheduleFluxFetch branch below
+// that calls postFieldTrace, whose response carries its own `heliostats`
+// array; app.py's field-trace endpoints). A step served from the sweep's
+// own STORED map (fluxSrcUrl, the common case) never had a live field-trace
+// response land for it -- has_flux_map only kept the PNG/CSV/grid blobs, not
+// a per-heliostat breakdown -- so this stays null there, same honest gap a
+// reopened saved run's flux_pngs already lives with. Field stays disabled
+// with a tooltip in both of those cases (paintFluxSurfaceSelector).
+let fluxHeliostats = null;
 let fluxLoading = false;
 let fluxError = null;
 let fluxTimer = null;
@@ -624,6 +649,7 @@ function clearFlux() {
   fluxPngBase64 = null;
   fluxSrcUrl = null;
   fluxPeakKwM2 = null;
+  fluxHeliostats = null;
   fluxLoading = false;
   fluxError = null;
 }
@@ -744,6 +770,7 @@ function scheduleFluxFetch() {
     fluxSrcUrl = null;
     fluxPeakKwM2 = null;
     fluxSecondary = null;
+    fluxHeliostats = null;
     storedSecondaryLoading = false;
     fluxError = null;
     fluxLoading = false;
@@ -761,6 +788,7 @@ function scheduleFluxFetch() {
     fluxSrcUrl = null;
     fluxPeakKwM2 = null;
     fluxSecondary = null;
+    fluxHeliostats = null;
     storedSecondaryLoading = false;
     fluxError = png ? null : "This saved run kept no irradiance map for that timestep.";
     fluxLoading = false;
@@ -773,6 +801,10 @@ function scheduleFluxFetch() {
     fluxPngBase64 = null;
     fluxSrcUrl = dayFluxUrl(resultJobId, selectedStepIndex);
     fluxPeakKwM2 = null; // the row's own peak_flux_kw_m2 covers the caption
+    // A stored step's own blobs are the PNG/CSV/grid saved during the sweep
+    // itself -- no live field-trace response ever landed for it, so there is
+    // no per-heliostat breakdown to show (see fluxHeliostats's own comment).
+    fluxHeliostats = null;
     fluxError = null;
     fluxLoading = false;
     // Spec §C's stored-step gap, closed: day_start now stores this step's
@@ -824,6 +856,7 @@ function scheduleFluxFetch() {
     fluxPngBase64 = cached.png;
     fluxPeakKwM2 = cached.peak;
     fluxSecondary = cached.secondary || null;
+    fluxHeliostats = cached.heliostats || null;
     fluxError = null;
     fluxLoading = false;
     paintIfVisible();
@@ -850,9 +883,19 @@ function scheduleFluxFetch() {
         // map (axicon/Cassegrain), null otherwise (app.py's
         // _secondary_maps_from_result).
         fluxSecondary = data.secondary || null;
+        // v0.2 followups item 1: this on-demand branch is a real field trace
+        // (or a single-heliostat one -- postTrace responses carry no
+        // `heliostats` key at all, so this is naturally null there too,
+        // same honest "single heliostat" disabled state as the overlay's).
+        fluxHeliostats = Array.isArray(data.heliostats) ? data.heliostats : null;
         fluxError = fluxPngBase64 ? null : "No flux map came back for this timestep.";
         if (fluxPngBase64) {
-          fluxCache.set(cacheKey, { png: fluxPngBase64, peak: fluxPeakKwM2, secondary: fluxSecondary });
+          fluxCache.set(cacheKey, {
+            png: fluxPngBase64,
+            peak: fluxPeakKwM2,
+            secondary: fluxSecondary,
+            heliostats: fluxHeliostats,
+          });
         }
         paintIfVisible();
       })
@@ -1548,20 +1591,8 @@ function deleteManageEntry(name) {
 // dayResult/sweepRequest/jobSnapshot -- the trace, intercept and collected
 // totals a sweep already produced can never change because a circle moved.
 
-// §M.4 explicitly scopes the aperture to flat receivers first ("curved
-// later if wanted") -- a frustum's bin area varies with position
-// (FrustumReceiver.bin_areas_m2 in geometry/receiver.py), which the
-// uniform-bin-area math below does not account for.
-function receiverKindFor(doc) {
-  if (doc.optics === "prime_focus") {
-    return (doc.opticsParams.prime_focus || {}).receiver_type || "flat";
-  }
-  return "flat"; // axicon/cassegrain always target a flat receiver window
-}
-
-function apertureReceiverIsFlat(doc) {
-  return receiverKindFor(doc) === "flat";
-}
+// receiverKindFor/apertureReceiverIsFlat now live in ../aperture.js (v0.2
+// followups item 3 -- shared with panels/run.js's own dock aperture).
 
 // Compass rider (§M): flat window u = world x (east), v = world y (north) --
 // FlatWindowReceiver.uv_extent (geometry/receiver.py) is plain (x, y), no
@@ -1577,25 +1608,7 @@ function compassCaptionFor(doc) {
   return "Compass (u-axis): S at center → E → N at the right edge · S at center → W → N at the left edge (seam)";
 }
 
-function apertureDefaultCenter(grid, step) {
-  if (step && Array.isArray(step.centroid_mm) && step.centroid_mm.length === 2) {
-    return { u: step.centroid_mm[0], v: step.centroid_mm[1] };
-  }
-  return { u: (grid.u_min_mm + grid.u_max_mm) / 2, v: (grid.v_min_mm + grid.v_max_mm) / 2 };
-}
-
-function apertureDefaultRadiusMm(grid, step) {
-  const halfU = Math.abs(grid.u_max_mm - grid.u_min_mm) / 2;
-  const halfV = Math.abs(grid.v_max_mm - grid.v_min_mm) / 2;
-  const cap = 0.9 * Math.min(halfU, halfV);
-  // A couple of RMS spot radii is a common, physically-motivated "captures
-  // most of a roughly Gaussian-like spot" default -- step.rms_radius_mm is
-  // already computed and stored (heliostat.web.app's _cone_metrics), so
-  // this reads it rather than guessing a bare fraction of the grid.
-  const rms = step && Number.isFinite(step.rms_radius_mm) ? step.rms_radius_mm : null;
-  const guess = rms != null ? 2.0 * rms : cap * 0.4;
-  return Math.max(1.0, Math.min(guess, cap));
-}
+// apertureDefaultCenter/apertureDefaultRadiusMm now live in ../aperture.js.
 
 function currentApertureCenterMm(grid, step) {
   if (apertureCenterUMm != null && apertureCenterVMm != null) {
@@ -1609,58 +1622,7 @@ function currentApertureRadiusMm(grid, step) {
   return apertureDefaultRadiusMm(grid, step);
 }
 
-function clampToGridAxis(grid, value, axis) {
-  const lo = axis === "u" ? grid.u_min_mm : grid.v_min_mm;
-  const hi = axis === "u" ? grid.u_max_mm : grid.v_max_mm;
-  return Math.max(lo, Math.min(hi, value));
-}
-
-// grid.values are §M.3's own kW/m^2 convention (heliostat.web.app's
-// _flux_grid_payload, row-major, row 0 = v_min_mm -- the bottom of the map,
-// same as _render_flux_png's origin="lower") -- scaled back to W/m^2 here
-// so power comes out in watts. A bin counts as "inside" when its CENTER
-// lies within radiusMm of the aperture center (the standard encircled-power
-// discretization); average flux divides by the aperture's own ideal
-// circular area (pi * r^2), not the discretized sum of included bin areas,
-// matching mockup M17's own worked example.
-function apertureMetrics(grid, centerUMm, centerVMm, radiusMm) {
-  const nU = grid.n_u;
-  const nV = grid.n_v;
-  const duMm = (grid.u_max_mm - grid.u_min_mm) / nU;
-  const dvMm = (grid.v_max_mm - grid.v_min_mm) / nV;
-  const binAreaM2 = (duMm / 1000) * (dvMm / 1000);
-  const r2 = radiusMm * radiusMm;
-  let powerW = 0;
-  for (let row = 0; row < nV; row++) {
-    const vMid = grid.v_min_mm + (row + 0.5) * dvMm;
-    const dv = vMid - centerVMm;
-    const dv2 = dv * dv;
-    if (dv2 > r2) continue; // whole row is out of range -- skip its n_u work
-    const rowBase = row * nU;
-    for (let col = 0; col < nU; col++) {
-      const uMid = grid.u_min_mm + (col + 0.5) * duMm;
-      const du = uMid - centerUMm;
-      if (du * du + dv2 > r2) continue;
-      const kwM2 = grid.values[rowBase + col];
-      if (kwM2 != null) powerW += kwM2 * 1000 * binAreaM2;
-    }
-  }
-  const radiusM = radiusMm / 1000;
-  const areaM2 = Math.PI * radiusM * radiusM;
-  const avgFluxWM2 = areaM2 > 0 ? powerW / areaM2 : 0;
-  return { powerW, avgFluxWM2 };
-}
-
-// Power vs. radius, mockup M17's encircled-power curve -- nSamples evenly
-// spaced radii from 0 to maxRadiusMm.
-function apertureCurve(grid, centerUMm, centerVMm, maxRadiusMm, nSamples) {
-  const pts = [];
-  for (let i = 0; i <= nSamples; i++) {
-    const r = (maxRadiusMm * i) / nSamples;
-    pts.push({ r, powerW: apertureMetrics(grid, centerUMm, centerVMm, r).powerW });
-  }
-  return pts;
-}
+// clampToGridAxis/apertureMetrics/apertureCurve now live in ../aperture.js.
 
 function buildApertureSnapshotForSave() {
   // Resaving an already-reopened (frozen) run keeps its own annotation
@@ -1697,186 +1659,14 @@ function buildApertureSnapshotForSave() {
 // painted directly from the fetched grid, at a uniform mm-per-pixel scale
 // in both axes (sizeApertureCanvas) so a physical-radius circle is a true
 // circle on screen, not an ellipse.
-const APERTURE_MAGMA_STOPS = [
-  [0.0, 0, 0, 4],
-  [0.2, 59, 15, 112],
-  [0.4, 140, 41, 129],
-  [0.6, 222, 73, 104],
-  [0.8, 254, 159, 109],
-  [1.0, 252, 253, 191],
-];
-
-function magmaColor(t) {
-  const c = Math.max(0, Math.min(1, t));
-  for (let i = 1; i < APERTURE_MAGMA_STOPS.length; i++) {
-    const [t0, r0, g0, b0] = APERTURE_MAGMA_STOPS[i - 1];
-    const [t1, r1, g1, b1] = APERTURE_MAGMA_STOPS[i];
-    if (c <= t1 || i === APERTURE_MAGMA_STOPS.length - 1) {
-      const f = t1 > t0 ? (c - t0) / (t1 - t0) : 0;
-      const r = Math.round(r0 + (r1 - r0) * f);
-      const g = Math.round(g0 + (g1 - g0) * f);
-      const b = Math.round(b0 + (b1 - b0) * f);
-      return `rgb(${r},${g},${b})`;
-    }
-  }
-  return "rgb(0,0,4)";
-}
-
-function sizeApertureCanvas(canvas, grid, targetWidth) {
-  const uExtent = Math.max(1e-6, grid.u_max_mm - grid.u_min_mm);
-  const vExtent = Math.max(1e-6, grid.v_max_mm - grid.v_min_mm);
-  const pxPerMm = targetWidth / uExtent;
-  canvas.width = Math.round(targetWidth);
-  canvas.height = Math.max(60, Math.round(vExtent * pxPerMm));
-  return pxPerMm;
-}
-
-function apertureDataToCanvas(grid, canvas, uMm, vMm) {
-  const x = ((uMm - grid.u_min_mm) / (grid.u_max_mm - grid.u_min_mm)) * canvas.width;
-  // v (north/up in the data) grows upward; canvas y grows downward -- flip,
-  // matching _render_flux_png's own origin="lower".
-  const y = (1 - (vMm - grid.v_min_mm) / (grid.v_max_mm - grid.v_min_mm)) * canvas.height;
-  return [x, y];
-}
-
-function apertureCanvasToData(grid, canvas, x, y) {
-  const uMm = grid.u_min_mm + (x / canvas.width) * (grid.u_max_mm - grid.u_min_mm);
-  const vMm = grid.v_min_mm + (1 - y / canvas.height) * (grid.v_max_mm - grid.v_min_mm);
-  return [uMm, vMm];
-}
-
-function paintApertureCanvas(canvas, grid, centerUMm, centerVMm, radiusMm) {
-  const pxPerMm = sizeApertureCanvas(canvas, grid, 380);
-  const ctx2d = canvas.getContext("2d");
-  const nU = grid.n_u;
-  const nV = grid.n_v;
-  const cellW = canvas.width / nU;
-  const cellH = canvas.height / nV;
-  let maxKw = 0;
-  for (const v of grid.values) if (v != null && v > maxKw) maxKw = v;
-  for (let row = 0; row < nV; row++) {
-    // canvas row 0 is the TOP of the picture; grid row 0 is v_min_mm (the
-    // bottom of the map) -- flip so the picture reads right-side up.
-    const canvasRow = nV - 1 - row;
-    const rowBase = row * nU;
-    for (let col = 0; col < nU; col++) {
-      const kw = grid.values[rowBase + col];
-      const t = maxKw > 0 && kw != null ? kw / maxKw : 0;
-      ctx2d.fillStyle = magmaColor(t);
-      ctx2d.fillRect(col * cellW, canvasRow * cellH, cellW + 0.5, cellH + 0.5);
-    }
-  }
-
-  const [cx, cy] = apertureDataToCanvas(grid, canvas, centerUMm, centerVMm);
-  const rPx = radiusMm * pxPerMm;
-  ctx2d.save();
-  ctx2d.setLineDash([6, 4]);
-  ctx2d.lineWidth = 2;
-  ctx2d.strokeStyle = "#ffffff";
-  ctx2d.beginPath();
-  ctx2d.arc(cx, cy, rPx, 0, Math.PI * 2);
-  ctx2d.stroke();
-  ctx2d.lineWidth = 1;
-  ctx2d.strokeStyle = "#0b5fd0";
-  ctx2d.stroke();
-  ctx2d.restore();
-
-  // Resize handle: a small square at the circle's east edge (mockup M17).
-  const hx = cx + rPx;
-  ctx2d.fillStyle = "#ffffff";
-  ctx2d.strokeStyle = "#0b5fd0";
-  ctx2d.lineWidth = 1.3;
-  ctx2d.fillRect(hx - 5, cy - 5, 10, 10);
-  ctx2d.strokeRect(hx - 5, cy - 5, 10, 10);
-
-  // Compass rider (§M) -- the aperture is scoped to flat receivers (see
-  // apertureReceiverIsFlat), so this canvas only ever needs the flat-window
-  // convention: u = east/west, v = north/south, no rotation.
-  ctx2d.fillStyle = "rgba(255,255,255,0.85)";
-  ctx2d.font = "10px sans-serif";
-  ctx2d.textAlign = "center";
-  ctx2d.fillText("N", canvas.width / 2, 12);
-  ctx2d.fillText("S", canvas.width / 2, canvas.height - 5);
-  ctx2d.textAlign = "left";
-  ctx2d.fillText("W", 4, canvas.height / 2 + 3);
-  ctx2d.textAlign = "right";
-  ctx2d.fillText("E", canvas.width - 4, canvas.height / 2 + 3);
-}
-
-function paintApertureCurve(canvas, curve, currentRadiusMm, currentPowerW) {
-  canvas.width = 380;
-  canvas.height = 160;
-  const ctx2d = canvas.getContext("2d");
-  ctx2d.clearRect(0, 0, canvas.width, canvas.height);
-  const padL = 46;
-  const padR = 10;
-  const padT = 12;
-  const padB = 22;
-  const plotW = canvas.width - padL - padR;
-  const plotH = canvas.height - padT - padB;
-  const maxR = curve.length ? curve[curve.length - 1].r : 1;
-  let maxP = 1e-9;
-  for (const p of curve) if (p.powerW > maxP) maxP = p.powerW;
-  const xOf = (r) => padL + (r / maxR) * plotW;
-  const yOf = (p) => padT + plotH - (p / maxP) * plotH;
-
-  ctx2d.strokeStyle = "#c7cdd6";
-  ctx2d.lineWidth = 1;
-  ctx2d.beginPath();
-  ctx2d.moveTo(padL, padT + plotH);
-  ctx2d.lineTo(padL + plotW, padT + plotH);
-  ctx2d.moveTo(padL, padT);
-  ctx2d.lineTo(padL, padT + plotH);
-  ctx2d.stroke();
-
-  ctx2d.strokeStyle = "#45739e";
-  ctx2d.lineWidth = 2;
-  ctx2d.beginPath();
-  curve.forEach((p, i) => {
-    const x = xOf(p.r);
-    const y = yOf(p.powerW);
-    if (i === 0) ctx2d.moveTo(x, y);
-    else ctx2d.lineTo(x, y);
-  });
-  ctx2d.stroke();
-
-  const markX = xOf(currentRadiusMm);
-  const markY = yOf(currentPowerW);
-  ctx2d.setLineDash([4, 4]);
-  ctx2d.strokeStyle = "#0b5fd0";
-  ctx2d.lineWidth = 1;
-  ctx2d.beginPath();
-  ctx2d.moveTo(markX, padT + plotH);
-  ctx2d.lineTo(markX, markY);
-  ctx2d.lineTo(padL, markY);
-  ctx2d.stroke();
-  ctx2d.setLineDash([]);
-  ctx2d.fillStyle = "#0b5fd0";
-  ctx2d.beginPath();
-  ctx2d.arc(markX, markY, 3.5, 0, Math.PI * 2);
-  ctx2d.fill();
-
-  ctx2d.fillStyle = "#64748b";
-  ctx2d.font = "9.5px sans-serif";
-  ctx2d.textAlign = "left";
-  ctx2d.fillText("0", padL - 4, padT + plotH + 14);
-  ctx2d.textAlign = "right";
-  ctx2d.fillText((maxR / 1000).toFixed(1) + " m", padL + plotW, padT + plotH + 14);
-  ctx2d.textAlign = "left";
-  ctx2d.fillText(fmtPower(maxP), 2, padT + 8);
-}
+// APERTURE_MAGMA_STOPS/magmaColor/sizeApertureCanvas/apertureDataToCanvas/
+// apertureCanvasToData/paintApertureCanvas/paintApertureCurve/
+// apertureCanvasEventPoint now live in ../aperture.js.
 
 // Pointer-drag handling for the aperture canvas: click near the resize
 // handle to change the radius, click anywhere else inside the circle to
 // move it, click outside it to do nothing (no "click to place" -- the
 // circle always has a defined default position).
-function apertureCanvasEventPoint(canvas, e) {
-  const rect = canvas.getBoundingClientRect();
-  const scaleX = canvas.width / rect.width;
-  const scaleY = canvas.height / rect.height;
-  return [(e.clientX - rect.left) * scaleX, (e.clientY - rect.top) * scaleY];
-}
-
 function apertureHandlePointerDown(e) {
   if (!apertureGrid) return;
   const canvas = e.currentTarget;
@@ -2468,6 +2258,15 @@ function build(container) {
     if (fluxSurfaceSecondaryBtn.classList.contains("disabled")) return;
     store.set("ui.fluxSurface", "secondary");
   });
+  // v0.2 followups item 1, mockup M15: Field -- only ever available when
+  // THIS step's map came from a live field-trace response (fluxHeliostats),
+  // which a stored sweep step's own PNG/CSV/grid blobs never carry (see
+  // fluxHeliostats's own comment above) -- disabled with an honest tooltip
+  // otherwise, same "available" pattern as Secondary.
+  const fluxSurfaceFieldBtn = segButton(fluxSurfaceSeg, "Field", false, () => {
+    if (fluxSurfaceFieldBtn.classList.contains("disabled")) return;
+    store.set("ui.fluxSurface", "field");
+  });
   fluxHead.appendChild(fluxSurfaceSeg);
   // docs/ui-spec-v0.2.md §N, mockup M18c: this inline map stays here for
   // fast scrubbing (decided, not moved) -- this link is the one-click-deeper
@@ -2503,11 +2302,19 @@ function build(container) {
   const fluxSecondaryCanvas = document.createElement("canvas");
   fluxSecondaryCanvas.className = "an-secondarycanvas";
   fluxSecondaryCanvas.hidden = true;
+  // Field map (item 1, mockup M15): client-rendered, one dot per heliostat
+  // at its own plan-view position, colored by power_w -- see
+  // paintFieldMapCanvas below. Same "own canvas, no server PNG" reasoning as
+  // the secondary canvas above.
+  const fluxFieldCanvas = document.createElement("canvas");
+  fluxFieldCanvas.className = "an-secondarycanvas an-fieldcanvas";
+  fluxFieldCanvas.hidden = true;
   const fluxPlaceholder = document.createElement("p");
   fluxPlaceholder.className = "placeholder";
   fluxPlaceholder.textContent = "Click a timestep to render its irradiance map.";
   fluxFrame.appendChild(fluxImg);
   fluxFrame.appendChild(fluxSecondaryCanvas);
+  fluxFrame.appendChild(fluxFieldCanvas);
   fluxFrame.appendChild(fluxPlaceholder);
   fluxMapBody.appendChild(fluxFrame);
 
@@ -2547,6 +2354,50 @@ function build(container) {
   fluxSecFidelity.className = "rfidelity";
   fluxSecondaryReadout.appendChild(fluxSecFidelity);
   fluxMapBody.appendChild(fluxSecondaryReadout);
+
+  // Field readout (item 1, mockup M15): heliostat count + total power, and
+  // the legend M15 draws as a floating chip -- folded into this app's own
+  // readout/rmetric idiom instead, same container class main.js's overlay
+  // uses for its own field readout.
+  const fluxFieldReadout = document.createElement("div");
+  fluxFieldReadout.className = "readout an-secondaryreadout";
+  fluxFieldReadout.hidden = true;
+  const fluxFieldReadoutH3 = document.createElement("h3");
+  fluxFieldReadoutH3.textContent = "Field power";
+  fluxFieldReadout.appendChild(fluxFieldReadoutH3);
+  function fieldRow(label) {
+    const row = document.createElement("div");
+    row.className = "rmetric";
+    const lbl = document.createElement("div");
+    lbl.className = "rlbl";
+    lbl.textContent = label;
+    const num = document.createElement("div");
+    num.className = "rnum";
+    row.appendChild(lbl);
+    row.appendChild(num);
+    fluxFieldReadout.appendChild(row);
+    return num;
+  }
+  const fluxFieldCount = fieldRow("heliostats");
+  const fluxFieldTotal = fieldRow("total power");
+  const fluxFieldLegend = document.createElement("div");
+  fluxFieldLegend.className = "fieldlegend";
+  const fluxFieldLegendTitle = document.createElement("div");
+  fluxFieldLegendTitle.className = "fieldlegend-title";
+  fluxFieldLegendTitle.textContent = "kW delivered per heliostat";
+  const fluxFieldLegendBar = document.createElement("div");
+  fluxFieldLegendBar.className = "fieldlegend-bar";
+  const fluxFieldLegendEnds = document.createElement("div");
+  fluxFieldLegendEnds.className = "fieldlegend-ends";
+  const fluxFieldLegendMin = document.createElement("span");
+  const fluxFieldLegendMax = document.createElement("span");
+  fluxFieldLegendEnds.appendChild(fluxFieldLegendMin);
+  fluxFieldLegendEnds.appendChild(fluxFieldLegendMax);
+  fluxFieldLegend.appendChild(fluxFieldLegendTitle);
+  fluxFieldLegend.appendChild(fluxFieldLegendBar);
+  fluxFieldLegend.appendChild(fluxFieldLegendEnds);
+  fluxFieldReadout.appendChild(fluxFieldLegend);
+  fluxMapBody.appendChild(fluxFieldReadout);
 
   fluxPanel.appendChild(fluxMapBody);
 
@@ -2808,8 +2659,15 @@ function build(container) {
     tsWrap,
     fluxSurfaceReceiverBtn,
     fluxSurfaceSecondaryBtn,
+    fluxSurfaceFieldBtn,
     fluxSecondaryCanvas,
     fluxSecondaryReadout,
+    fluxFieldCanvas,
+    fluxFieldReadout,
+    fluxFieldCount,
+    fluxFieldTotal,
+    fluxFieldLegendMin,
+    fluxFieldLegendMax,
     secIncidentRow,
     secAbsorbedRow,
     secPeakAbsorbedRow,
@@ -3075,6 +2933,65 @@ function paintSecondaryFluxCanvas(canvas, grid) {
   ctx2d.putImageData(img, 0, 0);
 }
 
+// v0.2 followups item 1, mockup M15: plan-view power coloring -- one dot per
+// heliostat at its own (x_mm, y_mm), colored by its own power_w. Same
+// function as main.js's own paintFieldMapCanvas (own copy per this app's
+// per-file duplication idiom for small painters -- see that function's own
+// comment); returns {minKw, maxKw} so the caller paints the legend numbers
+// from the same values this canvas was colored with.
+function paintFieldMapCanvas(canvas, heliostats) {
+  const size = 380;
+  canvas.width = size;
+  canvas.height = size;
+  const ctx2d = canvas.getContext("2d");
+  ctx2d.fillStyle = "#fdfdfe";
+  ctx2d.fillRect(0, 0, size, size);
+
+  let maxR = 1;
+  let minKw = Infinity;
+  let maxKw = -Infinity;
+  for (const h of heliostats) {
+    maxR = Math.max(maxR, Math.hypot(h.x_mm, h.y_mm));
+    if (h.failed) continue;
+    const kw = (h.power_w || 0) / 1000;
+    if (kw < minKw) minKw = kw;
+    if (kw > maxKw) maxKw = kw;
+  }
+  if (!Number.isFinite(minKw)) minKw = 0;
+  if (!Number.isFinite(maxKw)) maxKw = 0;
+  const span = maxKw - minKw;
+
+  const cx = size / 2;
+  const cy = size / 2;
+  const scale = (size / 2 - 12) / maxR;
+  const dotR = Math.max(1.2, Math.min(4, 220 / Math.sqrt(Math.max(1, heliostats.length))));
+  for (const h of heliostats) {
+    const px = cx + h.x_mm * scale;
+    // World y (north) is up on a plan view; canvas y grows downward -- flip.
+    const py = cy - h.y_mm * scale;
+    ctx2d.beginPath();
+    ctx2d.arc(px, py, dotR, 0, Math.PI * 2);
+    if (h.failed) {
+      ctx2d.fillStyle = "#c7cdd6";
+    } else {
+      const t = span > 0 ? ((h.power_w || 0) / 1000 - minKw) / span : 1;
+      const [r, g, b] = secondaryFluxMagmaColor(t);
+      ctx2d.fillStyle = `rgb(${r},${g},${b})`;
+    }
+    ctx2d.fill();
+  }
+
+  ctx2d.beginPath();
+  ctx2d.arc(cx, cy, 4, 0, Math.PI * 2);
+  ctx2d.fillStyle = "#7b8794";
+  ctx2d.fill();
+  ctx2d.lineWidth = 1.3;
+  ctx2d.strokeStyle = "#33455c";
+  ctx2d.stroke();
+
+  return { minKw, maxKw };
+}
+
 // Repaints the Receiver | Secondary selector against whether THIS step's
 // currently-loaded map actually carries a secondary block, and returns
 // whether the secondary map should be the one shown. Secondary stays
@@ -3087,34 +3004,60 @@ function paintSecondaryFluxCanvas(canvas, grid) {
 function paintFluxSurfaceSelector() {
   const doc = store.get("doc");
   const hasSecondaryOptics = doc.optics === "axicon" || doc.optics === "cassegrain";
-  const available = !!(fluxSecondary && fluxSecondary.flux_grid);
-  els.fluxSurfaceSecondaryBtn.classList.toggle("disabled", !available);
-  let tip = "";
-  if (!available) {
-    if (!hasSecondaryOptics) tip = "Only axicon and Cassegrain layouts have a secondary flux map.";
+  const secAvailable = !!(fluxSecondary && fluxSecondary.flux_grid);
+  els.fluxSurfaceSecondaryBtn.classList.toggle("disabled", !secAvailable);
+  let secTip = "";
+  if (!secAvailable) {
+    if (!hasSecondaryOptics) secTip = "Only axicon and Cassegrain layouts have a secondary flux map.";
     else if (fluxSrcUrl && storedSecondaryLoading) {
-      tip = "Loading this step's secondary flux data…";
+      secTip = "Loading this step's secondary flux data…";
     } else if (fluxSrcUrl || reopenedDayFluxPngs) {
-      tip = "This stored sweep step carries no secondary flux data.";
-    } else tip = "This trace carried no secondary flux map.";
+      secTip = "This stored sweep step carries no secondary flux data.";
+    } else secTip = "This trace carried no secondary flux map.";
   }
-  els.fluxSurfaceSecondaryBtn.title = tip;
+  els.fluxSurfaceSecondaryBtn.title = secTip;
+
+  // v0.2 followups item 1: Field needs THIS step's own per-heliostat rows
+  // (fluxHeliostats), which only ever exist after a live on-demand re-trace
+  // of an uncached step -- never for a stored sweep step (fluxSrcUrl) or a
+  // reopened saved run, and never for a single heliostat (doc.field.mode).
+  const fieldAvailable = !!(fluxHeliostats && fluxHeliostats.length);
+  els.fluxSurfaceFieldBtn.classList.toggle("disabled", !fieldAvailable);
+  let fieldTip = "";
+  if (!fieldAvailable) {
+    if (doc.field.mode !== "field") fieldTip = "Field coloring needs a field, not a single heliostat.";
+    else if (fluxLoading) fieldTip = "Tracing…";
+    else if (fluxSrcUrl) {
+      fieldTip = "This stored sweep step keeps no per-heliostat breakdown — only a step traced live in this browser session carries one.";
+    } else if (reopenedDayFluxPngs) {
+      fieldTip = "This saved run kept no per-heliostat breakdown for its timesteps.";
+    } else fieldTip = "This step carries no per-heliostat breakdown.";
+  }
+  els.fluxSurfaceFieldBtn.title = fieldTip;
+
   const requested = store.get("ui.fluxSurface");
-  const showSecondary = requested === "secondary" && available;
-  els.fluxSurfaceReceiverBtn.classList.toggle("active", !showSecondary);
+  const showSecondary = requested === "secondary" && secAvailable;
+  const showField = requested === "field" && fieldAvailable;
+  const showReceiver = !showSecondary && !showField;
+  els.fluxSurfaceReceiverBtn.classList.toggle("active", showReceiver);
   els.fluxSurfaceSecondaryBtn.classList.toggle("active", showSecondary);
-  return showSecondary;
+  els.fluxSurfaceFieldBtn.classList.toggle("active", showField);
+  if (showSecondary) return "secondary";
+  if (showField) return "field";
+  return "receiver";
 }
 
 function paintFluxPanel() {
   const steps = dayResult && dayResult.steps;
   const step = steps && selectedStepIndex != null ? steps[selectedStepIndex] : null;
-  const showSecondary = paintFluxSurfaceSelector();
+  const surface = paintFluxSurfaceSelector();
 
   function showPlaceholder(text) {
     els.fluxImg.hidden = true;
     els.fluxSecondaryCanvas.hidden = true;
     els.fluxSecondaryReadout.hidden = true;
+    els.fluxFieldCanvas.hidden = true;
+    els.fluxFieldReadout.hidden = true;
     els.fluxPlaceholder.hidden = false;
     els.fluxPlaceholder.textContent = text;
     els.fluxCaption.textContent = "";
@@ -3132,8 +3075,10 @@ function paintFluxPanel() {
   els.fluxPlaceholder.hidden = true;
   els.openIn3DLink.hidden = false;
 
-  if (showSecondary) {
+  if (surface === "secondary") {
     els.fluxImg.hidden = true;
+    els.fluxFieldCanvas.hidden = true;
+    els.fluxFieldReadout.hidden = true;
     els.fluxSecondaryCanvas.hidden = false;
     paintSecondaryFluxCanvas(els.fluxSecondaryCanvas, fluxSecondary.flux_grid);
     els.fluxCaption.textContent = `incident flux on secondary, kW/m² · same colormap & units as the receiver map · peak ${fmtFlux(fluxSecondary.peak_flux_kw_m2)}`;
@@ -3152,16 +3097,32 @@ function paintFluxPanel() {
     // the receiver's dayFluxFeaCsvUrl below, even now that a stored step
     // can carry its own secondary blob for the ON-SCREEN map/readout --
     // the FEA export's job is an ANSYS-ready grid at full trace fidelity,
-    // which the downsampled stored blob was never meant to serve. Available
-    // exactly when showSecondary is true, since that already required
-    // fluxSecondary.flux_grid.
+    // which the downsampled stored blob was never meant to serve.
     els.fluxFeaCsv.hidden = true;
     els.fluxSecFeaCsv.hidden = false;
+  } else if (surface === "field") {
+    els.fluxImg.hidden = true;
+    els.fluxSecondaryCanvas.hidden = true;
+    els.fluxSecondaryReadout.hidden = true;
+    els.fluxFieldCanvas.hidden = false;
+    const { minKw, maxKw } = paintFieldMapCanvas(els.fluxFieldCanvas, fluxHeliostats);
+    els.fluxCaption.textContent = `${fmtHHMM(step.hour)} solar · ${fluxHeliostats.length} heliostats`;
+    els.fluxCompass.textContent = "";
+    els.fluxFieldReadout.hidden = false;
+    els.fluxFieldCount.textContent = fluxHeliostats.length.toLocaleString();
+    const totalW = fluxHeliostats.reduce((sum, h) => sum + (h.failed ? 0 : h.power_w || 0), 0);
+    els.fluxFieldTotal.textContent = fmtPower(totalW);
+    els.fluxFieldLegendMin.textContent = minKw.toFixed(1);
+    els.fluxFieldLegendMax.textContent = maxKw.toFixed(1);
+    els.fluxFeaCsv.hidden = true;
+    els.fluxSecFeaCsv.hidden = true;
   } else {
     els.fluxImg.src = fluxSrcUrl || "data:image/png;base64," + fluxPngBase64;
     els.fluxImg.hidden = false;
     els.fluxSecondaryCanvas.hidden = true;
     els.fluxSecondaryReadout.hidden = true;
+    els.fluxFieldCanvas.hidden = true;
+    els.fluxFieldReadout.hidden = true;
     els.fluxCaption.textContent = `${fmtHHMM(step.hour)} solar · peak ${fmtFlux(fluxPeakKwM2 != null ? fluxPeakKwM2 : step.peak_flux_kw_m2)}`;
     // Compass rider (§M) -- see compassCaptionFor.
     els.fluxCompass.textContent = compassCaptionFor(store.get("doc"));
@@ -3322,7 +3283,7 @@ function paintAperturePanel() {
   const halfV = Math.abs(grid.v_max_mm - grid.v_min_mm) / 2;
   const maxR = Math.min(halfU, halfV) * 0.98;
   const curve = apertureCurve(grid, center.u, center.v, maxR, 32);
-  paintApertureCurve(els.apertureCurveCanvas, curve, radius, powerW);
+  paintApertureCurve(els.apertureCurveCanvas, curve, radius, powerW, fmtPower);
 }
 
 // -- saved runs (docs/ui-spec.md 4) -------------------------------------------

@@ -190,6 +190,16 @@ const fluxSecAbsorbed = document.getElementById("flux-sec-absorbed");
 const fluxSecPeakAbsorbed = document.getElementById("flux-sec-peakabsorbed");
 const fluxSecFidelity = document.getElementById("flux-sec-fidelity");
 const fluxSecFeaExport = document.getElementById("flux-sec-fea-export");
+// v0.2 followups item 1, mockup M15: the Field option -- plan-view power
+// coloring, dot per heliostat -- alongside the existing Receiver | Secondary
+// pair (see paintFluxOverlay's three-way branch below).
+const fluxSurfaceFieldBtn = document.getElementById("flux-surface-field");
+const fluxFieldCanvas = document.getElementById("flux-field-canvas");
+const fluxFieldReadout = document.getElementById("flux-field-readout");
+const fluxFieldCount = document.getElementById("flux-field-count");
+const fluxFieldTotal = document.getElementById("flux-field-total");
+const fluxFieldLegendMin = document.getElementById("flux-field-legend-min");
+const fluxFieldLegendMax = document.getElementById("flux-field-legend-max");
 
 // Field-trace progress and its cancel control, deliberately NOT gated by
 // ui.tab (unlike #runbar's contents -- see renderTabs) -- a field trace is a
@@ -565,16 +575,28 @@ function traceSucceeded(data) {
   if (!stale && data.scene && data.scene.rays) {
     scene.showTraceRays(data.scene.rays, data.scene.miss_rays);
   }
-  // §M.3: the 3D receiver drape, same staleness rule as the rays above --
-  // flux_grid is opt-in (buildTraceRequest always asks for it) and absent
-  // for a receiver-less optics/scene, in which case scene.showFluxDrape is a
-  // no-op.
-  if (!stale && data.flux_grid) {
+  // §M.3/v0.2 followups item 2: the 3D receiver's "Flux overlay" texture,
+  // same staleness rule as the rays above -- see applyFluxOverlayVisibility.
+  applyFluxOverlayVisibility();
+  renderAllPanels();
+}
+
+// v0.2 followups item 2, mockup M16: whether the flux texture is actually
+// showing on the 3D receiver depends on THREE things now, not just "is this
+// trace fresh" -- the toggle (ui.receiverFluxOverlay, default on), the
+// staleness rule §M.3 already had, and whether this trace's own flux_grid
+// exists at all (opt-in on the request, absent for a receiver-less scene).
+// Reads straight from ui.traceResult rather than taking a `data` argument,
+// so toggling the checkbox (no new trace) can call this the same way a
+// fresh trace landing does.
+function applyFluxOverlayVisibility() {
+  const ui = store.get("ui");
+  const data = ui.traceResult;
+  if (ui.receiverFluxOverlay !== false && !ui.staleResults && data && data.flux_grid) {
     scene.showFluxDrape(data.flux_grid);
   } else {
     scene.clearFluxDrape();
   }
-  renderAllPanels();
 }
 
 function traceFailed(message) {
@@ -844,6 +866,73 @@ function paintSecondaryCanvas(canvas, grid) {
   ctx2d.putImageData(img, 0, 0);
 }
 
+// v0.2 followups item 1, mockup M15: plan-view power coloring -- one dot per
+// heliostat at its own (x_mm, y_mm), colored by its own power_w, same magma
+// family as every other flux map in the app (secondaryMagmaColor above) so
+// "more flux/power" reads the same way everywhere. `heliostats` is a field
+// trace response's own `heliostats` rows (app.py's field-trace endpoints --
+// {id, x_mm, y_mm, eta_shade, eta_block, eta, power_w[, failed]}), normalized
+// against the field's own min/max power (not from zero -- a field's power
+// spread is usually a narrow band near its own max, and mockup M15's own
+// legend example, "0.4" to "19.8", is exactly this convention). Returns
+// {minKw, maxKw} so the caller can paint the legend numbers from the same
+// values this canvas was actually colored with.
+function paintFieldMapCanvas(canvas, heliostats) {
+  const size = 460;
+  canvas.width = size;
+  canvas.height = size;
+  const ctx2d = canvas.getContext("2d");
+  ctx2d.fillStyle = "#fdfdfe";
+  ctx2d.fillRect(0, 0, size, size);
+
+  let maxR = 1;
+  let minKw = Infinity;
+  let maxKw = -Infinity;
+  for (const h of heliostats) {
+    maxR = Math.max(maxR, Math.hypot(h.x_mm, h.y_mm));
+    if (h.failed) continue;
+    const kw = (h.power_w || 0) / 1000;
+    if (kw < minKw) minKw = kw;
+    if (kw > maxKw) maxKw = kw;
+  }
+  if (!Number.isFinite(minKw)) minKw = 0;
+  if (!Number.isFinite(maxKw)) maxKw = 0;
+  const span = maxKw - minKw;
+
+  const cx = size / 2;
+  const cy = size / 2;
+  const scale = (size / 2 - 14) / maxR;
+  // Smaller dots for a bigger field, same idea as tabs/analysis.js's own
+  // drill-down mini plan -- 643 heliostats need to stay legible at this size.
+  const dotR = Math.max(1.3, Math.min(4.5, 260 / Math.sqrt(Math.max(1, heliostats.length))));
+  for (const h of heliostats) {
+    const px = cx + h.x_mm * scale;
+    // World y (north) is up on a plan view; canvas y grows downward -- flip.
+    const py = cy - h.y_mm * scale;
+    ctx2d.beginPath();
+    ctx2d.arc(px, py, dotR, 0, Math.PI * 2);
+    if (h.failed) {
+      ctx2d.fillStyle = "#c7cdd6";
+    } else {
+      const t = span > 0 ? ((h.power_w || 0) / 1000 - minKw) / span : 1;
+      const [r, g, b] = secondaryMagmaColor(t);
+      ctx2d.fillStyle = `rgb(${r},${g},${b})`;
+    }
+    ctx2d.fill();
+  }
+
+  // Tower marker, same look as tabs/analysis.js's mini plan.
+  ctx2d.beginPath();
+  ctx2d.arc(cx, cy, 4, 0, Math.PI * 2);
+  ctx2d.fillStyle = "#7b8794";
+  ctx2d.fill();
+  ctx2d.lineWidth = 1.3;
+  ctx2d.strokeStyle = "#33455c";
+  ctx2d.stroke();
+
+  return { minKw, maxKw };
+}
+
 // Repaints the overlay's Receiver | Secondary selector and body against
 // whatever ui.traceResult/ui.fluxSurface currently say -- called both when
 // the overlay is opened and from renderAllPanels (guarded on visibility)
@@ -856,28 +945,49 @@ function paintFluxOverlay() {
   const secondary = data.secondary;
   const optics = store.get("doc.optics");
   const hasSecondaryOptics = optics === "axicon" || optics === "cassegrain";
-  const available = !!(secondary && secondary.flux_grid);
+  const secAvailable = !!(secondary && secondary.flux_grid);
+  // v0.2 followups item 1: Field is meaningful only for a live FIELD trace --
+  // /api/field/trace(/start+result)'s own `heliostats` rows, absent from a
+  // single-heliostat /api/trace response (see app.py's response builders).
+  const heliostats = Array.isArray(data.heliostats) ? data.heliostats : null;
+  const fieldAvailable = !!(heliostats && heliostats.length);
 
-  fluxSurfaceSecondaryBtn.classList.toggle("disabled", !available);
-  fluxSurfaceSecondaryBtn.title = available
+  fluxSurfaceSecondaryBtn.classList.toggle("disabled", !secAvailable);
+  fluxSurfaceSecondaryBtn.title = secAvailable
     ? ""
     : hasSecondaryOptics
       ? "This trace carried no secondary flux map — retrace to get one."
       : "Only axicon and Cassegrain layouts have a secondary flux map.";
 
+  fluxSurfaceFieldBtn.classList.toggle("disabled", !fieldAvailable);
+  fluxSurfaceFieldBtn.title = fieldAvailable
+    ? ""
+    : "Field coloring needs a per-heliostat breakdown, which only a field trace carries — this trace was a single heliostat.";
+
   const requested = store.get("ui.fluxSurface");
-  const showSecondary = requested === "secondary" && available;
-  fluxSurfaceReceiverBtn.classList.toggle("active", !showSecondary);
+  const showSecondary = requested === "secondary" && secAvailable;
+  const showField = requested === "field" && fieldAvailable;
+  const showReceiver = !showSecondary && !showField;
+  fluxSurfaceReceiverBtn.classList.toggle("active", showReceiver);
   fluxSurfaceSecondaryBtn.classList.toggle("active", showSecondary);
+  fluxSurfaceFieldBtn.classList.toggle("active", showField);
+
+  // Every surface's own elements start hidden; only the active one's are
+  // shown below -- avoids three separate "hide everyone else" blocks.
+  fluxOverlayImg.hidden = true;
+  fluxSecondaryCanvas.hidden = true;
+  fluxSecondaryCaption.hidden = true;
+  fluxSecondaryReadout.hidden = true;
+  fluxSecFeaExport.hidden = true;
+  fluxFieldCanvas.hidden = true;
+  fluxFieldReadout.hidden = true;
+  fluxCompassN.hidden = true;
+  fluxCompassS.hidden = true;
+  fluxCompassE.hidden = true;
+  fluxCompassW.hidden = true;
+  fluxCompassAxis.hidden = true;
 
   if (showSecondary) {
-    fluxOverlayImg.hidden = true;
-    fluxCompassN.hidden = true;
-    fluxCompassS.hidden = true;
-    fluxCompassE.hidden = true;
-    fluxCompassW.hidden = true;
-    fluxCompassAxis.hidden = true;
-
     fluxSecondaryCanvas.hidden = false;
     paintSecondaryCanvas(fluxSecondaryCanvas, secondary.flux_grid);
     fluxSecondaryCaption.hidden = false;
@@ -891,14 +1001,19 @@ function paintFluxOverlay() {
     fluxSecPeakAbsorbed.textContent = fmtFlux(secondary.peak_absorbed_kw_m2);
     fluxSecFidelity.textContent = secondaryFidelityNote(secondary.fidelity);
     // §C leftover: only ever exportable from a live trace's own grid --
-    // same "the raw grid, not just the picture" gate as available above.
-    fluxSecFeaExport.hidden = !available;
+    // same "the raw grid, not just the picture" gate as secAvailable above.
+    fluxSecFeaExport.hidden = !secAvailable;
+  } else if (showField) {
+    fluxFieldCanvas.hidden = false;
+    const { minKw, maxKw } = paintFieldMapCanvas(fluxFieldCanvas, heliostats);
+    fluxFieldReadout.hidden = false;
+    fluxFieldCount.textContent = heliostats.length.toLocaleString();
+    const totalW = heliostats.reduce((sum, h) => sum + (h.failed ? 0 : h.power_w || 0), 0);
+    fluxFieldTotal.textContent = fmtPower(totalW);
+    fluxFieldLegendMin.textContent = minKw.toFixed(1);
+    fluxFieldLegendMax.textContent = maxKw.toFixed(1);
   } else {
     fluxOverlayImg.hidden = false;
-    fluxSecondaryCanvas.hidden = true;
-    fluxSecondaryCaption.hidden = true;
-    fluxSecondaryReadout.hidden = true;
-    fluxSecFeaExport.hidden = true;
 
     const kind = data.scene && data.scene.receiver ? data.scene.receiver.kind : null;
     const isFlat = kind === "flat";
@@ -922,6 +1037,10 @@ fluxSurfaceReceiverBtn.addEventListener("click", () => store.set("ui.fluxSurface
 fluxSurfaceSecondaryBtn.addEventListener("click", () => {
   if (fluxSurfaceSecondaryBtn.classList.contains("disabled")) return;
   store.set("ui.fluxSurface", "secondary");
+});
+fluxSurfaceFieldBtn.addEventListener("click", () => {
+  if (fluxSurfaceFieldBtn.classList.contains("disabled")) return;
+  store.set("ui.fluxSurface", "field");
 });
 fluxSecFeaExport.addEventListener("click", (e) => {
   e.preventDefault();
@@ -1005,6 +1124,13 @@ store.subscribe((path, value) => {
       scene.clearTraceRays();
       scene.clearFluxDrape();
     }
+  }
+
+  // v0.2 followups item 2: the "Flux overlay" toggle -- no retrace, just
+  // re-decides whether the last trace's own flux_grid (still on
+  // ui.traceResult) paints onto the receiver or not.
+  if (path === "ui.receiverFluxOverlay") {
+    applyFluxOverlayVisibility();
   }
 
   if (path.startsWith("doc.")) {

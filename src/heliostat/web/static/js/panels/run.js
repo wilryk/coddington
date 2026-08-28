@@ -7,6 +7,17 @@
 // builds DOM and calls back into the `actions` it is given), so this file
 // stays a pure view over the store plus those callbacks.
 import { store } from "../store.js";
+import {
+  apertureReceiverIsFlat,
+  apertureDefaultCenter,
+  apertureDefaultRadiusMm,
+  clampToGridAxis,
+  apertureMetrics,
+  apertureDataToCanvas,
+  apertureCanvasToData,
+  paintApertureCanvas,
+  apertureCanvasEventPoint,
+} from "../aperture.js";
 
 const FIDELITY = [
   ["ultra_fast", "Ultra fast"],
@@ -69,6 +80,115 @@ function deriveMetrics(data) {
     out.intercept = ((data.counters.in_window || 0) / data.counters.hit_secondary) * 100;
   }
   return out;
+}
+
+function fmtPower(w) {
+  if (w == null || !Number.isFinite(w)) return "—";
+  if (Math.abs(w) >= 1e6) return (w / 1e6).toFixed(2) + " MW";
+  return (w / 1e3).toFixed(1) + " kW";
+}
+
+function fmtFlux(kwM2) {
+  if (kwM2 == null || !Number.isFinite(kwM2)) return "—";
+  if (Math.abs(kwM2) >= 1000) return (kwM2 / 1000).toFixed(2) + " MW/m²";
+  return kwM2.toFixed(1) + " kW/m²";
+}
+
+// -- results dock's own analysis aperture (v0.2 followups item 3, mockup
+// M17) -- reads the LAST TRACE's own flux_grid (ui.traceResult.flux_grid,
+// always present for a flat receiver -- api.js's buildTraceRequest always
+// sets include_flux_grid). Math/painting come from ../aperture.js, shared
+// verbatim with tabs/analysis.js's own aperture (see that module's header);
+// only the drag STATE below is this file's own, same "small stateful glue,
+// not shared" call that module's header explains.
+let apCenterUMm = null;
+let apCenterVMm = null;
+let apRadiusMm = null;
+let apDrag = null; // {mode: "move"|"resize"} while a pointer drag is live
+let apGrid = null; // the CURRENT flux_grid the canvas/readout below read
+let apMetricsLike = null; // ui.traceResult itself -- carries centroid_mm/rms_radius_mm/power_w
+// Which trace this aperture's center/radius were last set against -- a new
+// trace lands a different footprint, so a circle left over from the
+// previous one would silently describe the wrong picture. Compared against
+// ui.traceTimestamp in render() below.
+let apLastTraceTimestamp = undefined;
+
+function apCurrentCenter() {
+  if (apCenterUMm != null && apCenterVMm != null) return { u: apCenterUMm, v: apCenterVMm };
+  return apertureDefaultCenter(apGrid, apMetricsLike);
+}
+
+function apCurrentRadius() {
+  if (apRadiusMm != null) return apRadiusMm;
+  return apertureDefaultRadiusMm(apGrid, apMetricsLike);
+}
+
+// Repaints just the aperture canvas + readout -- called from render() and,
+// directly (bypassing the store), from the pointer-move handler below, same
+// idiom as tabs/analysis.js's own paintIfVisible()-triggered repaint: a drag
+// is not a store change, so nothing else would repaint it.
+function paintDockAperture() {
+  if (!apGrid) return;
+  const center = apCurrentCenter();
+  const radius = apCurrentRadius();
+  paintApertureCanvas(els.apCanvas, apGrid, center.u, center.v, radius, 300);
+  const { powerW, avgFluxWM2 } = apertureMetrics(apGrid, center.u, center.v, radius);
+  const collectedW = apMetricsLike && apMetricsLike.power_w;
+  els.apRadiusNum.textContent = (radius / 1000).toFixed(2) + " m";
+  els.apPowerNum.textContent = fmtPower(powerW);
+  els.apFracNum.textContent = collectedW ? ((100 * powerW) / collectedW).toFixed(1) + " %" : "—";
+  els.apFluxNum.textContent = fmtFlux(avgFluxWM2 / 1000);
+}
+
+function apHandlePointerDown(e) {
+  if (!apGrid) return;
+  const canvas = e.currentTarget;
+  const center = apCurrentCenter();
+  const radius = apCurrentRadius();
+  const [x, y] = apertureCanvasEventPoint(canvas, e);
+  const [cx, cy] = apertureDataToCanvas(apGrid, canvas, center.u, center.v);
+  const pxPerMm = canvas.width / (apGrid.u_max_mm - apGrid.u_min_mm);
+  const rPx = radius * pxPerMm;
+  const dHandle = Math.hypot(x - (cx + rPx), y - cy);
+  const dCenter = Math.hypot(x - cx, y - cy);
+  if (dHandle <= 10) {
+    apDrag = { mode: "resize" };
+  } else if (dCenter <= rPx + 10) {
+    apDrag = { mode: "move" };
+  } else {
+    return;
+  }
+  canvas.setPointerCapture(e.pointerId);
+  e.preventDefault();
+}
+
+function apHandlePointerMove(e) {
+  if (!apDrag || !apGrid) return;
+  const canvas = e.currentTarget;
+  const [x, y] = apertureCanvasEventPoint(canvas, e);
+  const [uMm, vMm] = apertureCanvasToData(apGrid, canvas, x, y);
+  if (apDrag.mode === "move") {
+    apCenterUMm = clampToGridAxis(apGrid, uMm, "u");
+    apCenterVMm = clampToGridAxis(apGrid, vMm, "v");
+  } else {
+    const center = apCurrentCenter();
+    const rMm = Math.hypot(uMm - center.u, vMm - center.v);
+    const halfU = Math.abs(apGrid.u_max_mm - apGrid.u_min_mm) / 2;
+    const halfV = Math.abs(apGrid.v_max_mm - apGrid.v_min_mm) / 2;
+    apRadiusMm = Math.max(1, Math.min(rMm, 1.5 * Math.max(halfU, halfV)));
+  }
+  paintDockAperture();
+}
+
+function apHandlePointerUp(e) {
+  if (!apDrag) return;
+  apDrag = null;
+  try {
+    e.currentTarget.releasePointerCapture(e.pointerId);
+  } catch (err) {
+    // Capture may already be gone (pointer left the window, etc.) -- the
+    // drag is over either way.
+  }
 }
 
 function build(container, dockContainer, actions) {
@@ -170,6 +290,62 @@ function build(container, dockContainer, actions) {
   thumbWrap.appendChild(thumbImg);
   results.appendChild(thumbWrap);
 
+  // v0.2 followups item 3, mockup M17: the results dock's own analysis
+  // aperture -- a draggable/resizable circle on the LAST TRACE's own
+  // flux_grid, live power-in-aperture/avg-flux readout. Shown INSTEAD of
+  // thumbWrap above whenever the trace has a flux_grid on a flat receiver
+  // (the only case the shared aperture math supports today -- see
+  // ../aperture.js's apertureReceiverIsFlat); thumbWrap stays the fallback
+  // for a curved receiver or a receiver-less scene. See render()'s own
+  // toggle between the two.
+  const apWrap = document.createElement("div");
+  apWrap.className = "apwrap";
+  apWrap.hidden = true;
+  const apCanvas = document.createElement("canvas");
+  apCanvas.className = "apcanvas";
+  apCanvas.addEventListener("pointerdown", apHandlePointerDown);
+  apCanvas.addEventListener("pointermove", apHandlePointerMove);
+  apCanvas.addEventListener("pointerup", apHandlePointerUp);
+  apCanvas.addEventListener("pointercancel", apHandlePointerUp);
+  apWrap.appendChild(apCanvas);
+  const apCaption = document.createElement("div");
+  apCaption.className = "apcaption";
+  apCaption.appendChild(document.createTextNode("Dashed circle: drag to move · square: drag to resize. "));
+  // The aperture canvas replaces the plain thumbnail's own click-to-open
+  // handler (thumbImg below), so this link keeps that entry point reachable
+  // -- the full overlay is still the only place with the Receiver |
+  // Secondary | Field selector and the Secondary/Field readouts.
+  const apOpenLink = document.createElement("a");
+  apOpenLink.href = "#";
+  apOpenLink.textContent = "Open full map →";
+  apOpenLink.addEventListener("click", (e) => {
+    e.preventDefault();
+    actions.onOpenFlux();
+  });
+  apCaption.appendChild(apOpenLink);
+  apWrap.appendChild(apCaption);
+  const apReadout = document.createElement("div");
+  apReadout.className = "apreadout";
+  function apRow(label) {
+    const row = document.createElement("div");
+    row.className = "rmetric";
+    const lbl = document.createElement("div");
+    lbl.className = "rlbl";
+    lbl.textContent = label;
+    const num = document.createElement("div");
+    num.className = "rnum";
+    row.appendChild(lbl);
+    row.appendChild(num);
+    apReadout.appendChild(row);
+    return num;
+  }
+  const apRadiusNum = apRow("aperture radius");
+  const apPowerNum = apRow("power within");
+  const apFracNum = apRow("of collected");
+  const apFluxNum = apRow("avg flux");
+  apWrap.appendChild(apReadout);
+  results.appendChild(apWrap);
+
   // Flux-map axis convention: only shown for a curved receiver, where u/v
   // aren't plain x/y (unrolled arc length + height/slant instead) -- see
   // heliostat.web.scene's receiver dict, kind "cylinder"/"frustum".
@@ -178,6 +354,24 @@ function build(container, dockContainer, actions) {
   axisCaption.style.marginTop = "2px";
   axisCaption.hidden = true;
   results.appendChild(axisCaption);
+
+  // v0.2 followups item 2, mockup M16: "Flux overlay" -- owner's own label,
+  // not mockup M16's "drape" (docs/ui-spec-v0.2.md §M.3's toggle, wired to
+  // ui.receiverFluxOverlay; main.js's applyFluxOverlayVisibility reads it).
+  // Default ON, so a fresh page load matches the drape's old always-on
+  // behavior until someone actually turns it off.
+  const fluxOverlayToggleRow = document.createElement("label");
+  fluxOverlayToggleRow.className = "fluxoverlaytoggle";
+  fluxOverlayToggleRow.title = "Paint the traced flux map onto the receiver surface in the 3D scene.";
+  const fluxOverlayToggleInput = document.createElement("input");
+  fluxOverlayToggleInput.type = "checkbox";
+  fluxOverlayToggleInput.checked = true;
+  fluxOverlayToggleInput.addEventListener("change", () => {
+    store.set("ui.receiverFluxOverlay", fluxOverlayToggleInput.checked);
+  });
+  fluxOverlayToggleRow.appendChild(fluxOverlayToggleInput);
+  fluxOverlayToggleRow.appendChild(document.createTextNode(" Flux overlay"));
+  results.appendChild(fluxOverlayToggleRow);
 
   const stampWrap = document.createElement("div");
   const stamp = document.createElement("div");
@@ -221,6 +415,13 @@ function build(container, dockContainer, actions) {
     interceptNum,
     thumbWrap,
     thumbImg,
+    apWrap,
+    apCanvas,
+    apRadiusNum,
+    apPowerNum,
+    apFracNum,
+    apFluxNum,
+    fluxOverlayToggleInput,
     axisCaption,
     stamp,
     exportLink,
@@ -251,23 +452,56 @@ export function render(container, dockContainer, actions, ctx) {
   els.traceErr.hidden = !ui.traceError;
   if (ui.traceError) els.traceErr.textContent = ui.traceError;
 
+  els.fluxOverlayToggleInput.checked = ui.receiverFluxOverlay !== false;
+
   const data = ui.traceResult;
   els.staleChip.hidden = !(ui.staleResults && data);
   els.results.classList.toggle("stale", !!(ui.staleResults && data));
   els.exportLink.style.display = data ? "" : "none";
   els.exportFeaLink.style.display = data ? "" : "none";
 
+  // v0.2 followups item 3: a fresh trace lands a different footprint, so a
+  // circle carried over from the previous one would silently describe the
+  // wrong picture -- reset to that trace's own sensible default the moment
+  // a NEW trace timestamp shows up (not on every render(), which runs on
+  // every store change including a plain drag).
+  if (ui.traceTimestamp !== apLastTraceTimestamp) {
+    apLastTraceTimestamp = ui.traceTimestamp;
+    apCenterUMm = null;
+    apCenterVMm = null;
+    apRadiusMm = null;
+    apDrag = null;
+  }
+
   if (data) {
     const metrics = deriveMetrics(data);
     els.peakNum.textContent = metrics.peak == null ? "—" : fmt(metrics.peak, 1) + " kW/m²";
     els.meanNum.textContent = metrics.mean == null ? "—" : fmt(metrics.mean, 1) + " kW/m²";
     els.interceptNum.textContent = metrics.intercept == null ? "—" : fmt(metrics.intercept, 1) + " %";
-    if (data.flux_png) {
-      els.thumbImg.src = "data:image/png;base64," + data.flux_png;
-      els.thumbWrap.style.display = "";
-    } else {
+
+    // v0.2 followups item 3: the interactive aperture replaces the plain
+    // thumbnail whenever this trace has a flux_grid on a flat receiver --
+    // the only case ../aperture.js's math supports (§M.4, "curved later if
+    // wanted"). Otherwise the thumbnail is what there is to show.
+    const flat = apertureReceiverIsFlat(store.get("doc"));
+    if (data.flux_grid && flat) {
+      apGrid = data.flux_grid;
+      apMetricsLike = data;
+      els.apWrap.hidden = false;
       els.thumbWrap.style.display = "none";
+      paintDockAperture();
+    } else {
+      apGrid = null;
+      apMetricsLike = null;
+      els.apWrap.hidden = true;
+      if (data.flux_png) {
+        els.thumbImg.src = "data:image/png;base64," + data.flux_png;
+        els.thumbWrap.style.display = "";
+      } else {
+        els.thumbWrap.style.display = "none";
+      }
     }
+
     const receiverKind = data.scene && data.scene.receiver && data.scene.receiver.kind;
     if (receiverKind === "cylinder") {
       els.axisCaption.textContent = "u = arc length around receiver (seam at north) · v = height above centre";
@@ -288,6 +522,9 @@ export function render(container, dockContainer, actions, ctx) {
     els.meanNum.textContent = "—";
     els.interceptNum.textContent = "—";
     els.thumbWrap.style.display = "none";
+    apGrid = null;
+    apMetricsLike = null;
+    els.apWrap.hidden = true;
     els.axisCaption.hidden = true;
     els.stamp.textContent = "";
   }

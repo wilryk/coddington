@@ -180,6 +180,12 @@
         <div class="seg" id="flux-surfaceseg">
           <button type="button" id="flux-surface-receiver">Receiver</button>
           <button type="button" id="flux-surface-secondary">Secondary</button>
+          <!-- v0.2 followups item 1, mockup M15: plan-view power coloring --
+               a dot per heliostat colored by its own delivered power, only
+               ever meaningful for a live FIELD trace (the response's own
+               `heliostats` rows) -- disabled with an honest tooltip for a
+               single-heliostat trace, main.js's paintFluxOverlay(). -->
+          <button type="button" id="flux-surface-field">Field</button>
         </div>
       </div>
       <div class="overlay-body">
@@ -197,6 +203,10 @@
                  same magma ramp/orientation as scene3d.js's receiver drape
                  texture (see main.js's paintSecondaryCanvas). -->
             <canvas id="flux-secondary-canvas" hidden></canvas>
+            <!-- Field map (item 1, mockup M15): client-rendered, one dot per
+                 heliostat at its own plan-view position, colored by
+                 power_w -- see main.js's paintFieldMapCanvas. -->
+            <canvas id="flux-field-canvas" hidden></canvas>
             <span class="compass-label compass-n" id="flux-compass-n" hidden>N</span>
             <span class="compass-label compass-s" id="flux-compass-s" hidden>S</span>
             <span class="compass-label compass-e" id="flux-compass-e" hidden>E</span>
@@ -237,6 +247,31 @@
                export (js/panels/run.js's exportFeaLink) -- just calling
                /api/trace/secondary_flux_fea.csv instead. -->
           <a href="#" id="flux-sec-fea-export" class="an-fea-export" hidden>Export CSV for FEA</a>
+        </div>
+        <!-- Field map readout (item 1, mockup M15): heliostat count + total
+             power, and the legend M15 draws as a floating chip -- folded
+             into this app's own readout/rmetric idiom instead (same
+             container this overlay already uses for the secondary readout)
+             so it reads the same way as every other result panel. -->
+        <div class="readout" id="flux-field-readout" hidden>
+          <h3>Field power</h3>
+          <div class="rmetric">
+            <div class="rlbl">heliostats</div>
+            <div class="rnum" id="flux-field-count">—</div>
+          </div>
+          <div class="rmetric">
+            <div class="rlbl">total power</div>
+            <div class="rnum" id="flux-field-total">—</div>
+          </div>
+          <div class="fieldlegend">
+            <div class="fieldlegend-title">kW delivered per heliostat</div>
+            <div class="fieldlegend-bar" id="flux-field-legend-bar"></div>
+            <div class="fieldlegend-ends">
+              <span id="flux-field-legend-min">—</span>
+              <span id="flux-field-legend-max">—</span>
+            </div>
+          </div>
+          <div class="hint">Colors dim once results go stale, same as every other trace result.</div>
         </div>
       </div>
     </div>

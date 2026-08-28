@@ -227,7 +227,20 @@ const DEFAULT_UI = {
   // picking "Secondary" in one place is what you meant everywhere else too.
   // Only ever meaningful for axicon/cassegrain; a prime-focus doc simply
   // has nothing to show for it (see fluxSecondaryAvailable helpers).
+  // v0.2 followups item 1 adds a third value, "field": mockup M15's
+  // plan-view power coloring (a dot per heliostat, colored by its own
+  // power_w) -- meaningful only where per-heliostat rows exist (a live
+  // field trace's own response; disabled with an honest tooltip otherwise,
+  // same "available" pattern as secondary).
   fluxSurface: "receiver",
+  // v0.2 followups item 2, mockup M16: whether a trace's flux map paints
+  // onto the 3D receiver mesh in place of its plain material (labelled
+  // "Flux overlay" in the 3D View results dock -- the owner disliked
+  // mockup M16's original "drape" name; nothing in the committed API/
+  // payload fields renamed, display label only). Default ON, matching the
+  // drape's own behavior before this toggle existed. main.js's
+  // applyFluxOverlayVisibility() is the one place that reads this.
+  receiverFluxOverlay: true,
 };
 
 function createStore() {
