@@ -41,6 +41,19 @@ BUDGETS = {
     # as a failure and what gets varied. Delete the entry once the harness
     # exists and its own docstrings carry the detail.
     "docs/stress-test-plan.md": 1100,
+    # Not user documentation: the rules the repo's own agent sessions run
+    # under. Terse by design -- every word is an instruction someone must
+    # follow, so the budget is the point.
+    "CLAUDE.md": 400,
+    # Not user documentation: the signed-off v0.2 build contract (same
+    # reasoning and lifecycle as ui-spec.md above -- freezes at sign-off,
+    # delete when v0.2 ships and the content moves into guide.md). Headroom
+    # for the M.5-M.7 riders still awaiting sign-off.
+    "docs/ui-spec-v0.2.md": 4400,
+    # Not user documentation: the formula-level build plan spec §C was
+    # implemented from. Historical once §C shipped (2026-08-28); kept as
+    # the derivation record for the secondary parameterization. Frozen.
+    "docs/secondary-irradiance-plan.md": 700,
     # User-facing notes for the published release.
     "RELEASE_NOTES.md": 900,
     "examples/paper/README.md": 1600,

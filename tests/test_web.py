@@ -586,6 +586,12 @@ def test_default_rect_matches_the_pinned_legacy_path(client):
                 "secondary_dz_mm": 0.0,
                 "secondary_tip_mrad": 0.0,
                 "secondary_tilt_mrad": 0.0,
+                # spec §E2 remainder: measured map + parametric warp,
+                # Monte Carlo only, defaults off.
+                "secondary_error_map": None,
+                "secondary_defocus_um": 0.0,
+                "secondary_astig_um": 0.0,
+                "secondary_astig_axis_deg": 0.0,
             },
         ),
         (
@@ -604,6 +610,10 @@ def test_default_rect_matches_the_pinned_legacy_path(client):
                 "secondary_dz_mm": 0.0,
                 "secondary_tip_mrad": 0.0,
                 "secondary_tilt_mrad": 0.0,
+                "secondary_error_map": None,
+                "secondary_defocus_um": 0.0,
+                "secondary_astig_um": 0.0,
+                "secondary_astig_axis_deg": 0.0,
             },
         ),
     ],
@@ -656,6 +666,11 @@ def test_optics_resolved_echoes_the_defaults(client, optics):
             "secondary_dz_mm",
             "secondary_tip_mrad",
             "secondary_tilt_mrad",
+            # spec §E2 remainder: measured map + parametric warp (MC only).
+            "secondary_error_map",
+            "secondary_defocus_um",
+            "secondary_astig_um",
+            "secondary_astig_axis_deg",
         }
         assert resolved["vertex_z_mm"] == CASSEGRAIN_VERTEX_Z_MM
         assert resolved["focus_height_mm"] == CASSEGRAIN_FOCUS_HEIGHT_MM
