@@ -1053,6 +1053,14 @@ input.val::-webkit-inner-spin-button {
   background: var(--accent);
   color: #fff;
 }
+.fieldbadge {
+  margin-left: 6px;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.subhead .fieldbadge {
+  display: inline-block;
+}
 .badge.import {
   background: var(--warn-bg);
   border: 1px solid var(--warn-border);

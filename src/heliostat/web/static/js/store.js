@@ -91,6 +91,16 @@ const DEFAULT_DOC = {
       secondary_dz_mm: 0,
       secondary_tip_mrad: 0,
       secondary_tilt_mrad: 0,
+      // docs/ui-spec-v0.2.md §E2: surface deformation (a measured error map,
+      // §E's own machinery reused) + parametric warp on the secondary,
+      // MONTE CARLO ONLY -- null/all-zero so an unperturbed project traces
+      // bit-identically to before this feature existed, exactly like the
+      // rigid-body fields above (though those apply at every fidelity;
+      // these three do not -- see the fieldbadge on their own descriptors).
+      secondary_error_map: null,
+      secondary_defocus_um: 0,
+      secondary_astig_um: 0,
+      secondary_astig_axis_deg: 0,
     },
     cassegrain: {
       vertex_z_mm: 26993.999446877,
@@ -108,6 +118,12 @@ const DEFAULT_DOC = {
       secondary_dz_mm: 0,
       secondary_tip_mrad: 0,
       secondary_tilt_mrad: 0,
+      // See axicon's identical fields above -- CassegrainOptics.
+      // secondary_error_map/secondary_defocus_um et al.
+      secondary_error_map: null,
+      secondary_defocus_um: 0,
+      secondary_astig_um: 0,
+      secondary_astig_axis_deg: 0,
     },
   },
   field: {

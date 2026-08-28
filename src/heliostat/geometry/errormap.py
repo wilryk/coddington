@@ -90,24 +90,33 @@ class ErrorMap:
     valid: np.ndarray
     coverage_fraction: float
     rms_slope_mrad: float
+    #: Hole-filled ``dz_mm`` (the same nearest-neighbour fill
+    #: :func:`build_error_map` already computes once to difference safely --
+    #: kept here too so :meth:`sample_dz` never reads a ``NaN`` near a gap
+    #: edge, exactly the reasoning :attr:`dzdx_grid`/:attr:`dzdy_grid`
+    #: already follow for the slope lookup). Not part of
+    #: :meth:`to_storage_dict`/:meth:`from_storage_dict` -- cheap to rebuild
+    #: from the raw grid, like the other derived fields.
+    dz_filled_mm: np.ndarray
 
     @property
     def grid_shape(self) -> tuple[int, int]:
         """``(ny, nx)`` -- the number of samples along each axis."""
         return self.dz_mm.shape
 
-    def sample_slopes(self, x_mm: np.ndarray, y_mm: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Bilinear-interpolated ``(dzdx, dzdy)``, in radians, at each ray's
-        mirror-point ``(x_mm, y_mm)`` (the same aperture-frame local
-        coordinates the sag/slope evaluation already uses).
+    def _bilinear_weights(self, x_mm: np.ndarray, y_mm: np.ndarray):
+        """Shared bilinear index/weight computation behind
+        :meth:`sample_slopes` and :meth:`sample_dz` -- ``(ix0, iy0, ix1,
+        iy1, tx, ty)``, everything a caller needs to interpolate any grid
+        of this map's own ``(ny, nx)`` shape at ``(x_mm, y_mm)``.
 
         Queries outside the imported grid's own extent are clamped to the
         nearest edge rather than extrapolated or zeroed -- the map is
-        expected to cover the aperture it was measured over; a ray landing
-        a hair outside due to float roundoff at the very edge should not
-        silently lose its perturbation, and a ray landing well outside
-        (a design edited larger than the map after import) degrades to the
-        map's own edge value rather than blowing up.
+        expected to cover the aperture it was measured over; a point
+        landing a hair outside due to float roundoff at the very edge
+        should not silently lose its perturbation, and one landing well
+        outside (a design/aperture edited larger than the map after import)
+        degrades to the map's own edge value rather than blowing up.
         """
         xs, ys = self.x_m, self.y_m
         nx, ny = xs.size, ys.size
@@ -126,20 +135,41 @@ class ErrorMap:
         iy1 = np.minimum(iy0 + 1, ny - 1)
         tx = np.clip(fx - ix0, 0.0, 1.0)
         ty = np.clip(fy - iy0, 0.0, 1.0)
+        return ix0, iy0, ix1, iy1, tx, ty
 
-        def _bilinear(grid: np.ndarray) -> np.ndarray:
-            v00 = grid[iy0, ix0]
-            v01 = grid[iy0, ix1]
-            v10 = grid[iy1, ix0]
-            v11 = grid[iy1, ix1]
-            return (
-                v00 * (1 - tx) * (1 - ty)
-                + v01 * tx * (1 - ty)
-                + v10 * (1 - tx) * ty
-                + v11 * tx * ty
-            )
+    @staticmethod
+    def _bilinear(grid: np.ndarray, ix0, iy0, ix1, iy1, tx, ty) -> np.ndarray:
+        v00 = grid[iy0, ix0]
+        v01 = grid[iy0, ix1]
+        v10 = grid[iy1, ix0]
+        v11 = grid[iy1, ix1]
+        return (
+            v00 * (1 - tx) * (1 - ty)
+            + v01 * tx * (1 - ty)
+            + v10 * (1 - tx) * ty
+            + v11 * tx * ty
+        )
 
-        return _bilinear(self.dzdx_grid), _bilinear(self.dzdy_grid)
+    def sample_slopes(self, x_mm: np.ndarray, y_mm: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Bilinear-interpolated ``(dzdx, dzdy)``, in radians, at each ray's
+        mirror-point ``(x_mm, y_mm)`` (the same aperture-frame local
+        coordinates the sag/slope evaluation already uses). See
+        :meth:`_bilinear_weights` for the edge-clamping convention.
+        """
+        w = self._bilinear_weights(x_mm, y_mm)
+        return self._bilinear(self.dzdx_grid, *w), self._bilinear(self.dzdy_grid, *w)
+
+    def sample_dz(self, x_mm: np.ndarray, y_mm: np.ndarray) -> np.ndarray:
+        """Bilinear-interpolated sag deviation, millimetres, at ``(x_mm,
+        y_mm)`` -- the VALUE this map describes, as opposed to
+        :meth:`sample_slopes`'s gradient. Used by a sag-map VIEW (summing
+        nominal figure + warp + this map, docs/ui-spec-v0.2.md §E2's
+        "Secondary sag map"), never by the per-ray trace, which only ever
+        needs the slope. Same edge-clamping convention as
+        :meth:`sample_slopes`.
+        """
+        w = self._bilinear_weights(x_mm, y_mm)
+        return self._bilinear(self.dz_filled_mm, *w)
 
     def to_storage_dict(self) -> dict:
         """Compact JSON-safe payload for Library/project persistence: the
@@ -272,6 +302,7 @@ def build_error_map(x_m: np.ndarray, y_m: np.ndarray, dz_mm: np.ndarray) -> Erro
         valid=valid,
         coverage_fraction=coverage_fraction,
         rms_slope_mrad=rms_slope_rad * 1000.0,
+        dz_filled_mm=dz_filled,
     )
 
 

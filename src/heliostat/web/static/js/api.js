@@ -655,6 +655,32 @@ export function postErrorMapStats(grid, signal) {
   return postJSON("/design/errormap/stats", { grid }, signal);
 }
 
+// docs/ui-spec-v0.2.md §E2: the SECONDARY's own sag map -- nominal figure +
+// parametric warp + imported map, summed (heliostat.web.app._secondary_sag_grid_mm)
+// -- a sibling of postDesignSag/postSagFeaCsv above, but the body is just
+// {optics, optics_params}: unlike the heliostat's own sag map, the
+// secondary's figure depends on none of design/sun/heliostat position, only
+// the tower geometry. The map import itself reuses postErrorMapImport/
+// postErrorMapStats verbatim (the endpoint is domain-agnostic -- see their
+// own comments) -- a caller just stores the returned grid under
+// doc.opticsParams[optics].secondary_error_map instead of
+// doc.design.errors.error_map.
+export async function postSecondarySag(optics, opticsParams, signal) {
+  const resp = await postForBlob("/secondary/sag", { optics, optics_params: opticsParams }, signal);
+  const blob = await resp.blob();
+  return {
+    blob,
+    contourIntervalMm: floatHeader(resp, "X-Contour-Interval-Mm"),
+    peakToValleyMm: floatHeader(resp, "X-Peak-To-Valley-Mm"),
+  };
+}
+
+// §D "Export CSV for FEA" sibling of postSecondarySag -- same body, same
+// exact surface, only the file format differs (see _secondary_sag_fea_csv).
+export function postSecondarySagFeaCsv(optics, opticsParams, signal) {
+  return postForBlob("/secondary/sag.csv", { optics, optics_params: opticsParams }, signal).then((resp) => resp.blob());
+}
+
 // The sag map is always for ONE named heliostat (docs/ui-spec.md 3), never
 // a field -- `heliostat` is {x_mm, y_mm} for whichever one
 // js/tabs/shape.js is currently previewing. mode is pinned to "ultra_fast":

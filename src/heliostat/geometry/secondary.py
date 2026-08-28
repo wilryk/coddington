@@ -18,8 +18,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from .errormap import ErrorMap
 
 
 class Secondary(ABC):
@@ -27,7 +31,15 @@ class Secondary(ABC):
 
     @abstractmethod
     def redirect(
-        self, p: np.ndarray, d: np.ndarray, counters: dict
+        self,
+        p: np.ndarray,
+        d: np.ndarray,
+        counters: dict,
+        *,
+        secondary_error_map: "ErrorMap | None" = None,
+        defocus_um: float = 0.0,
+        astig_um: float = 0.0,
+        astig_axis_deg: float = 0.0,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Reflect rays off this secondary.
 
@@ -38,6 +50,22 @@ class Secondary(ABC):
             place. Every implementation sets ``hit_secondary`` (rays that
             struck the surface) and ``tip_rays`` (``0`` for shapes with no
             rounded-tip treatment, so the key is always present).
+        :param secondary_error_map: docs/ui-spec-v0.2.md §E2's measured
+            error map on the secondary, or ``None``. Keyword-only,
+            defaulting to ``None`` -- every existing positional call
+            (:mod:`heliostat.trace.cone`, :mod:`heliostat.web.scene`, every
+            fixture built before this parameter existed) is therefore
+            unaffected by construction, which is what makes this an MC-only
+            feature without a single ``if mode == "mc"`` branch anywhere:
+            only :func:`heliostat.trace.mc.trace_heliostat` ever passes a
+            non-default value. Applied (with ``defocus_um``/``astig_um``
+            below) only by :class:`AxiconSecondary`/:class:`CassegrainSecondary`
+            -- the two shapes with a single-valued local figure to deform;
+            :class:`NoSecondary`/:class:`PyramidSecondary` accept and ignore
+            it (out of spec scope, like their §E2 rigid-body siblings).
+        :param defocus_um: §E2 parametric warp, peak-to-valley, µm.
+        :param astig_um: §E2 parametric warp, peak-to-valley, µm.
+        :param astig_axis_deg: §E2 parametric warp axis angle, degrees.
         :returns: ``(p2, d2, on_secondary)`` — ``p2`` and ``d2`` are
             ``(3, K)`` for the ``K = on_secondary.sum()`` rays that struck
             the surface, reflected; ``on_secondary`` is an ``(N,)`` boolean
@@ -74,7 +102,7 @@ class NoSecondary(Secondary):
     chain never has to special-case "no secondary".
     """
 
-    def redirect(self, p, d, counters):
+    def redirect(self, p, d, counters, *, secondary_error_map=None, defocus_um=0.0, astig_um=0.0, astig_axis_deg=0.0):
         n = p.shape[1]
         counters["tip_rays"] = 0
         counters["hit_secondary"] = int(n)
@@ -199,6 +227,185 @@ def _secondary_local_point(
     return r.T @ (p - (vertex + decenter)[:, None]) + vertex[:, None]
 
 
+def _defocus_sag_mm(x_mm: np.ndarray, y_mm: np.ndarray, aperture_radius_mm: float, defocus_um: float) -> np.ndarray:
+    """Rotationally-symmetric defocus term, ``A * (x^2+y^2) / R^2`` with
+    ``A`` (mm) chosen so the term's own peak-to-valley over the aperture
+    disk equals ``defocus_um`` -- the term is ``0`` at the vertex and ``A``
+    at the rim, monotonic in between, so P-V = ``|A|`` exactly."""
+    a_mm = defocus_um * 1.0e-3
+    r2 = aperture_radius_mm * aperture_radius_mm
+    return a_mm * (x_mm * x_mm + y_mm * y_mm) / r2
+
+
+def _defocus_slope(x_mm: np.ndarray, y_mm: np.ndarray, aperture_radius_mm: float, defocus_um: float) -> tuple[np.ndarray, np.ndarray]:
+    """``(dz/dx, dz/dy)`` of :func:`_defocus_sag_mm`, closed form."""
+    a_mm = defocus_um * 1.0e-3
+    r2 = aperture_radius_mm * aperture_radius_mm
+    return (2.0 * a_mm / r2) * x_mm, (2.0 * a_mm / r2) * y_mm
+
+
+def _astig_sag_mm(
+    x_mm: np.ndarray, y_mm: np.ndarray, aperture_radius_mm: float, astig_um: float, astig_axis_deg: float
+) -> np.ndarray:
+    """Saddle astigmatism term, ``B * (xr^2 - yr^2) / R^2`` in axes ``(xr,
+    yr)`` rotated by ``astig_axis_deg`` from ``(x, y)`` -- the peak (+B) and
+    valley (-B) both sit on the aperture rim, along the rotated axes, so
+    P-V = ``2B`` and ``B = astig_um / 2`` (in mm)."""
+    b_mm = (astig_um * 1.0e-3) * 0.5
+    r2 = aperture_radius_mm * aperture_radius_mm
+    theta = np.deg2rad(astig_axis_deg)
+    ct, st = np.cos(theta), np.sin(theta)
+    xr = x_mm * ct + y_mm * st
+    yr = -x_mm * st + y_mm * ct
+    return b_mm * (xr * xr - yr * yr) / r2
+
+
+def _astig_slope(
+    x_mm: np.ndarray, y_mm: np.ndarray, aperture_radius_mm: float, astig_um: float, astig_axis_deg: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(dz/dx, dz/dy)`` of :func:`_astig_sag_mm`, closed form via the
+    chain rule through the ``(xr, yr)`` rotation."""
+    b_mm = (astig_um * 1.0e-3) * 0.5
+    r2 = aperture_radius_mm * aperture_radius_mm
+    theta = np.deg2rad(astig_axis_deg)
+    ct, st = np.cos(theta), np.sin(theta)
+    xr = x_mm * ct + y_mm * st
+    yr = -x_mm * st + y_mm * ct
+    dzdx = (2.0 * b_mm / r2) * (xr * ct + yr * st)
+    dzdy = (2.0 * b_mm / r2) * (xr * st - yr * ct)
+    return dzdx, dzdy
+
+
+def secondary_warp_sag_mm(
+    x_mm: np.ndarray,
+    y_mm: np.ndarray,
+    aperture_radius_mm: float,
+    defocus_um: float = 0.0,
+    astig_um: float = 0.0,
+    astig_axis_deg: float = 0.0,
+) -> np.ndarray:
+    """Spec §E2 parametric warp -- defocus + astigmatism, SUMMED -- as a sag
+    (millimetres) at local ``(x_mm, y_mm)``, over ``secondary``'s own
+    aperture disk (radius ``aperture_radius_mm``).
+
+    Composition mechanism (documented once, here, for both this function
+    and :func:`secondary_warp_slopes`): the warp is kept purely ANALYTIC --
+    two closed-form low-order sag terms with closed-form gradients -- and
+    summed with whatever the (separately, bilinearly interpolated) imported
+    error map contributes, rather than resampling the warp onto the map's
+    own grid and baking the two together at import time. Three reasons:
+    (1) the warp has no "import time" of its own to bake at -- it is a live
+    slider, recomputed every request as ``defocus_um``/``astig_um`` change,
+    so there is no stable grid to bake it into; (2) an analytic closed form
+    sampled fresh at each ray's own hit point has zero interpolation error,
+    strictly more accurate than forcing it through the map's bilinear grid
+    would be; (3) it costs one closed-form evaluation per ray, no more than
+    a bilinear lookup, so the trace-time guarantee (§E's "essentially
+    unchanged... regardless of map resolution") is unaffected either way.
+    The two contributions still SUM, exactly as the spec requires -- just
+    at query time rather than at one shared grid's build time.
+    """
+    x_mm = np.asarray(x_mm, dtype=float)
+    y_mm = np.asarray(y_mm, dtype=float)
+    sag = np.zeros(np.broadcast(x_mm, y_mm).shape, dtype=float)
+    if defocus_um:
+        sag = sag + _defocus_sag_mm(x_mm, y_mm, aperture_radius_mm, defocus_um)
+    if astig_um:
+        sag = sag + _astig_sag_mm(x_mm, y_mm, aperture_radius_mm, astig_um, astig_axis_deg)
+    return sag
+
+
+def secondary_warp_slopes(
+    x_mm: np.ndarray,
+    y_mm: np.ndarray,
+    aperture_radius_mm: float,
+    defocus_um: float = 0.0,
+    astig_um: float = 0.0,
+    astig_axis_deg: float = 0.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(dz/dx, dz/dy)`` of :func:`secondary_warp_sag_mm`, closed form --
+    the per-ray trace-time cost of the parametric warp, summed with
+    whatever the imported map's own :meth:`~heliostat.geometry.errormap.ErrorMap.sample_slopes`
+    contributes by :func:`_secondary_combined_slopes`."""
+    x_mm = np.asarray(x_mm, dtype=float)
+    y_mm = np.asarray(y_mm, dtype=float)
+    dzdx = np.zeros(np.broadcast(x_mm, y_mm).shape, dtype=float)
+    dzdy = np.zeros(np.broadcast(x_mm, y_mm).shape, dtype=float)
+    if defocus_um:
+        ddx, ddy = _defocus_slope(x_mm, y_mm, aperture_radius_mm, defocus_um)
+        dzdx, dzdy = dzdx + ddx, dzdy + ddy
+    if astig_um:
+        adx, ady = _astig_slope(x_mm, y_mm, aperture_radius_mm, astig_um, astig_axis_deg)
+        dzdx, dzdy = dzdx + adx, dzdy + ady
+    return dzdx, dzdy
+
+
+def _secondary_combined_slopes(
+    x_mm: np.ndarray,
+    y_mm: np.ndarray,
+    aperture_radius_mm: float,
+    secondary_error_map: "ErrorMap | None",
+    defocus_um: float,
+    astig_um: float,
+    astig_axis_deg: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(dz/dx, dz/dy)`` -- imported map slopes plus parametric-warp
+    slopes, SUMMED (spec §E2: "applied in Monte Carlo alongside the map
+    (the two sum)") -- shared by :meth:`AxiconSecondary.redirect` and
+    :meth:`CassegrainSecondary.redirect`. Callers only reach this when at
+    least one of the three is actually present; see each call site's own
+    ``if`` guard."""
+    dzdx = np.zeros_like(np.asarray(x_mm, dtype=float))
+    dzdy = np.zeros_like(np.asarray(y_mm, dtype=float))
+    if secondary_error_map is not None:
+        m_dzdx, m_dzdy = secondary_error_map.sample_slopes(x_mm, y_mm)
+        dzdx, dzdy = dzdx + m_dzdx, dzdy + m_dzdy
+    if defocus_um or astig_um:
+        w_dzdx, w_dzdy = secondary_warp_slopes(x_mm, y_mm, aperture_radius_mm, defocus_um, astig_um, astig_axis_deg)
+        dzdx, dzdy = dzdx + w_dzdx, dzdy + w_dzdy
+    return dzdx, dzdy
+
+
+def secondary_nominal_sag_mm(secondary: "Secondary", x_mm: np.ndarray, y_mm: np.ndarray) -> np.ndarray:
+    """Nominal (undeformed) local sag of ``secondary``'s own smooth flank,
+    relative to its own vertex/apex plane -- ``z_local(h)`` with ``h =
+    hypot(x_mm, y_mm)``, in the SAME local frame :meth:`AxiconSecondary.redirect`/
+    :meth:`CassegrainSecondary.redirect` trace in (the §E2 rigid-body
+    transform moves where this shape sits, never the shape itself, so this
+    function does not need to know about it). Backs the §E2 secondary sag
+    view (``heliostat.web.app._secondary_sag_grid_mm``): nominal + warp +
+    map, summed.
+
+    A deliberate simplification, in the same spirit as commit 303216a's own
+    "Known small visual" note about the 3-D scene: the axicon's tip blend
+    (:func:`_axicon_tip_geometry`) is NOT reproduced here -- the returned
+    surface is the bare cone flank all the way to ``h=0``. The blend only
+    ever departs from the flank inside a tangency ring a few tens of
+    millimetres across, invisible at a full-aperture sag map's scale; the
+    trace itself (:meth:`AxiconSecondary.redirect`) still uses the true
+    blended surface regardless of what this view draws.
+
+    :raises ValueError: for a secondary with no single-valued local figure
+        (:class:`NoSecondary`, :class:`PyramidSecondary`) -- mirrors
+        :func:`secondary_has_flux_map`'s own scoping.
+    """
+    x_mm = np.asarray(x_mm, dtype=float)
+    y_mm = np.asarray(y_mm, dtype=float)
+    h = np.hypot(x_mm, y_mm)
+    if isinstance(secondary, AxiconSecondary):
+        k = np.tan(np.deg2rad(secondary.half_angle_deg))
+        return k * h
+    if isinstance(secondary, CassegrainSecondary):
+        r = secondary.vertex_radius_mm
+        kk = 1.0 + secondary.conic
+        disc = np.clip(r * r - kk * h * h, 0.0, None)
+        return (r - np.sqrt(disc)) / kk
+    raise ValueError(
+        f"{type(secondary).__name__} has no single-valued sag view -- "
+        "secondary_has_flux_map() is False for it"
+    )
+
+
 def _axicon_tip_geometry(
     tip_model: str, tip_radius_mm: float, alpha_rad: float, apex_height_mm: float
 ) -> tuple[float, float, float]:
@@ -263,7 +470,7 @@ class AxiconSecondary(Secondary):
             p, self.apex_height_mm, self.dx_mm, self.dy_mm, self.dz_mm, self.tip_mrad, self.tilt_mrad
         )
 
-    def redirect(self, p, d, counters):
+    def redirect(self, p, d, counters, *, secondary_error_map=None, defocus_um=0.0, astig_um=0.0, astig_axis_deg=0.0):
         p, d = _to_secondary_local(
             p, d, self.apex_height_mm, self.dx_mm, self.dy_mm, self.dz_mm, self.tip_mrad, self.tilt_mrad
         )
@@ -319,6 +526,29 @@ class AxiconSecondary(Secondary):
             idx = np.where(tip)[0][replace]
             cone_hit[:, idx] = sph_hit[:, replace] + centre[:, None]
             cn[:, idx] = sn[:, replace]
+
+        # Spec §E2 -- measured error map + parametric warp, MONTE CARLO
+        # ONLY: this method is called with defaults (no map, zero warp) by
+        # every cone-backend/scene caller, so those never take this branch
+        # (see Secondary.redirect's own docstring). Applied in the LOCAL
+        # unperturbed frame -- `cone_hit` here is still local (the world
+        # transform is a few lines below) -- so it composes correctly with
+        # the §E2 rigid-body transform from 25eea5b: a decentred/tilted
+        # secondary's map rides along with the part, anchored to the same
+        # physical (x, y) it was measured at, exactly like `to_local_point`
+        # already keeps the §C flux map anchored. Same construction as the
+        # PRIMARY mirror's own map/normal composition in mc.py: subtract the
+        # local x/y-axis components of the combined slope from the local
+        # unit normal, renormalise.
+        if secondary_error_map is not None or defocus_um or astig_um:
+            dzdx, dzdy = _secondary_combined_slopes(
+                cone_hit[0], cone_hit[1], self.aperture_radius_mm,
+                secondary_error_map, defocus_um, astig_um, astig_axis_deg,
+            )
+            cn = cn.copy()
+            cn[0] -= dzdx
+            cn[1] -= dzdy
+            cn /= np.linalg.norm(cn, axis=0)
 
         dot = np.einsum("ij,ij->j", d, cn)
         dot *= 2.0
@@ -414,7 +644,7 @@ class CassegrainSecondary(Secondary):
             p, self.vertex_z_mm, self.dx_mm, self.dy_mm, self.dz_mm, self.tip_mrad, self.tilt_mrad
         )
 
-    def redirect(self, p, d, counters):
+    def redirect(self, p, d, counters, *, secondary_error_map=None, defocus_um=0.0, astig_um=0.0, astig_axis_deg=0.0):
         p, d = _to_secondary_local(
             p, d, self.vertex_z_mm, self.dx_mm, self.dy_mm, self.dz_mm, self.tip_mrad, self.tilt_mrad
         )
@@ -455,6 +685,33 @@ class CassegrainSecondary(Secondary):
         zeta = sec_hit[2] - vz
         sn = np.vstack([sec_hit[0], sec_hit[1], kk * zeta - r])
         sn /= np.linalg.norm(sn, axis=0)
+
+        # Spec §E2 -- same map/warp composition as AxiconSecondary.redirect
+        # above (see that method's comment for the full reasoning): applied
+        # in the LOCAL unperturbed frame, MC-only by construction (this
+        # method's own default arguments), summed. SIGN NOTE: unlike the
+        # axicon's `cn` (built as grad(z0 + k*h - z) ~ (-dz/dx, -dz/dy, 1),
+        # "mostly +z"), this surface's `sn` is built as grad(G) for the
+        # implicit G = x^2+y^2 - 2*r*zeta + kk*zeta^2 -- which works out to
+        # (dzeta/dx, dzeta/dy, -1) scaled by (r - kk*zeta) > 0 near the
+        # vertex, i.e. the OPPOSITE convention ("mostly -z", the negative of
+        # the axicon's line). A delta sag ADDS to (-dz/dx, -dz/dy, 0) on the
+        # "mostly +z" convention, which is SUBTRACTED on this negated one --
+        # so the correction here is `+=`, not the axicon's `-=` (confirmed
+        # by tests/test_secondary_perturbations.py's Cassegrain closed-form
+        # deflection-direction pin; getting this sign backwards would still
+        # pass every magnitude/RMS check, only the direction would be
+        # wrong).
+        if secondary_error_map is not None or defocus_um or astig_um:
+            dzdx, dzdy = _secondary_combined_slopes(
+                sec_hit[0], sec_hit[1], self.aperture_radius_mm,
+                secondary_error_map, defocus_um, astig_um, astig_axis_deg,
+            )
+            sn = sn.copy()
+            sn[0] += dzdx
+            sn[1] += dzdy
+            sn /= np.linalg.norm(sn, axis=0)
+
         dot = np.einsum("ij,ij->j", d, sn)
         dot *= 2.0
         d = d - dot * sn
@@ -645,7 +902,11 @@ class PyramidSecondary(Secondary):
     angle_deg: float
     half_side_mm: float
 
-    def redirect(self, p, d, counters):
+    def redirect(self, p, d, counters, *, secondary_error_map=None, defocus_um=0.0, astig_um=0.0, astig_axis_deg=0.0):
+        # Out of §E2's scope (secondary_has_flux_map() is False for a
+        # pyramid -- no single-valued local figure to deform), so a map/warp
+        # attached to a pyramid secondary is silently inert here; the app
+        # layer only ever offers these controls for axicon/Cassegrain.
         z0 = self.apex_height_mm
         k = np.tan(np.deg2rad(self.angle_deg))
         a = self.half_side_mm

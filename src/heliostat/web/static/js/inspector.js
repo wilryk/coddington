@@ -10,6 +10,7 @@ import {
   numberRow,
   setVal,
   segButton,
+  sectionHeaderRow,
   HELIOSTAT_SURFACE_OPTIONS,
   RECEIVER_FIELD_TABLE,
   OPTICS_LABELS,
@@ -137,12 +138,14 @@ function build(container) {
     for (const field of fields) {
       // See panels/receiver.js's identical handling -- keeps the floating
       // inspector's fields visually identical to the sidebar's.
-      if (field.sectionHeader) {
-        const sub = document.createElement("div");
-        sub.className = "subhead";
-        sub.textContent = field.sectionHeader;
-        wrap.appendChild(sub);
-      }
+      if (field.sectionHeader) sectionHeaderRow(wrap, field.sectionHeader, field.sectionHeaderBadge);
+      // secondary_error_map (§E2) has no numberRow -- a grid object isn't a
+      // number -- and no compact-inspector equivalent of the sidebar's
+      // import-chip UI; this floating panel skips it and shows only the
+      // numeric warp fields below it, keeping the inspector's promise of
+      // "the full control surface is Design's" (§N) for anything bigger
+      // than a plain number.
+      if (field.custom) continue;
       const input = numberRow(wrap, field);
       inputs[field.key] = input;
       rows[field.key] = input.parentElement;

@@ -43,6 +43,16 @@ export function numberRow(parent, field) {
   if (field.tooltip) row.title = field.tooltip;
   const lab = document.createElement("label");
   lab.textContent = field.label;
+  // docs/ui-spec-v0.2.md §E2: a field carrying `badge` (e.g. "Monte Carlo
+  // only") gets the same `.badge.import` pill the Shape tab's measured
+  // error-map chip uses (f2bb0f4) -- rigid-body fields stay badge-free
+  // since they apply at every fidelity; the map/warp fields do not.
+  if (field.badge) {
+    const badge = document.createElement("span");
+    badge.className = "badge import fieldbadge";
+    badge.textContent = field.badge;
+    lab.appendChild(badge);
+  }
   const input = document.createElement("input");
   input.type = "number";
   input.className = "val";
@@ -63,6 +73,25 @@ export function numberRow(parent, field) {
   row.appendChild(input);
   parent.appendChild(row);
   return input;
+}
+
+// A subgroup heading within a stage/inspector's field list -- the
+// `sectionHeader`/`sectionHeaderBadge` a field descriptor can carry (see
+// RECEIVER_FIELD_TABLE's "Perturbations" group). Shared by
+// panels/receiver.js and inspector.js so both stay visually identical, the
+// same reasoning their own comments already give for numberRow.
+export function sectionHeaderRow(parent, text, badgeText) {
+  const sub = document.createElement("div");
+  sub.className = "subhead";
+  sub.textContent = text;
+  if (badgeText) {
+    const badge = document.createElement("span");
+    badge.className = "badge import fieldbadge";
+    badge.textContent = badgeText;
+    sub.appendChild(badge);
+  }
+  parent.appendChild(sub);
+  return sub;
 }
 
 export function segButton(parent, label, active, onClick, tooltip) {
@@ -409,6 +438,46 @@ export const RECEIVER_FIELD_TABLE = {
       path: opticsPath("secondary_tilt_mrad"),
       tooltip: "Rigid-body rotation of the secondary about its vertex, tilting the surface east/west.",
     },
+    // docs/ui-spec-v0.2.md §E2: parametric warp -- quick what-ifs without an
+    // FEA file, summed with an imported measured map (below) in Monte Carlo
+    // ONLY (unlike the rigid-body fields above, which apply at every
+    // fidelity -- hence the badge here and not there). Its own
+    // sectionHeader starts a new subgroup within "Perturbations" (see
+    // panels/receiver.js/inspector.js's sectionHeaderRow).
+    // §E2's measured error map on the secondary -- the §E machinery reused
+    // verbatim (same gridded Δ-sag CSV convention, same import/stats
+    // endpoints, same storage shape), just parked under
+    // secondary_error_map instead of design.errors.error_map. `custom:
+    // true` means this key has no numberRow -- panels/receiver.js renders
+    // its own import-chip UI for it (mirroring tabs/shape.js's) -- but it
+    // must still be a real table entry so api.js's currentOpticsParams
+    // does not treat it as a foreign key and drop it at the request
+    // boundary. Its sectionHeader opens the "Surface deformation & warp"
+    // subgroup that the parametric-warp fields below continue.
+    {
+      key: "secondary_error_map",
+      custom: true,
+      sectionHeader: "Surface deformation & warp",
+      sectionHeaderBadge: "Monte Carlo only",
+    },
+    {
+      key: "secondary_defocus_um",
+      label: "Defocus (µm P-V)",
+      path: opticsPath("secondary_defocus_um"),
+      tooltip: "Peak-to-valley defocus added to the secondary's figure over its aperture. Applied in Monte Carlo traces only; sums with an imported map and defaults to zero.",
+    },
+    {
+      key: "secondary_astig_um",
+      label: "Astigmatism (µm P-V)",
+      path: opticsPath("secondary_astig_um"),
+      tooltip: "Peak-to-valley astigmatism added to the secondary's figure over its aperture, along the axis angle below. Applied in Monte Carlo traces only; sums with an imported map and defaults to zero.",
+    },
+    {
+      key: "secondary_astig_axis_deg",
+      label: "Astigmatism axis (deg)",
+      path: opticsPath("secondary_astig_axis_deg"),
+      tooltip: "Orientation of the astigmatism above, degrees from the local x-axis.",
+    },
   ],
   cassegrain: [
     {
@@ -489,6 +558,41 @@ export const RECEIVER_FIELD_TABLE = {
       label: "Tilt (mrad)",
       path: opticsPath("secondary_tilt_mrad"),
       tooltip: "Rigid-body rotation of the secondary about its vertex, tilting the surface east/west.",
+    },
+    // See axicon's identical fields above -- CassegrainOptics.secondary_defocus_um et al.
+    // §E2's measured error map on the secondary -- the §E machinery reused
+    // verbatim (same gridded Δ-sag CSV convention, same import/stats
+    // endpoints, same storage shape), just parked under
+    // secondary_error_map instead of design.errors.error_map. `custom:
+    // true` means this key has no numberRow -- panels/receiver.js renders
+    // its own import-chip UI for it (mirroring tabs/shape.js's) -- but it
+    // must still be a real table entry so api.js's currentOpticsParams
+    // does not treat it as a foreign key and drop it at the request
+    // boundary. Its sectionHeader opens the "Surface deformation & warp"
+    // subgroup that the parametric-warp fields below continue.
+    {
+      key: "secondary_error_map",
+      custom: true,
+      sectionHeader: "Surface deformation & warp",
+      sectionHeaderBadge: "Monte Carlo only",
+    },
+    {
+      key: "secondary_defocus_um",
+      label: "Defocus (µm P-V)",
+      path: opticsPath("secondary_defocus_um"),
+      tooltip: "Peak-to-valley defocus added to the secondary's figure over its aperture. Applied in Monte Carlo traces only; sums with an imported map and defaults to zero.",
+    },
+    {
+      key: "secondary_astig_um",
+      label: "Astigmatism (µm P-V)",
+      path: opticsPath("secondary_astig_um"),
+      tooltip: "Peak-to-valley astigmatism added to the secondary's figure over its aperture, along the axis angle below. Applied in Monte Carlo traces only; sums with an imported map and defaults to zero.",
+    },
+    {
+      key: "secondary_astig_axis_deg",
+      label: "Astigmatism axis (deg)",
+      path: opticsPath("secondary_astig_axis_deg"),
+      tooltip: "Orientation of the astigmatism above, degrees from the local x-axis.",
     },
   ],
 };

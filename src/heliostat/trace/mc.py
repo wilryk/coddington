@@ -214,6 +214,10 @@ def trace_heliostat(
     error_map: "ErrorMap | None" = None,
     pointing_error_mrad: float = 0.0,
     pointing_rng: "np.random.Generator | None" = None,
+    secondary_error_map: "ErrorMap | None" = None,
+    secondary_defocus_um: float = 0.0,
+    secondary_astig_um: float = 0.0,
+    secondary_astig_axis_deg: float = 0.0,
 ) -> dict:
     """Trace one heliostat at one instant; return receiver hits and loss counts.
 
@@ -346,6 +350,31 @@ def trace_heliostat(
     equivalent -- the cone backends never see this parameter, so a map
     changes nothing about their kernels by construction (spec: "Monte Carlo
     only").
+
+    ``secondary_error_map``/``secondary_defocus_um``/``secondary_astig_um``/
+    ``secondary_astig_axis_deg`` (docs/ui-spec-v0.2.md §E2) are the
+    SECONDARY's own measured error map and parametric warp -- the §E
+    machinery above, adapted from the mirror's rectangle to the secondary's
+    circular aperture, and from the mirror's global ``u``/``v`` to the
+    secondary's own local ``x``/``y``. Forwarded straight into
+    ``secondary.redirect()`` as keyword-only arguments; every OTHER caller
+    of ``redirect()`` in this codebase (:mod:`heliostat.trace.cone`,
+    :mod:`heliostat.web.scene`) calls it without these keywords at all, so
+    their defaults (``None``/``0.0``) apply there unconditionally -- that
+    default, not a mode check, is what makes this MC-only: cone traces are
+    bit-identical whether or not a secondary map/warp is configured, by
+    construction, exactly like the primary mirror's own ``error_map``
+    above. See :meth:`~heliostat.geometry.secondary.Secondary.redirect`'s
+    own docstring and :meth:`~heliostat.geometry.secondary.AxiconSecondary.redirect`/
+    :meth:`~heliostat.geometry.secondary.CassegrainSecondary.redirect` for
+    where and how the perturbation is actually applied (in the secondary's
+    LOCAL unperturbed frame, before the rigid-body transform back to world,
+    so it composes correctly with a §E2 decenter/tilt), and
+    :func:`~heliostat.geometry.secondary.secondary_warp_sag_mm`/
+    :func:`~heliostat.geometry.secondary.secondary_warp_slopes` for the
+    parametric-warp closed forms and the composition-with-the-map choice
+    (summed, kept analytic rather than baked into one shared grid --
+    documented there).
     """
     if sampler is None:
         sampler = _default_sampler()
@@ -536,7 +565,15 @@ def trace_heliostat(
                 d[:, grp] = _perturb_isotropic(d[:, grp], fu, sigma, rng)
 
     # --- secondary -------------------------------------------------------
-    pre, d, on_sec = secondary.redirect(hit, d, counters)
+    pre, d, on_sec = secondary.redirect(
+        hit,
+        d,
+        counters,
+        secondary_error_map=secondary_error_map,
+        defocus_um=secondary_defocus_um,
+        astig_um=secondary_astig_um,
+        astig_axis_deg=secondary_astig_axis_deg,
+    )
 
     # --- receiver ----------------------------------------------------------
     hit_mask, uv = receiver.intersect(pre, d)
