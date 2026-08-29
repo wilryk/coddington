@@ -59,7 +59,13 @@ from .mc import (
     _zernike_sag_and_slopes,
     design_facet_frames,
 )
-from .samplers import BUIE_LIMB_MRAD, SUPER_GAUSS_ORDER, SUPER_GAUSS_SIGMA_RAD
+from .samplers import (
+    AUREOLE_LIMIT_MRAD,
+    BUIE_LIMB_MRAD,
+    SUPER_GAUSS_ORDER,
+    SUPER_GAUSS_SIGMA_RAD,
+    _buie_full_profile,
+)
 
 STANDARD_IRRADIANCE_W_MM2 = 1000.0e-6  # 1000 W/m^2, the trace normalisation
 
@@ -203,10 +209,21 @@ def sunshape_kernel(
     slope_error_mrad: float = 0.0,
     pointing_error_mrad: float = 0.0,
     specularity_mrad: float = 0.0,
+    circumsolar_ratio: float = 0.0,
 ) -> RadialKernel:
     """The angular kernel for a named sunshape, optionally error-broadened.
 
     Profiles are the same pinned forms the Monte Carlo samplers draw from.
+    ``circumsolar_ratio`` (docs/ui-spec-v0.2.md §O, ``source_model="buie"``
+    only) adds the Buie, Monger & Dey (2003) circumsolar aureole term beyond
+    the disk's limb -- the SAME formula and the SAME ``circumsolar_ratio ==
+    0`` bit-identity split :class:`~heliostat.trace.samplers.BuieSampler`
+    uses (both read :func:`~heliostat.trace.samplers._buie_full_profile`),
+    so a CSR change moves the cone and Monte Carlo backends identically, per
+    the spec's "one model, every fidelity" requirement. Ignored (must be
+    ``0``) for ``source_model="super_gauss"``, which has no aureole term to
+    add.
+
     Mirror slope error deflects a reflected ray by twice the surface tilt,
     hence the factor 2 on ``slope_error_mrad``; ``specularity_mrad`` is a
     coating scatter of the reflected ray itself, so it carries no such
@@ -234,6 +251,8 @@ def sunshape_kernel(
     cone spot by 2x what a matching Monte Carlo trace realises.
     """
     if source_model == "super_gauss":
+        if circumsolar_ratio != 0.0:
+            raise ValueError("circumsolar_ratio is only meaningful for source_model='buie'")
         sig = SUPER_GAUSS_SIGMA_RAD
 
         def profile(t):
@@ -246,12 +265,38 @@ def sunshape_kernel(
         kernel = RadialKernel.from_profile(profile, support_rad=4.5 * sig)
     elif source_model == "buie":
         limb = BUIE_LIMB_MRAD * 1e-3
+        if circumsolar_ratio <= 0.0:
+            # Unchanged from before circumsolar_ratio existed -- §O's
+            # binding bit-identity requirement (docs/ui-spec-v0.2.md §O),
+            # so this branch never calls into the aureole machinery below,
+            # even at a value that would mathematically zero it out (the
+            # aureole formulas are singular at circumsolar_ratio == 0 in any
+            # case -- see heliostat.trace.samplers._buie_kappa_gamma).
+            def profile(t):
+                t_mrad = np.minimum(t, limb) * 1e3
+                return np.where(t <= limb, np.cos(0.326 * t_mrad) / np.cos(0.308 * t_mrad), 0.0)
 
-        def profile(t):
-            t_mrad = np.minimum(t, limb) * 1e3
-            return np.where(t <= limb, np.cos(0.326 * t_mrad) / np.cos(0.308 * t_mrad), 0.0)
+            kernel = RadialKernel.from_profile(profile, support_rad=limb)
+        else:
+            # The aureole extends the tabulated support all the way to its
+            # published validity domain (AUREOLE_LIMIT_MRAD, 2.5 degrees) --
+            # RadialKernel.__init__ renormalises over the WHOLE tabulated
+            # range automatically, and _effective_support_rad/the
+            # transmission-skip footprint below both read kernel.support_rad
+            # (or integrate kernel.density out to it), so a too-small
+            # support here would silently clip the halo everywhere
+            # downstream. `n` is scaled up from from_profile's own default
+            # (512, tuned for a support of just the 4.65 mrad disk) by the
+            # same ratio the support itself grew, so the disk's own
+            # resolution is not diluted by tabulating a ~9.4x wider range
+            # with the same point count.
+            support_rad = AUREOLE_LIMIT_MRAD * 1e-3
+            n = int(round(512 * AUREOLE_LIMIT_MRAD / BUIE_LIMB_MRAD))
 
-        kernel = RadialKernel.from_profile(profile, support_rad=limb)
+            def profile(t):
+                return _buie_full_profile(t * 1e3, circumsolar_ratio)
+
+            kernel = RadialKernel.from_profile(profile, support_rad=support_rad, n=n)
     else:
         raise ValueError(f"unknown source_model {source_model!r}")
 
