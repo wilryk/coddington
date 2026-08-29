@@ -61,8 +61,11 @@ BUDGETS = {
     # implemented from. Historical once §C shipped (2026-08-28); kept as
     # the derivation record for the secondary parameterization. Frozen.
     "docs/secondary-irradiance-plan.md": 700,
-    # User-facing notes for the published release.
-    "RELEASE_NOTES.md": 900,
+    # User-facing notes for the published release. Raised 2026-08-29: the
+    # v0.2 entry covers a full feature wave (secondary optics, a validated
+    # sunshape, site DNI, four reference fields) and is kept alongside
+    # 0.1.0's, not in place of it.
+    "RELEASE_NOTES.md": 1300,
     "examples/paper/README.md": 1600,
     "packaging/desktop/README.md": 400,
 }
