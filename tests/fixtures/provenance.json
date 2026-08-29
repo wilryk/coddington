@@ -7,11 +7,12 @@
   "pandas_version": "2.3.2",
   "scipy_version": "1.15.3",
   "backend": "pytrace",
-  "source_model": "super_gauss",
+  "source_model": "buie",
   "sunshape_params": {
-    "sigma_rad": 0.0024,
-    "order": 2.0
+    "limb_mrad": 4.65,
+    "profile": "cos(0.326*theta_mrad)/cos(0.308*theta_mrad), no circumsolar aureole term"
   },
+  "regenerated": "2026-08-28: swapped from super_gauss to buie (the owner's ruling -- super-Gaussian is not a legitimate sunshape) via scripts in this repo's mc_parity regeneration pass; mc_parity/*/counters.json, rays_*.npy, and summary.csv regenerated at the same base_seed/seed_scheme so only the sunshape sampler changed. Pointing/figure input columns are geometry-only and unchanged.",
   "seed_scheme": "default_rng(SeedSequence((base_seed, int(timestep_key), heliostat_id)))",
   "base_seed": 20260811,
   "quantisation_scale_mm": 0.061037018951994385,
