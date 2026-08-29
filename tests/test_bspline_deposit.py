@@ -8,7 +8,7 @@ benchmark (3.36x end-to-end speedup vs binned deposit, power conserved to
 0.04-0.29%) that motivated the adoption, and SS3.4 for the cylinder-seam
 peak-flux artifact (+3.73%) this module's periodic fix targets.
 
-Three things are pinned here, mirroring the structure of
+Five things are pinned here, mirroring the structure of
 ``tests/test_receiver_seam.py`` (the referee pattern that originally caught
 the coordinate-seam bug this same geometry can trigger):
 
@@ -26,6 +26,17 @@ the coordinate-seam bug this same geometry can trigger):
    equal the seam-free bearing within MC noise -- exactly what would catch
    a periodic-basis regression of the kind that produced the prototype's
    +3.7% seam artifact.
+4. ``TestNoPeriodicRingingArtifact`` / ``TestPeriodicNoRingingArtifact`` --
+   the owner-reported "grid every 4 pixels" ringing, and its milder
+   periodic-axis counterpart on a closed (cylindrical) receiver, pinned as
+   a topological property (connected non-zero regions) rather than a raw
+   numeric one.
+5. ``TestPeriodicUpsampleMatrixPhysics`` / ``TestSeamContinuity`` -- the
+   periodic branch's own requirements, re-pinned around physics
+   (non-negativity, exact power conservation via partition-of-unity, seam
+   continuity, and -- via item 3 above -- bearing invariance) after
+   retiring the old exact-interpolation pin; see
+   ``TestPeriodicUpsampleMatrixPhysics``'s docstring for why.
 """
 
 from __future__ import annotations
@@ -284,38 +295,60 @@ class TestDepositMethodValidation:
             _trace(receiver, x, y, solar_az, deposit_method="not_a_real_method")
 
 
-class TestUpsampleMatrixIsExactPeriodicInterpolation:
-    """Unit-level check on the periodic upsample construction itself
-    (independent of any optical trace): applying the matrix column-by-column
-    must be linear and reproduce a direct periodic cubic-spline fit through
-    the same coefficient values -- if this ever drifted (e.g. an off-by-one
-    in the wrap-extension point), it would not be an easy thing to spot from
-    end-to-end power/peak numbers alone.
+class TestPeriodicUpsampleMatrixPhysics:
+    """Replaces the retired ``TestUpsampleMatrixIsExactPeriodicInterpolation``.
+
+    That test pinned the periodic ``_upsample_matrix`` branch against
+    ``make_interp_spline(..., bc_type="periodic")``'s own exact-interpolating
+    solve, unit for unit -- a guard on an IMPLEMENTATION detail (which
+    particular spline construction the periodic branch happened to use),
+    not on physics. Its cost was real: exact interpolation through sharp
+    coarse-grid data rings (textbook cubic-spline overshoot/undershoot at
+    the knot spacing, the same mechanism the non-periodic branch's fix in
+    commit 3d68009 targeted), and keeping that pin would have permanently
+    blocked fixing the periodic axis's milder version of the same
+    "grid every 4 pixels" artifact the owner separately reported as a
+    "jagged" cylinder map. Exact interpolation and guaranteed
+    non-negativity are mutually exclusive for sharp data, so the two goals
+    could never both be satisfied -- the pin had to go.
+
+    What a receiver axis that closes on itself actually needs, physically,
+    is not "reproduce one particular spline solve" but:
+
+    1. periodic continuity -- no jump at the seam (``test_seam_is_...``
+       below, and end to end in ``TestSeamContinuity``);
+    2. non-negativity (``test_matrix_is_nonnegative_and_partitions_unity``);
+    3. exact power conservation (the same test: partition-of-unity means a
+       uniform coefficient array reconstructs to exactly that constant, so
+       the integral is preserved by construction, not by a downstream
+       clamp-and-rescale);
+    4. bearing invariance -- already pinned end to end, at full optical
+       trace precision (``rel=1e-6``), by ``TestAzimuthalRotationInvariance``
+       above and by ``tests/test_receiver_seam.py``'s class of the same
+       name; not duplicated here.
+
+    Those four are pinned directly below (and, for continuity, again at
+    full trace fidelity in ``TestSeamContinuity``) -- a strictly stronger
+    guarantee than "matches one particular spline solve," because it holds
+    regardless of which non-negative periodic construction is used.
     """
 
-    def test_matrix_action_matches_direct_periodic_spline(self):
-        from scipy.interpolate import make_interp_spline
-
+    def test_matrix_is_nonnegative_and_partitions_unity(self):
         period = 36000.0
         n_c, n_f = 32, 448
         coarse_edges = np.linspace(0.0, period, n_c + 1)
         fine_edges = np.linspace(0.0, period, n_f + 1)
-        coarse_mid = 0.5 * (coarse_edges[:-1] + coarse_edges[1:])
-        fine_mid = 0.5 * (fine_edges[:-1] + fine_edges[1:])
-
         from heliostat.trace.bspline_deposit import _upsample_matrix
 
         m = _upsample_matrix(coarse_edges, fine_edges, periodic=True)
 
-        rng = np.random.default_rng(0)
-        coeffs = rng.normal(size=n_c)
-        x = np.concatenate([coarse_mid, [coarse_mid[0] + period]])
-        yy = np.concatenate([coeffs, [coeffs[0]]])
-        spl = make_interp_spline(x, yy, k=3, bc_type="periodic")
-        fm = coarse_mid[0] + np.mod(fine_mid - coarse_mid[0], period)
-        direct = spl(fm)
-
-        assert np.abs(m @ coeffs - direct).max() < 1e-9
+        assert m.min() >= 0.0, "periodic upsample matrix produced a negative entry"
+        # Partition of unity: every fine row sums to 1, so ANY uniform
+        # coefficient vector reconstructs to that exact constant everywhere
+        # -- the matrix-level statement of exact power conservation on this
+        # axis, with no clamp-and-rescale required downstream.
+        row_sums = m.sum(axis=1)
+        assert row_sums == pytest.approx(1.0, abs=1e-9)
 
     def test_constant_reconstructs_exactly(self):
         period = 36000.0
@@ -326,6 +359,152 @@ class TestUpsampleMatrixIsExactPeriodicInterpolation:
         m = _upsample_matrix(coarse_edges, fine_edges, periodic=True)
         out = m @ (np.ones(32) * 3.7)
         assert out == pytest.approx(3.7, abs=1e-9)
+
+    def test_seam_is_continuous_not_just_matrix_bounded(self):
+        """Direct check, independent of any optical trace, on the spline
+        the matrix implements: it must evaluate to the SAME value at the
+        seam approached from either side (the two chart-boundary
+        evaluations of one continuous closed curve), with neighbouring
+        values on either side smooth relative to the data's own scale --
+        not merely non-negative and bounded, but genuinely without a jump.
+        """
+        from scipy.interpolate import BSpline
+
+        period = 36000.0
+        n_c, k = 32, 3
+        coarse_edges = np.linspace(0.0, period, n_c + 1)
+        coarse_mid = 0.5 * (coarse_edges[:-1] + coarse_edges[1:])
+        h = period / n_c
+        knot_idx = np.arange(-k, n_c + k + 1)
+        t = coarse_mid[0] + knot_idx * h
+
+        rng = np.random.default_rng(1)
+        coeffs = rng.uniform(0.2, 1.0, n_c)
+        c_ext = np.concatenate([coeffs, coeffs[:k]])
+        spl = BSpline(t, c_ext, k, extrapolate=False)
+
+        eps = 1.0  # mm -- tiny next to the ~1125 mm coarse cell width here
+        left = float(spl(np.array([coarse_mid[0] + period - eps]))[0])
+        at_seam_from_below = float(spl(np.array([coarse_mid[0] + period]))[0])
+        at_seam_from_above = float(spl(np.array([coarse_mid[0]]))[0])
+        right = float(spl(np.array([coarse_mid[0] + eps]))[0])
+
+        assert at_seam_from_below == pytest.approx(at_seam_from_above, abs=1e-9), (
+            "the seam's two chart-boundary evaluations disagree -- a real "
+            "discontinuity, not a closed curve"
+        )
+        neighbourhood = [left, at_seam_from_below, right]
+        assert max(neighbourhood) - min(neighbourhood) < 0.05 * coeffs.max(), (
+            f"seam neighbourhood {neighbourhood} is not smooth relative to "
+            f"the coefficient scale {coeffs.max()} -- looks like a spike, "
+            "not a point on a smooth closed curve"
+        )
+
+
+class TestSeamContinuity:
+    """End-to-end (real optical trace), MEASURABLE version of the seam
+    continuity property pinned at the matrix level above: a spot straddling
+    the coordinate seam must be exactly as smooth as the physically
+    identical spot traced mid-chart -- not merely non-negative or
+    connected (``TestPeriodicNoRingingArtifact`` covers that), but free of
+    any extra curvature the seam wrap itself might introduce.
+
+    A ``CylinderReceiver`` is a body of revolution: the SAME rigidly
+    rotated heliostat traced at bearing 0 deg (aimed squarely at the
+    coordinate seam -- see ``tests/test_receiver_seam.py``'s harness,
+    reused here) and at bearing 180 deg (as far from the seam as this
+    field radius puts it, spot safely mid-chart) must produce physically
+    identical spot shapes, merely shifted in ``u`` -- the same symmetry
+    ``TestAzimuthalRotationInvariance`` uses for power and peak. So a
+    smoothness metric -- RMS of the periodic second difference along ``u``,
+    through the row of peak flux -- computed at each bearing must agree: if
+    the seam wrap added spurious curvature on top of the real spot shape,
+    the bearing-0 metric would come out larger than bearing-180's.
+    """
+
+    RMS_CURVATURE_REL_TOL = 0.15  # 15%: comfortably above sampling/quadrature noise
+
+    @staticmethod
+    def _peak_row_curvature_rms(flux):
+        peak_v = int(np.argmax(flux.max(axis=1)))
+        row = flux[peak_v, :]
+        # Periodic (wraparound) second difference: the same operator at
+        # every column, including across the column-0/column-(n-1) wrap --
+        # exactly the comparison the seam needs.
+        d2 = np.roll(row, -1) - 2.0 * row + np.roll(row, 1)
+        return float(np.sqrt(np.mean(d2**2)))
+
+    def test_seam_spot_is_as_smooth_as_mid_chart_spot(self):
+        from test_receiver_seam import _rotated_case as _seam_rotated_case
+
+        receiver = CylinderReceiver(center_z_mm=20000.0, radius_mm=3000.0, height_mm=6000.0)
+        rms = {}
+        for bearing in (0.0, 180.0):
+            x, y, solar_az = _seam_rotated_case(bearing)
+            out = _trace(receiver, x, y, solar_az, deposit_method="bspline")
+            flux = out["flux"]
+            assert flux.max() > 0, f"bearing {bearing}: no spot at all -- fixture broken, not the assertion"
+            rms[bearing] = self._peak_row_curvature_rms(flux)
+
+        assert rms[0.0] == pytest.approx(rms[180.0], rel=self.RMS_CURVATURE_REL_TOL), (
+            f"seam-bearing curvature {rms[0.0]:.6g} vs mid-chart curvature "
+            f"{rms[180.0]:.6g} -- the seam wrap is adding spurious roughness "
+            "not present in the physically identical mid-chart spot"
+        )
+
+
+class TestPeriodicNoRingingArtifact:
+    """Same regression pin as ``TestNoPeriodicRingingArtifact`` above
+    (owner-reported "grid every 4 pixels"), applied to the PERIODIC branch:
+    a single-heliostat CYLINDER ultra_fast flux map must be one connected
+    non-zero region, both away from the seam and with the spot straddling
+    it."""
+
+    def test_flux_map_has_no_isolated_ringing_islands(self):
+        receiver = CylinderReceiver(center_z_mm=20000.0, radius_mm=3000.0, height_mm=6000.0)
+        x, y, solar_az = _rotated_case(60.0)  # generic bearing, away from the seam
+        out = _trace(receiver, x, y, solar_az, deposit_method="bspline")
+        flux = out["flux"]
+        assert flux.max() > 0, "test case produced no spot at all -- fixture is broken, not the assertion"
+
+        from scipy.ndimage import label
+
+        mask = flux > (1e-9 * flux.max())
+        _, n_components = label(mask, structure=np.ones((3, 3)))
+        assert n_components == 1, (
+            f"cylinder flux map has {n_components} disconnected non-zero regions "
+            "(expected 1) -- periodic-branch ringing islands"
+        )
+
+    def test_flux_map_has_no_isolated_ringing_islands_at_the_seam(self):
+        """Same pin with the spot straddling the seam (bearing 0, reusing
+        ``tests/test_receiver_seam.py``'s ``_rotated_case`` harness rather
+        than rebuilding the geometry). The raw array's column 0 and column
+        -1 are adjacent on the physical receiver but not adjacent in plain
+        array indexing, so a naive connectivity check would report two
+        components even for a perfectly smooth wrapped spot -- rolling the
+        array by half its width first moves the seam away from the array
+        edge, turning the wraparound-spanning spot into an ordinarily
+        contiguous one, exactly what a truly seamless deposit should look
+        like once re-centred."""
+        from test_receiver_seam import _rotated_case as _seam_rotated_case
+        from scipy.ndimage import label
+
+        receiver = CylinderReceiver(center_z_mm=20000.0, radius_mm=3000.0, height_mm=6000.0)
+        x, y, solar_az = _seam_rotated_case(0.0)
+        out = _trace(receiver, x, y, solar_az, deposit_method="bspline")
+        flux = out["flux"]
+        assert flux.max() > 0, "test case produced no spot at all -- fixture is broken, not the assertion"
+
+        n_u = flux.shape[1]
+        rolled = np.roll(flux, n_u // 2, axis=1)
+        mask = rolled > (1e-9 * rolled.max())
+        _, n_components = label(mask, structure=np.ones((3, 3)))
+        assert n_components == 1, (
+            f"seam-straddling cylinder flux map has {n_components} disconnected "
+            "non-zero regions after re-centring away from the array edge "
+            "(expected 1) -- isolated ringing islands at the seam"
+        )
 
 
 class TestControlGridEdgesAndEvaluate:

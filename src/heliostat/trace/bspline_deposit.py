@@ -28,21 +28,29 @@ the fine grid's cell centres, one unit vector ``e_j`` at a time.
 (``wrap_u``, e.g. a closed cylinder), the coarse control grid's own
 accumulation already wraps correctly -- it goes through ``kernels.deposit``
 unmodified, which has always wrapped bin indices modulo the column count for
-the masked/full-pass path. The prototype's own upsample construction
-(``_upsample_matrix`` below, ``bc_type="periodic"``) is likewise an exact
-periodic cubic interpolant -- verified here by comparing it against directly
-building the periodic spline through arbitrary coefficient values (they
-agree to float64 roundoff, not merely approximately). The prototype's
-measured seam artifact (+3.7% peak flux, REPORT.md SS3.4) traces instead to
-its NODE-FALLBACK deposit path (the rare "chief ray lost at a rim, surviving
-mass scattered directly at node landing points" branch): that branch
-computed a bin index and *clipped* it to ``[0, n_coarse - 1]`` regardless of
-``wrap_u``, silently dumping any node landing just past the wrap column back
-onto the last column instead of column 0. The tracer's own accumulation loop
-(:mod:`heliostat.trace.cone`) fixes this by wrapping that index modulo the
-coefficient count when depositing onto a periodic coarse grid -- "coefficient
-indices wrap modulo the coefficient count," both here (the upsample) and
-there (the node-fallback accumulation).
+the masked/full-pass path. The prototype's node-fallback deposit path (the
+rare "chief ray lost at a rim, surviving mass scattered directly at node
+landing points" branch) had a separate, unrelated seam bug (+3.7% peak flux,
+REPORT.md SS3.4): it computed a bin index and *clipped* it to
+``[0, n_coarse - 1]`` regardless of ``wrap_u``, silently dumping any node
+landing just past the wrap column back onto the last column instead of
+column 0. The tracer's own accumulation loop (:mod:`heliostat.trace.cone`)
+fixes that by wrapping that index modulo the coefficient count when
+depositing onto a periodic coarse grid.
+
+The upsample matrix's own periodic branch (``_upsample_matrix`` below) now
+uses the same non-negative coefficient-blend technique as the non-periodic
+branch -- a uniform *periodic* cubic B-spline built directly from the coarse
+values as its control points (the standard closed-curve construction: knots
+spaced uniformly around the period, coefficients wrapped cyclically), not an
+exact-interpolating periodic spline solved to pass through them. The same
+convex-hull argument applies: uniform B-spline basis functions are
+non-negative and sum to 1 regardless of whether the knot vector happens to
+be periodic, so a blend of non-negative coefficients through this basis is
+non-negative by construction, on both axes, with no Gibbs ringing at a sharp
+coarse-grid edge straddling the seam. See
+:class:`tests.test_bspline_deposit.TestPeriodicNoRingingArtifact` and
+:class:`tests.test_bspline_deposit.TestSeamContinuity`.
 """
 
 from __future__ import annotations
@@ -70,10 +78,7 @@ def _upsample_matrix(coarse_edges: np.ndarray, fine_edges: np.ndarray, periodic:
     """``(n_fine, n_coarse)`` fixed linear operator from coarse cell-centre
     values to fine cell centres.
 
-    The two branches use different constructions on purpose.
-
-    ``periodic=False`` (used for the ``v`` axis always, and for ``u`` on any
-    non-wrapping receiver): a cubic-B-spline COEFFICIENT BLEND -- the
+    Both branches now use the same COEFFICIENT BLEND technique -- the
     coarse values are used directly as B-spline coefficients (a
     quasi-interpolation / control-point blend), not solved for as the
     control points of a spline forced to pass exactly through them. This is
@@ -109,18 +114,23 @@ def _upsample_matrix(coarse_edges: np.ndarray, fine_edges: np.ndarray, periodic:
     Carlo reference (whole-map relative L2 error 0.340 -> 0.280), not just
     quieter at the edge.
 
-    ``periodic=True`` (the cylinder-seam ``u`` axis only): unchanged,
-    still the exact interpolating construction -- see
-    :class:`tests.test_bspline_deposit.TestUpsampleMatrixIsExactPeriodicInterpolation`,
-    a unit-level pin on this exact technique (interpolate through coarse
-    values with a periodic wrap-extension) as the guard against silently
-    reintroducing the cylinder-seam off-by-one this module's own periodic
-    handling was written to fix (see module docstring). A non-negative
-    coefficient blend and an exact interpolant are mutually exclusive for
-    sharp data -- so this axis, on a wrapping (cylindrical) receiver only,
-    can still show a milder version of the ringing artifact above; fixing
-    that too means first re-deriving (and re-pinning) the periodic
-    construction's correctness some other way, which is out of scope here.
+    ``periodic=True`` (the cylinder-seam ``u`` axis) applies the identical
+    idea with a periodic (closed-curve) knot vector instead of a clamped
+    one: knots spaced uniformly around the full period, extended by ``k``
+    on each side by periodic wraparound, and coefficients wrapped cyclically
+    (``c_ext[i] = e_j[i % n_c]``) so the resulting curve closes on itself
+    with ``C^2`` continuity at the seam -- the standard "closed uniform
+    cubic B-spline" construction. This used to be an exact-interpolating
+    periodic spline (pinned unit-for-unit against ``make_interp_spline``'s
+    own ``bc_type="periodic"`` solve); that exact-interpolation property
+    was retired in favour of the same non-negative coefficient blend used
+    above, because exact interpolation and guaranteed non-negativity cannot
+    both hold for sharp data, and a receiver that closes on itself has no
+    physical reason to privilege exact reproduction of the coarse grid's own
+    sample values over the seam actually being non-negative, continuous,
+    power-conserving and bearing-invariant -- see
+    :mod:`tests.test_bspline_deposit`'s ``TestPeriodicNoRingingArtifact``,
+    ``TestSeamContinuity`` and ``TestPeriodicConstantReconstructsExactly``.
     """
     coarse_mid = 0.5 * (coarse_edges[:-1] + coarse_edges[1:])
     fine_mid = 0.5 * (fine_edges[:-1] + fine_edges[1:])
@@ -129,17 +139,24 @@ def _upsample_matrix(coarse_edges: np.ndarray, fine_edges: np.ndarray, periodic:
     k = 3
     m = np.zeros((n_f, n_c))
     if periodic:
+        # Uniform periodic cubic B-spline: knots spaced at the coarse cell
+        # width `h`, extended k on each side by periodic wraparound, with
+        # coefficients wrapped cyclically so the curve closes on itself.
+        # This is the direct periodic analogue of the coefficient-blend
+        # branch below -- non-negative, sums to 1, no linear solve.
+        period = coarse_edges[-1] - coarse_edges[0]
+        h = period / n_c
+        knot_idx = np.arange(-k, n_c + k + 1)
+        t = coarse_mid[0] + knot_idx * h
+        fm = coarse_mid[0] + np.mod(fine_mid - coarse_mid[0], period)
         for j in range(n_c):
-            y = np.zeros(n_c)
-            y[j] = 1.0
-            # A periodic interpolant needs its first/last y equal; wrap the
-            # basis vector's period explicitly by using make_interp_spline's
-            # own periodic extension (it requires y[0] == y[-1]).
-            period = coarse_edges[-1] - coarse_edges[0]
-            x = np.concatenate([coarse_mid, [coarse_mid[0] + period]])
-            yy = np.concatenate([y, [y[0]]])
-            spl = make_interp_spline(x, yy, k=k, bc_type="periodic")
-            fm = coarse_mid[0] + np.mod(fine_mid - coarse_mid[0], period)
+            c_ext = np.zeros(n_c + k)
+            # e_j repeated cyclically across the k extra wrap-around
+            # coefficients (i.e. c_ext[i] = 1 wherever i % n_c == j).
+            c_ext[j] = 1.0
+            if j < k:
+                c_ext[n_c + j] = 1.0
+            spl = BSpline(t, c_ext, k, extrapolate=False)
             m[:, j] = spl(fm)
     else:
         # Coefficient-blend construction (see docstring above): the knot
