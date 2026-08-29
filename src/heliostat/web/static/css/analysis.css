@@ -31,6 +31,28 @@
   white-space: nowrap;
 }
 
+/* v0.2 followups M.6: `.tabcontent` (app.css) used to be the row itself;
+   it now stacks .an-contentrow (the old left+right row, unchanged) above
+   the full-width analysis aperture panel, which needs more than the
+   360px .an-right column to lay its curve beside its map.
+
+   .an-contentrow is `flex: 0 0 auto` -- ITS OWN natural height, not a
+   competing `flex: 1 1 auto` share of .tabcontent's bounded box. With two
+   flex-column children both wanting real height (this row AND the aperture
+   panel below, .an-aperturepanel is already `flex: 0 0 auto`), giving
+   either one `flex-grow`/`flex-shrink` forces the OTHER to give way --
+   observed as .an-contentrow collapsing to 0 height (its own children then
+   painted outside its box, overlapping the aperture panel below). Natural
+   height on both plus .tabcontent's own overflow:auto (app.css) is what
+   makes the whole tab one continuously scrollable page instead. */
+.an-contentcol {
+  flex-direction: column;
+}
+.an-contentrow {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 18px;
+}
 .an-left {
   flex: 1 1 auto;
   display: flex;
@@ -216,6 +238,17 @@
   margin-left: auto;
   flex: 0 0 auto;
 }
+/* docs/ui-spec-v0.2.md §C2, mockup M23: Plan / Unrolled -- sits beside the
+   Receiver | Secondary | Field selector (not margin-left: auto -- that seg
+   already claims the row's free space), only shown while Secondary is
+   selected. */
+.an-secviewseg {
+  flex: 0 0 auto;
+}
+.an-secplannote {
+  color: var(--muted);
+  font-style: italic;
+}
 /* docs/ui-spec-v0.2.md §N, mockup M18c: one click deeper to the richer 3D
    View viewers (drape, aperture, FEA export) -- sits after the seg, which
    already carries margin-left: auto. */
@@ -356,6 +389,18 @@
   font-size: 15px;
 }
 
+/* -- year -> day drill-in (docs/ui-spec-v0.2.md §M item 5) -----------------
+   .an-yeardaystable is a plain .an-table (app.css/.an-table above already
+   gives its rows the pointer cursor + hover background every other
+   clickable row in this tab uses -- the timesteps table included -- so a
+   sampled day reads as clickable the same way). */
+.an-yeardayswrap {
+  margin-top: 14px;
+}
+.an-yeardaystable {
+  width: 100%;
+}
+
 /* -- Manage saved runs overlay ----------------------------------------------
    Sits on app.css's .overlay/.overlay-panel/.overlay-close chrome. */
 
@@ -470,7 +515,13 @@
   text-align: center;
 }
 
-/* -- analysis aperture (docs/ui-spec-v0.2.md §M.4) ------------------------- */
+/* -- analysis aperture (docs/ui-spec-v0.2.md §M.4, riders on M.4 = M.6) ----
+   M.6 rearranges this panel: the encircled-power curve sits beside the map
+   (an-aperturebody, a row) instead of stacked below it, and the readout is
+   one horizontal strip beneath both (an-apreadoutbar/an-apreadoutrow)
+   instead of a tall 230px side card. The panel itself is now full-width
+   (tabs/analysis.js's `content` -- see an-contentcol/an-contentrow above),
+   which is what makes the room for this. */
 
 .an-aperturepanel {
   flex: 0 0 auto;
@@ -487,8 +538,8 @@
   flex-wrap: wrap;
 }
 .an-aperturecanvaswrap {
-  flex: 1 1 auto;
-  min-width: 220px;
+  flex: 1 1 55%;
+  min-width: 260px;
 }
 .an-aperturecanvas {
   display: block;
@@ -503,12 +554,31 @@
 .an-aperturecanvas:active {
   cursor: grabbing;
 }
+.an-aperturecurveframe {
+  flex: 1 1 40%;
+  min-width: 240px;
+}
+.an-aperturecurvecanvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  margin-top: 6px;
+}
+
+/* M.6: the readout strip, full width beneath the row above -- a typed
+   field (label over a numeric input, .an-apfield) reads and writes the
+   same aperture the drag on the map above does; a read-only metric
+   (.an-apmetric) sits beside it, same rmetric look the rest of this tab's
+   readouts already use. */
 .an-aperturepanel .readout {
-  flex: 0 0 230px;
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 14px;
   background: var(--bg);
+  margin-top: 14px;
 }
 .an-aperturepanel .readout h3 {
   margin: 0 0 10px 0;
@@ -518,15 +588,34 @@
   color: var(--muted);
   font-weight: 600;
 }
-.an-aperturepanel .rmetric {
+.an-apreadoutrow {
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  padding: 7px 0;
-  border-bottom: 1px solid #eef1f4;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 20px;
 }
-.an-aperturepanel .rmetric:last-of-type {
+.an-apfield {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.an-apfield label {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.an-apfield input.val {
+  width: 92px;
+}
+.an-aperturepanel .an-apmetric {
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 0;
   border-bottom: none;
+  min-width: 80px;
 }
 .an-aperturepanel .rnum {
   font-size: 15px;
@@ -534,9 +623,11 @@
   font-variant-numeric: tabular-nums;
 }
 .an-aperturepanel .rlbl {
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--muted);
-  text-align: right;
+  text-align: left;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 .an-aperturepanel .rformula {
   margin-top: 10px;
@@ -549,15 +640,34 @@
 .an-aperturepanel .hint {
   margin-top: 8px;
 }
-.an-aperturecurveframe {
-  margin-top: 14px;
-}
-.an-aperturecurvecanvas {
+
+/* -- §R: traced instant, a third Analysis result source (docs/ui-spec-v0.2.md
+   §R, mockup M22) ------------------------------------------------------- */
+
+.an-instantsummary {
   display: block;
-  width: 100%;
-  height: auto;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: #fff;
-  margin-top: 6px;
+  margin: 6px 0 0 0;
+  font-size: 13px;
+}
+.an-instantsummary.disabled-link {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.an-sourcerow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.an-sourcelabel {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.an-sourceseg {
+  margin-bottom: 0;
+}
 }

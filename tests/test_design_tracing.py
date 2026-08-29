@@ -113,7 +113,11 @@ def test_flower_cross_backend_agreement():
     cen_mc = xy.mean(axis=1)
     rms_mc = float(np.sqrt(((xy - cen_mc[:, None]) ** 2).sum(axis=0).mean()))
 
-    cone = trace_heliostat_cone(*args, sunshape_kernel("super_gauss"), design=design)
+    # MC's `design=design` call above passes no `sampler=`, so it draws from
+    # the app-wide default (Buie, since the sunshape swap) -- the cone
+    # kernel must match, or this cross-backend comparison is apples to
+    # oranges.
+    cone = trace_heliostat_cone(*args, sunshape_kernel("buie"), design=design)
     flux = cone["flux"]
     u_mid = 0.5 * (cone["u_edges"][:-1] + cone["u_edges"][1:])
     v_mid = 0.5 * (cone["v_edges"][:-1] + cone["v_edges"][1:])

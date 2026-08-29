@@ -104,6 +104,7 @@ from .trace import mc as _mc
 from .trace.cone import grid_for_density, sunshape_kernel, trace_heliostat_cone
 from .trace.mc import trace_heliostat
 from .trace.modes import MODES, TraceMode
+from .trace.samplers import BuieSampler
 
 __all__ = ["run_sweep", "standard_optics", "OpticsSpec", "DEFAULT_SITE", "WINDOW_MM", "GRID_SIZE"]
 
@@ -276,7 +277,15 @@ _STATE: dict = {}
 
 
 def _init_worker(
-    trace_mode, secondary, receiver, design, kernel, base_seed, receiver_edges, cone_flux_grid
+    trace_mode,
+    secondary,
+    receiver,
+    design,
+    kernel,
+    base_seed,
+    receiver_edges,
+    cone_flux_grid,
+    sampler=None,
 ):
     _STATE["mode"] = trace_mode
     _STATE["secondary"] = secondary
@@ -286,6 +295,11 @@ def _init_worker(
     _STATE["base_seed"] = base_seed
     _STATE["edges"] = receiver_edges
     _STATE["cone_flux_grid"] = cone_flux_grid
+    # docs/ui-spec-v0.2.md §O: the MC counterpart of `kernel` above --
+    # `None` (default) is trace_heliostat's own "use the pinned CSR=0
+    # BuieSampler" default, so a caller that never heard of CSR sees no
+    # change at all (see run_sweep's own circumsolar_ratio docstring).
+    _STATE["sampler"] = sampler
 
 
 def _trace_task(task: tuple) -> dict:
@@ -313,6 +327,7 @@ def _trace_task(task: tuple) -> dict:
             n_rays,
             rng,
             design=_STATE["design"],
+            sampler=_STATE.get("sampler"),
         )
         xy = out["xy"].T  # (K, 2)
         edges = _STATE["edges"]
@@ -622,6 +637,7 @@ def run_sweep(
     hour_step: float = 1.0,
     sunrise_margin_min: float = 10.0,
     min_elevation_deg: float = 5.0,
+    circumsolar_ratio: float = 0.0,
     progress: Callable[[str], None] = print,
 ) -> RunStore:
     """Trace ``field`` across ``dates`` and write a stored run to ``out_dir``.
@@ -631,6 +647,17 @@ def run_sweep(
     the elevation crossing, not just filtered after the fact, so the
     collected-power integral is not biased). Pass ``float("-inf")`` for the
     pre-floor behaviour (every timestep from sunrise+margin to sunset-margin).
+
+    ``circumsolar_ratio`` (docs/ui-spec-v0.2.md §O) is the Buie sunshape's
+    circumsolar ratio, applied identically at every timestep and every
+    heliostat -- the SAME value drives both the cone kernel
+    (``sunshape_kernel("buie", circumsolar_ratio=...)``) and the Monte Carlo
+    sampler (``BuieSampler(circumsolar_ratio=...)``, built once here and
+    handed to every worker), so a field/day sweep run at CSR > 0 broadens
+    identically to a single trace at the same CSR and mode. ``0`` (default)
+    reproduces the pre-§O behaviour bit-identically -- unset ``kernel``/
+    ``sampler`` are ``trace_heliostat_cone``/``trace_heliostat``'s own
+    CSR=0 defaults, exactly as before this parameter existed.
 
     See the module docstring for the standard-optics constants, the cfg
     duck-type built internally, and every judgment call made along the way.
@@ -704,10 +731,20 @@ def run_sweep(
             ),
             "occlusion_form": "union",
             "traced_secondary": False,
+            "circumsolar_ratio": circumsolar_ratio,
         },
     )
 
-    kernel = sunshape_kernel("super_gauss") if trace_mode.backend == "cone" else None
+    kernel = (
+        sunshape_kernel("buie", circumsolar_ratio=circumsolar_ratio)
+        if trace_mode.backend == "cone"
+        else None
+    )
+    # docs/ui-spec-v0.2.md §O: the MC counterpart of `kernel` above, built
+    # once (not per heliostat/timestep) like `kernel` itself -- `None` at
+    # CSR=0 so trace_heliostat falls back to its own pinned default sampler,
+    # bit-identical to before this parameter existed.
+    sampler = BuieSampler(circumsolar_ratio=circumsolar_ratio) if circumsolar_ratio > 0 else None
     cone_flux_grid = (GRID_SIZE, GRID_SIZE)
 
     pool = None
@@ -724,6 +761,7 @@ def run_sweep(
                 base_seed,
                 cfg.receiver.edges,
                 cone_flux_grid,
+                sampler,
             ),
         )
     else:
@@ -736,6 +774,7 @@ def run_sweep(
             base_seed,
             cfg.receiver.edges,
             cone_flux_grid,
+            sampler,
         )
 
     n_rays_eff = n_rays or trace_mode.n_rays

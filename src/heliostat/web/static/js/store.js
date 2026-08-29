@@ -128,9 +128,22 @@ const DEFAULT_DOC = {
   },
   field: {
     mode: "field",
-    layout: "radial_stagger", // "radial_stagger" | "fermat" | "manuscript"
+    layout: "radial_stagger", // "radial_stagger" | "fermat" | "manuscript" | "positions"
     single: { x_mm: 0, y_mm: -89609 },
     fermat: { n: 643, r_min_m: 30, r_max_m: 90 },
+    // A frozen, arbitrary positions blob -- populated only by project.js's
+    // applyProject() when a loaded project's field is a `{"type":
+    // "positions", ...}` layout that ISN'T the manuscript's own field
+    // (which keeps its existing "manuscript" symbolic treatment below).
+    // docs/ui-spec-v0.2.md §P's built-in reference projects (Gemasolar,
+    // PS10, Crescent Dunes, the Stellio-based field) are the reason this
+    // exists: each ships thousands of positions with no parametric
+    // generator to reconstruct them from client-side, so they ride here
+    // verbatim, exactly like "manuscript" rides its own module-level cache
+    // in api.js -- see currentLayoutPayload's "positions" branch. Nothing
+    // in the Field stage's sidebar edits this (no parametric UI could); it
+    // only round-trips through save/serialize.
+    positions: { xy_mm: [] },
     // Three bands, innermost first -- matches the server's own
     // RadialStaggeredLayout defaults (heliostat.web.app), which is what
     // reproduces the paper's 643-heliostat field. Ring radii are not
@@ -156,6 +169,12 @@ const DEFAULT_DOC = {
     mode: "direct",
     az: 165.2,
     el: 61.4,
+    // docs/ui-spec-v0.2.md §O: Buie circumsolar ratio, 0-1, default 0 -- 0
+    // is today's shipped hard-cutoff disk with no aureole, bit-identical to
+    // before this control existed (heliostat.web.app's own binding
+    // guarantee). Persisted like the rest of the Sun stage (see
+    // project.js's serializeProject/applyProject).
+    csr: 0,
     site: {
       latitude_deg: -10.0,
       longitude_deg: -52.0,
@@ -165,6 +184,14 @@ const DEFAULT_DOC = {
       day: 21,
       hour: 12.0,
     },
+    // Spec §M.7 site DNI control -- "constant" at 1000 W/m^2 is the
+    // default deliberately, NOT the rider's literally-stated "clear-sky
+    // model": every trace/day-sweep endpoint already assumed flat 1000
+    // W/m^2 regardless of sun elevation before this control existed, so
+    // this is the value that keeps a fresh project's numbers unchanged
+    // (see heliostat.web.app's DNISetting docstring for the full
+    // reasoning). "Clear-sky model" is one click away in the Sun panel.
+    dni: { mode: "constant", constant_w_m2: 1000.0, clearsky_scale: 1.0 },
   },
 };
 
@@ -196,6 +223,13 @@ const DEFAULT_UI = {
   traceProgress: null,
   staleResults: false,
   fluxOverlayOpen: false,
+  // Corner-ray visibility in the 3D scene (and the same rays drawn in
+  // Design's plan/elevation views) -- one flag shared by both tabs' rays
+  // checkboxes (main.js's raysToggle in 3D View, designRaysToggle in
+  // Design). Explicit here (rather than left undefined and read as "on")
+  // so both controls' [checked] state and the store agree on a real value
+  // from first paint, instead of each control guessing the same default.
+  showRays: true,
   // In-scene selection + miss warnings.
   selection: null, // null | { kind: "heliostat" | "secondary" | "receiver" | "sun", id: number|null }
   miss: null, // /api/scene/geometry's top-level `miss` key, verbatim (or null if absent/not-yet-live)
@@ -204,6 +238,15 @@ const DEFAULT_UI = {
   libraryOpen: false,
   libraryTab: "receivers", // "designs" | "receivers" | "projects"
   projectName: null,
+  // docs/ui-spec-v0.2.md §P's binding provenance requirement: while a
+  // built-in reconstruction project (Gemasolar, PS10, Crescent Dunes, the
+  // Stellio-based field) is loaded, its citation stays visibly persistent
+  // (the top-bar stamp main.js's renderTopbar() renders) so a result
+  // screenshot carries the provenance, not just the plant name. `null` for
+  // a new/saved/imported/non-reconstruction project -- only
+  // library.js's loadProject() sets this, from the built-in's own
+  // `provenance.citation` (see /api/library/projects/{name}'s response).
+  projectProvenance: null,
   dirty: false,
   // Which top-level tab is showing -- "design" | "3dview" | "shape" |
   // "analysis" (docs/ui-spec-v0.2.md §N: the old single "workspace" tab
@@ -220,7 +263,31 @@ const DEFAULT_UI = {
   // picking "Secondary" in one place is what you meant everywhere else too.
   // Only ever meaningful for axicon/cassegrain; a prime-focus doc simply
   // has nothing to show for it (see fluxSecondaryAvailable helpers).
+  // v0.2 followups item 1 adds a third value, "field": mockup M15's
+  // plan-view power coloring (a dot per heliostat, colored by its own
+  // power_w) -- meaningful only where per-heliostat rows exist (a live
+  // field trace's own response; disabled with an honest tooltip otherwise,
+  // same "available" pattern as secondary).
   fluxSurface: "receiver",
+  // v0.2 followups item 2 (owner-approved): the frustum's TRUE developed
+  // ("fan") view, an alternative to the default parameter-space rectangle
+  // -- see app.py's TraceRequest.flux_view for the physics (the rectangle
+  // stretches/compresses arc length toward each rim; the fan is the exact,
+  // undistorted cone development). A view PREFERENCE like fluxSurface
+  // above, not a fidelity setting -- api.js's buildTraceRequest only sends
+  // it when non-default, and the server silently renders the rectangle for
+  // any receiver that isn't a frustum, so this can be left "fan" across an
+  // optics change without erroring. main.js's flux overlay shows the
+  // toggle only when the traced receiver is a frustum.
+  fluxView: "rect",
+  // v0.2 followups item 2, mockup M16: whether a trace's flux map paints
+  // onto the 3D receiver mesh in place of its plain material (labelled
+  // "Flux overlay" in the 3D View results dock -- the owner disliked
+  // mockup M16's original "drape" name; nothing in the committed API/
+  // payload fields renamed, display label only). Default ON, matching the
+  // drape's own behavior before this toggle existed. main.js's
+  // applyFluxOverlayVisibility() is the one place that reads this.
+  receiverFluxOverlay: true,
 };
 
 function createStore() {

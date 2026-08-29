@@ -59,7 +59,13 @@ from .mc import (
     _zernike_sag_and_slopes,
     design_facet_frames,
 )
-from .samplers import BUIE_LIMB_MRAD, SUPER_GAUSS_ORDER, SUPER_GAUSS_SIGMA_RAD
+from .samplers import (
+    AUREOLE_LIMIT_MRAD,
+    BUIE_LIMB_MRAD,
+    SUPER_GAUSS_ORDER,
+    SUPER_GAUSS_SIGMA_RAD,
+    _buie_full_profile,
+)
 
 STANDARD_IRRADIANCE_W_MM2 = 1000.0e-6  # 1000 W/m^2, the trace normalisation
 
@@ -74,10 +80,48 @@ RING_PROBES = 12  # boundary directions probed per sample for the rim check
 
 # deposit_method="bspline" (see trace_heliostat_cone's docstring):
 # control_grid=None derives a coarse accumulation grid this many times
-# smaller than flux_grid, per axis (scripts/coeff_prototype/REPORT.md's own
-# 32x32-vs-128x128 benchmark is a 4x coarsening), clamped to a minimum so a
-# very small flux_grid still gets a usable control grid.
-CONTROL_GRID_COARSEN = 4
+# smaller than flux_grid, per axis, clamped to CONTROL_GRID_MIN so a very
+# small flux_grid still gets a usable control grid.
+#
+# Two constants, not one, because the two axes tolerate coarsening very
+# differently -- measured directly (matched Buie sunshape on both the cone
+# kernel and the MC reference; single ULTRA_FAST heliostat, bearing 60 deg,
+# flux_grid from the app's own _receiver_flux_grid sizing -- (128,128) flat,
+# (448,128) cylinder/frustum; peak flux vs the BINNED deposit at the same
+# kernel, which isolates the deposit-method error from MC shot noise, cross-
+# checked against a matched 2-seed/300,000-ray MC reference):
+#
+#   axis coarsened alone (other axis held at 1x), peak-flux error vs binned:
+#   cylinder u (periodic, wraps)   2x  -1.8%   4x   -5.6%   8x  -40.0%
+#   cylinder v (non-periodic)      2x  +3.6%   4x  -10.3%   8x  -20.9%
+#   frustum  u (periodic, wraps)   2x  +0.7%   4x   -3.7%   8x  -43.9%
+#   frustum  v (non-periodic)      2x  -3.1%   4x   +4.7%   8x  -26.5%
+#
+# and, both axes coarsened together (the shape this module actually uses):
+#
+#   coarsen   flat (u,v both non-periodic)   cylinder (u periodic)   frustum (u periodic)
+#      1              -0.1%                        -0.4%                    -0.4%
+#      2              -0.6%                        +2.0%                    +0.4%
+#      4              +0.1%                       -14.6%                    -9.5%
+#      8             -28.9%                       -70.4%                   -68.9%
+#
+# (script: see this task's session -- scratchpad/peak_accuracy_sweep.py and
+# per_axis_sweep.py; re-run to reproduce). The old default, 4x on both axes,
+# is fine on a flat window but badly under-resolves peak flux on either
+# curved receiver once its periodic u axis is folded in at that coarsening
+# -- consistent with the periodic axis being the more fragile one, though at
+# 4x BOTH axes are already past a "few percent" peak-flux target, not just
+# the periodic one. 2x on both axes is the coarsest setting that holds every
+# tested shape within a few percent (worst case here: cylinder +2.0%) while
+# still cutting the control grid to 1/4 the fine grid's cell count per axis
+# pair (1/16 the cells) -- a real accumulate-phase win over binned deposit,
+# now affordable at field scale because _cached_upsample_matrix removes the
+# evaluate-phase matrix-rebuild cost the old 4x default was partly chosen to
+# amortize. Kept as two named constants (not one shared value) because nothing
+# says the two axes must coarsen equally going forward -- only that, at the
+# accuracy target this rule was picked to hit, they currently do.
+CONTROL_GRID_COARSEN_PERIODIC = 2  # the wrapping u axis of a cylinder/frustum receiver
+CONTROL_GRID_COARSEN_NONPERIODIC = 2  # v always; u too on a flat (non-wrapping) receiver
 CONTROL_GRID_MIN = 8
 
 #: Test-only escape hatch: forces every sample through the full node raster,
@@ -199,14 +243,25 @@ def _secondary_ring_clears(
 
 
 def sunshape_kernel(
-    source_model: str = "super_gauss",
+    source_model: str = "buie",
     slope_error_mrad: float = 0.0,
     pointing_error_mrad: float = 0.0,
     specularity_mrad: float = 0.0,
+    circumsolar_ratio: float = 0.0,
 ) -> RadialKernel:
     """The angular kernel for a named sunshape, optionally error-broadened.
 
     Profiles are the same pinned forms the Monte Carlo samplers draw from.
+    ``circumsolar_ratio`` (docs/ui-spec-v0.2.md §O, ``source_model="buie"``
+    only) adds the Buie, Monger & Dey (2003) circumsolar aureole term beyond
+    the disk's limb -- the SAME formula and the SAME ``circumsolar_ratio ==
+    0`` bit-identity split :class:`~heliostat.trace.samplers.BuieSampler`
+    uses (both read :func:`~heliostat.trace.samplers._buie_full_profile`),
+    so a CSR change moves the cone and Monte Carlo backends identically, per
+    the spec's "one model, every fidelity" requirement. Ignored (must be
+    ``0``) for ``source_model="super_gauss"``, which has no aureole term to
+    add.
+
     Mirror slope error deflects a reflected ray by twice the surface tilt,
     hence the factor 2 on ``slope_error_mrad``; ``specularity_mrad`` is a
     coating scatter of the reflected ray itself, so it carries no such
@@ -234,6 +289,8 @@ def sunshape_kernel(
     cone spot by 2x what a matching Monte Carlo trace realises.
     """
     if source_model == "super_gauss":
+        if circumsolar_ratio != 0.0:
+            raise ValueError("circumsolar_ratio is only meaningful for source_model='buie'")
         sig = SUPER_GAUSS_SIGMA_RAD
 
         def profile(t):
@@ -246,19 +303,81 @@ def sunshape_kernel(
         kernel = RadialKernel.from_profile(profile, support_rad=4.5 * sig)
     elif source_model == "buie":
         limb = BUIE_LIMB_MRAD * 1e-3
+        if circumsolar_ratio <= 0.0:
+            # Unchanged from before circumsolar_ratio existed -- §O's
+            # binding bit-identity requirement (docs/ui-spec-v0.2.md §O),
+            # so this branch never calls into the aureole machinery below,
+            # even at a value that would mathematically zero it out (the
+            # aureole formulas are singular at circumsolar_ratio == 0 in any
+            # case -- see heliostat.trace.samplers._buie_kappa_gamma).
+            def profile(t):
+                t_mrad = np.minimum(t, limb) * 1e3
+                return np.where(t <= limb, np.cos(0.326 * t_mrad) / np.cos(0.308 * t_mrad), 0.0)
 
-        def profile(t):
-            t_mrad = np.minimum(t, limb) * 1e3
-            return np.where(t <= limb, np.cos(0.326 * t_mrad) / np.cos(0.308 * t_mrad), 0.0)
+            kernel = RadialKernel.from_profile(profile, support_rad=limb)
+        else:
+            # The aureole extends the tabulated support all the way to its
+            # published validity domain (AUREOLE_LIMIT_MRAD, 2.5 degrees) --
+            # RadialKernel.__init__ renormalises over the WHOLE tabulated
+            # range automatically, and _effective_support_rad/the
+            # transmission-skip footprint below both read kernel.support_rad
+            # (or integrate kernel.density out to it), so a too-small
+            # support here would silently clip the halo everywhere
+            # downstream. `n` is scaled up from from_profile's own default
+            # (512, tuned for a support of just the 4.65 mrad disk) by the
+            # same ratio the support itself grew, so the disk's own
+            # resolution is not diluted by tabulating a ~9.4x wider range
+            # with the same point count.
+            support_rad = AUREOLE_LIMIT_MRAD * 1e-3
+            n = int(round(512 * AUREOLE_LIMIT_MRAD / BUIE_LIMB_MRAD))
 
-        kernel = RadialKernel.from_profile(profile, support_rad=limb)
+            def profile(t):
+                return _buie_full_profile(t * 1e3, circumsolar_ratio)
+
+            kernel = RadialKernel.from_profile(profile, support_rad=support_rad, n=n)
     else:
         raise ValueError(f"unknown source_model {source_model!r}")
 
     broadening = (
         np.hypot(np.hypot(2.0 * slope_error_mrad, specularity_mrad), pointing_error_mrad) * 1e-3
     )
-    return kernel.convolve_gaussian(broadening) if broadening > 0 else kernel
+    result = kernel.convolve_gaussian(broadening) if broadening > 0 else kernel
+
+    # Stash the moment breakdown `trace_heliostat_cone` needs to give
+    # slope_error_mrad's contribution (and ONLY its contribution) the
+    # beam-frame tangential/sagittal anisotropy a mirror-isotropic slope
+    # perturbation actually reflects into (measured: sagittal broadening =
+    # tangential * cos(theta_i) to ~0.3% up to 60 deg incidence -- see
+    # scratchpad/slope_anisotropy_report.md for this session's measurement,
+    # and mc.py's own ``_perturb_unit``/``trace_heliostat`` docstrings for
+    # why MC already gets this right without any special-casing). Kept as
+    # plain attributes on the returned kernel, not a second return value, so
+    # every OTHER caller of this function (fast_accurate/ultra_fast modes,
+    # sweep.py, every existing test) is completely unaffected -- the kernel
+    # object itself, its ``density`` table and ``rms_radius_rad()``, are
+    # bit-identical to before this attribute existed in every case; only a
+    # caller that knows to look (``trace_heliostat_cone``) reads them, via
+    # ``getattr(..., 0.0)`` so a kernel built by any OTHER route (a bare
+    # ``RadialKernel(...)``/``.gaussian(...)`` in a test, say) safely falls
+    # back to the old, fully isotropic treatment.
+    #
+    # ``_non_slope_var_rad2``: per-axis angular variance (rad^2) of
+    # everything EXCEPT slope error -- the sunshape's own spread
+    # (``kernel.rms_radius_rad()**2 / 2``, per-axis, evaluated on the
+    # PRE-broadening sunshape-only kernel above) plus specularity/pointing's
+    # isotropic contribution. ``_slope_sigma_rad``: slope error's own
+    # per-axis sigma, ``2 * slope_error_mrad`` (mrad -> rad) -- the same
+    # doubling this function's docstring already applies, just kept
+    # separately instead of folded into ``broadening`` immediately.
+    # Variance adds for a sum of independent perturbations regardless of
+    # shape (no Gaussian assumption needed for THIS step), so
+    # ``_non_slope_var_rad2 + _slope_sigma_rad**2`` reproduces
+    # ``broadening``'s own total variance exactly.
+    result._non_slope_var_rad2 = kernel.rms_radius_rad() ** 2 / 2.0 + (
+        np.hypot(specularity_mrad, pointing_error_mrad) * 1e-3
+    ) ** 2
+    result._slope_sigma_rad = 2.0 * slope_error_mrad * 1e-3
+    return result
 
 
 def grid_for_density(
@@ -345,15 +464,18 @@ def trace_heliostat_cone(
     interpolation matrix onto the requested ``flux_grid``; see
     :mod:`heliostat.trace.bspline_deposit` for the accumulate/evaluate math
     and the cylinder-seam periodicity note. ``control_grid=None`` (default)
-    derives it as ``flux_grid`` coarsened ``CONTROL_GRID_COARSEN`` (4x) per
-    axis rather than a fixed tuple: a curved receiver's adaptive
-    ``flux_grid`` (``_receiver_flux_grid`` in the web layer scales ``n_u``
-    up to 448 for a wide cylinder) needs a proportionally wider control grid
-    too, or the fixed 32x32 the prototype benchmarked at flat 128x128 becomes
-    a far coarser-than-intended ~14x coarsening instead of 4x, badly
-    under-resolving peak flux. This is how the ``ultra_fast`` mode
-    (:mod:`heliostat.trace.modes`) deposits; ``fast_accurate`` and Monte
-    Carlo keep exact binned deposit.
+    derives it as ``flux_grid`` coarsened per axis rather than a fixed
+    tuple -- a curved receiver's adaptive ``flux_grid`` (``_receiver_flux_grid``
+    in the web layer scales ``n_u`` up to 448 for a wide cylinder) needs a
+    proportionally wider control grid too, or a fixed square control grid
+    sized for a flat window becomes a far coarser-than-intended coarsening
+    on ``u``, badly under-resolving peak flux -- using
+    ``CONTROL_GRID_COARSEN_PERIODIC`` on ``u`` when the receiver wraps
+    (``wrap_u``) and ``CONTROL_GRID_COARSEN_NONPERIODIC`` otherwise, and
+    always on ``v`` (never periodic): see the constants' own comment for the
+    matched-sunshape measurements this split and its current values come
+    from. This is how the ``ultra_fast`` mode (:mod:`heliostat.trace.modes`)
+    deposits; ``fast_accurate`` and Monte Carlo keep exact binned deposit.
 
     ``delta_rad`` is the finite-difference probe angle; it must be small
     against the optics' scale of nonlinearity but large enough that
@@ -521,6 +643,81 @@ def trace_heliostat_cone(
         area_w = np.concatenate(area_list)
         m = pts.shape[1]
 
+    # cos(incidence angle) per sample -- computed here (not just once, later,
+    # where the pre-existing code needs it for `weights`) because the
+    # slope-error anisotropy warp below needs it too; `cos_aoi` is reused
+    # unchanged at the "classify and deposit" step further down.
+    cos_aoi = np.abs(normal.T @ s)
+
+    # --- slope-error beam-frame anisotropy: build the per-sample angle-space
+    # warp -----------------------------------------------------------------
+    # A slope-error perturbation is isotropic in the MIRROR's own tangent
+    # frame (mc.py's `_perturb_unit` -- the physically correct convention,
+    # see that module's docstring), but reflects into an ELLIPTICAL beam
+    # deflection at oblique incidence: tangential (in the plane of
+    # incidence) matches the full `2*slope_error_mrad`; sagittal is
+    # compressed by `cos(theta_i)`, measured to ~0.3% up to 60 deg incidence
+    # (scratchpad/slope_anisotropy_report.md, this session). The cone
+    # kernel stays radial and isotropic (`sunshape_kernel` above never
+    # changes) -- the compression is instead applied per sample as a linear
+    # warp of THAT sample's own Jacobian: evaluating the same isotropic
+    # kernel through `jac @ warp` reproduces a footprint whose SECOND
+    # MOMENTS exactly match the true (tangential, sagittal) variance,
+    # because variance adds for independent perturbations regardless of
+    # shape. This is a moment-matching construction, not a re-derivation of
+    # the true anisotropic convolution's exact shape (that would require a
+    # genuine 2-D convolution of a non-Gaussian sunshape with an elliptical
+    # Gaussian, which cannot be reduced to a single radial kernel through a
+    # linear Jacobian) -- adequate for what the total-RMS and ellipse-ratio
+    # gates this change is validated against actually check (see this
+    # task's own report/PR notes), and exact for the two cases that must be
+    # bit-identical: zero slope error (`slope_sigma_rad == 0`, skipped
+    # below entirely) and normal incidence (`cos_aoi == 1`, `warp == I`
+    # exactly, forced rather than left to floating-point orthonormality).
+    slope_sigma_rad = getattr(kernel, "_slope_sigma_rad", 0.0)
+    warp = None
+    if slope_sigma_rad > 0.0:
+        non_slope_var_rad2 = kernel._non_slope_var_rad2
+        v_total = non_slope_var_rad2 + slope_sigma_rad**2
+        # c_eff is the sagittal-axis scale factor that makes `warp` compress
+        # the WHOLE (isotropic) kernel's sagittal variance down to exactly
+        # the true target (non-slope variance untouched + slope's OWN
+        # cos(theta_i)-compressed share) -- see the report for the full
+        # derivation. c_eff == 1 exactly whenever cos_aoi == 1 (v_total in
+        # the numerator and denominator become identical), independent of
+        # slope/sunshape/other-error magnitudes.
+        c_eff = np.sqrt(
+            np.clip(
+                (non_slope_var_rad2 + (slope_sigma_rad * cos_aoi) ** 2) / v_total, 0.0, 1.0
+            )
+        )
+        is_normal = c_eff >= 1.0
+        d_in = -s
+        with np.errstate(invalid="ignore", divide="ignore"):
+            # Tangential: the mirror normal's own component perpendicular to
+            # the (mean) incoming ray -- lies in the plane of incidence.
+            # Sagittal: perpendicular to both -- the mirror's own true
+            # normal-tilt sagittal axis, not an approximation, per sample.
+            # Both are undefined exactly where `is_normal` is True (normal
+            # incidence collapses the plane of incidence), harmlessly: the
+            # `np.where` below never reads them there.
+            t_raw = normal - (normal.T @ d_in)[None, :] * d_in[:, None]
+            t_hat = t_raw / np.linalg.norm(t_raw, axis=0)
+            q_raw = np.cross(normal.T, d_in).T
+            q_hat = q_raw / np.linalg.norm(q_raw, axis=0)
+            # Projected into the SAME (e1, e2) basis the Jacobian's own
+            # columns are indexed by (see the stencil below): (t_u, t_v) and
+            # (q_u, q_v) are t_hat/q_hat's own coordinates in that basis.
+            t_u, t_v = t_hat.T @ e1, t_hat.T @ e2
+            q_u, q_v = q_hat.T @ e1, q_hat.T @ e2
+            # warp = R diag(1, c_eff) R^T, R = [t_hat | q_hat] (orthonormal
+            # in the e1/e2 plane) -- symmetric by construction (w01 == w10).
+            w00 = np.where(is_normal, 1.0, t_u * t_u + c_eff * q_u * q_u)
+            w01 = np.where(is_normal, 0.0, t_u * t_v + c_eff * q_u * q_v)
+            w10 = np.where(is_normal, 0.0, t_v * t_u + c_eff * q_v * q_u)
+            w11 = np.where(is_normal, 1.0, t_v * t_v + c_eff * q_v * q_v)
+        warp = np.stack([np.stack([w00, w01], axis=-1), np.stack([w10, w11], axis=-1)], axis=-2)
+
     # Incoming directions, identical for every sample (the sun is at
     # infinity). Stencil legs: [chief, +e1, -e1, +e2, -e2] and, at order 2,
     # the four diagonals [++, +-, -+, --] that resolve the mixed Hessian.
@@ -589,11 +786,6 @@ def trace_heliostat_cone(
         jac_all[:, :, axis] = col.T
         can_jac &= alive[leg_p] | alive[leg_m]
 
-    # Top singular value of each sample's Jacobian, computed once for every
-    # sample: shared below by the transmission-skip test's reach bound and
-    # by `deposit`'s own bounding-box sizing (see `_jac_smax_mm`).
-    smax_all = _jac_smax_mm(jac_all)
-
     hess_all = None
     if order == 2:
         # Second differences where the full stencil survived; a partial
@@ -608,6 +800,34 @@ def trace_heliostat_cone(
         hess_all[f, :, 0, 1] = mixed.T
         hess_all[f, :, 1, 0] = mixed.T
 
+    # `jac_all`/`hess_all` above are the TRUE optical map -- d(receiver uv)/
+    # d(source angle), measured by real ray tracing, unrelated to any error
+    # model -- and stay exactly as computed for the return dict's own
+    # "jacobians" key. Everything the deposit machinery below actually
+    # consumes reads the "_eff" versions instead: identical to the true ones
+    # whenever `warp` is None (slope_error_mrad == 0, the common case, and
+    # the zero-slope bit-identity gate), warped per sample otherwise (see
+    # the `warp` block above). `d(uv)/d(omega) = d(uv)/d(angle) @ warp` by
+    # the chain rule for the linear substitution `angle = warp @ omega`; the
+    # Hessian (a bilinear form in TWO angle indices) picks up `warp` on
+    # BOTH.
+    if warp is None:
+        jac_eff_all = jac_all
+        hess_eff_all = hess_all
+    else:
+        jac_eff_all = np.matmul(jac_all, warp)
+        hess_eff_all = (
+            None
+            if hess_all is None
+            else np.einsum("miab,maj,mbk->mijk", hess_all, warp, warp)
+        )
+
+    # Top singular value of each sample's (possibly warped) Jacobian,
+    # computed once for every sample: shared below by the transmission-skip
+    # test's reach bound and by `deposit`'s own bounding-box sizing (see
+    # `_jac_smax_mm`).
+    smax_all = _jac_smax_mm(jac_eff_all)
+
     # --- angular transmission, measured on a node grid where it can't be
     # ruled out cheaply -----------------------------------------------------
     # The stencil spans only ~delta_rad and cannot detect a boundary lying
@@ -616,6 +836,19 @@ def trace_heliostat_cone(
     # vectorised bundle for the whole mirror, through every clip the sun
     # cone can meet (neighbour shadow on the way in; neighbour blocking,
     # secondary aperture and receiver window on the way out).
+    #
+    # Known approximation when `warp` is not None: this raster (and its
+    # `w_nodes` kernel weighting below) stays in RAW, un-warped real-angle
+    # space and is shared across every sample that needs it, rather than
+    # inverse-warped per sample -- doing that exactly would cost the
+    # section's whole-mirror vectorisation (one shared node grid becomes one
+    # per sample). Harmless for the skip decision itself (`can_skip`, just
+    # above, already uses the correctly-warped `jac_eff_all`/`smax_all`, so
+    # it never under-skips); the residual approximation only reaches a
+    # sample that is BOTH anisotropically slope-broadened AND genuinely
+    # straddling a rim/edge/shadow boundary, which this task's own gates
+    # (report Part 2b widens the receiver window specifically to avoid any
+    # clipping) do not exercise. Flagged rather than fixed here.
     support = kernel.support_rad
     occluders = occluders or []
     (u0, u1), (v0, v1) = receiver.uv_extent()
@@ -638,7 +871,7 @@ def trace_heliostat_cone(
     if not occluders and shadow_body is None and not DISABLE_TRANSMISSION_SKIP:
         skip_support = _effective_support_rad(kernel)
         with np.errstate(invalid="ignore"):
-            reach = _reach_mm(smax_all, hess_all, full_stencil, skip_support)
+            reach = _reach_mm(smax_all, hess_eff_all, full_stencil, skip_support)
             uv0 = uv[:, 0, :]
             margin = reach * WINDOW_SAFETY_FACTOR + WINDOW_MARGIN_FLOOR_MM
             v_clears = (uv0[1] - margin >= v0) & (uv0[1] + margin <= v1)
@@ -752,7 +985,8 @@ def trace_heliostat_cone(
             frac_secondary[idxn] = (sec_mask_n @ w_nodes) / w_sum
 
     # --- classify and deposit --------------------------------------------
-    cos_aoi = np.abs(normal.T @ s)  # incoming is -s; |normal . s| is cos(aoi)
+    # `cos_aoi` (incoming is -s; |normal . s| is cos(aoi)) was already
+    # computed above, before the stencil, for the slope-error warp.
     weights = STANDARD_IRRADIANCE_W_MM2 * area_w * cos_aoi
 
     # A receiver that closes on itself has no edge in u: the flux grid wraps.
@@ -774,9 +1008,13 @@ def trace_heliostat_cone(
             # Proportional to flux_grid, not a fixed tuple -- see docstring:
             # a curved receiver's adaptive (wide) flux_grid needs a
             # proportionally wider control grid to keep the same
-            # coarsening factor the prototype benchmarked.
-            n_cu = max(CONTROL_GRID_MIN, round(n_u / CONTROL_GRID_COARSEN))
-            n_cv = max(CONTROL_GRID_MIN, round(n_v / CONTROL_GRID_COARSEN))
+            # coarsening factor. Per-axis coarsening factor: the periodic
+            # (wrapping) u axis of a cylinder/frustum receiver measurably
+            # tolerates coarsening worse than a non-periodic axis -- see
+            # CONTROL_GRID_COARSEN_PERIODIC's own comment for the numbers.
+            u_coarsen = CONTROL_GRID_COARSEN_PERIODIC if wrap_u else CONTROL_GRID_COARSEN_NONPERIODIC
+            n_cu = max(CONTROL_GRID_MIN, round(n_u / u_coarsen))
+            n_cv = max(CONTROL_GRID_MIN, round(n_v / CONTROL_GRID_COARSEN_NONPERIODIC))
             control_grid = (n_cu, n_cv)
         accum_u_edges, accum_v_edges = control_grid_edges(u_edges, v_edges, control_grid)
     else:
@@ -796,14 +1034,14 @@ def trace_heliostat_cone(
         if chief_ok[idx] and can_jac[idx]:
             full_pass = frac[idx] > 1.0 - 1.0e-9
             hess_i = None
-            if hess_all is not None and full_stencil[idx]:
-                hess_i = hess_all[idx]
+            if hess_eff_all is not None and full_stencil[idx]:
+                hess_i = hess_eff_all[idx]
             deposit(
                 out,
                 accum_u_edges,
                 accum_v_edges,
                 uv[:, 0, idx],
-                jac_all[idx],
+                jac_eff_all[idx],
                 float(weights[idx]),
                 kernel,
                 hess=hess_i,
@@ -909,12 +1147,26 @@ def trace_heliostat_cone(
                 iv = np.clip((uv_j[1] - sv0) // sv_step, 0, sn_v - 1).astype(np.intp)
                 np.add.at(sec_out, (iv.astype(np.intp), iu.astype(np.intp)), share)
 
+        # secondary_power_w is computed from `sec_out` (raw deposited weight
+        # per uniform bin) BEFORE the true-area correction below -- every
+        # sample's weight telescopes back out exactly regardless of which
+        # bin (masked or not) it landed in, so this total is unaffected by
+        # the masking secondary_bin_areas_m2 applies next.
         secondary_power_w = float(sec_out.sum() * sec_bin_area_mm2)
         secondary_flux = sec_out * 1.0e6  # W/mm^2 -> W/m^2
         sec_true_area_m2 = secondary_bin_areas_m2(secondary, (sn_u, sn_v))
         sec_uniform_area_m2 = sec_bin_area_mm2 * 1.0e-6
-        if not np.allclose(sec_true_area_m2, sec_uniform_area_m2):
-            secondary_flux = secondary_flux * (sec_uniform_area_m2 / sec_true_area_m2)
+        # secondary_bin_areas_m2 masks bins outside the aperture disk to
+        # area=0 (see that function's own note) -- guard the divide so those
+        # bins report flux=0 rather than inf/nan (a chief-point or
+        # node-fallback deposit CAN land in one of these boundary-
+        # straddling bins; its weight is still counted in secondary_power_w
+        # above, only its displayed flux is zeroed here).
+        ratio = np.divide(
+            sec_uniform_area_m2, sec_true_area_m2,
+            out=np.zeros_like(sec_true_area_m2), where=sec_true_area_m2 > 0,
+        )
+        secondary_flux = secondary_flux * ratio
         secondary_extra = {
             "secondary_flux": secondary_flux,
             "secondary_u_edges": su_edges,

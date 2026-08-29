@@ -4,164 +4,164 @@
     "step_key": "20260321_1828",
     "sun_position": "lowest_elevation",
     "emitted": 20000,
-    "hit_mirror": 5594,
+    "hit_mirror": 5604,
     "tip_rays": 0,
-    "hit_secondary": 5594,
-    "reached_receiver": 5594,
-    "in_window": 5594
+    "hit_secondary": 5604,
+    "reached_receiver": 5604,
+    "in_window": 5604
   },
   {
     "heliostat_id": 48,
     "step_key": "20260321_0939",
     "sun_position": "mid_morning",
     "emitted": 20000,
-    "hit_mirror": 6569,
+    "hit_mirror": 6562,
     "tip_rays": 0,
-    "hit_secondary": 6569,
-    "reached_receiver": 6569,
-    "in_window": 6569
+    "hit_secondary": 6562,
+    "reached_receiver": 6562,
+    "in_window": 6562
   },
   {
     "heliostat_id": 48,
     "step_key": "20260321_1235",
     "sun_position": "highest_elevation",
     "emitted": 20000,
-    "hit_mirror": 6859,
+    "hit_mirror": 6855,
     "tip_rays": 0,
-    "hit_secondary": 6859,
-    "reached_receiver": 6859,
-    "in_window": 6859
+    "hit_secondary": 6855,
+    "reached_receiver": 6855,
+    "in_window": 6855
   },
   {
     "heliostat_id": 156,
     "step_key": "20260321_1828",
     "sun_position": "lowest_elevation",
     "emitted": 20000,
-    "hit_mirror": 7400,
+    "hit_mirror": 7406,
     "tip_rays": 0,
-    "hit_secondary": 7400,
-    "reached_receiver": 7400,
-    "in_window": 7400
+    "hit_secondary": 7406,
+    "reached_receiver": 7406,
+    "in_window": 7406
   },
   {
     "heliostat_id": 156,
     "step_key": "20260321_0939",
     "sun_position": "mid_morning",
     "emitted": 20000,
-    "hit_mirror": 5051,
+    "hit_mirror": 5048,
     "tip_rays": 0,
-    "hit_secondary": 5051,
-    "reached_receiver": 5051,
-    "in_window": 5051
+    "hit_secondary": 5048,
+    "reached_receiver": 5048,
+    "in_window": 5048
   },
   {
     "heliostat_id": 156,
     "step_key": "20260321_1235",
     "sun_position": "highest_elevation",
     "emitted": 20000,
-    "hit_mirror": 6894,
+    "hit_mirror": 6882,
     "tip_rays": 0,
-    "hit_secondary": 6894,
-    "reached_receiver": 6894,
-    "in_window": 6894
+    "hit_secondary": 6882,
+    "reached_receiver": 6882,
+    "in_window": 6882
   },
   {
     "heliostat_id": 241,
     "step_key": "20260321_1828",
     "sun_position": "lowest_elevation",
     "emitted": 20000,
-    "hit_mirror": 5625,
+    "hit_mirror": 5617,
     "tip_rays": 0,
-    "hit_secondary": 5625,
-    "reached_receiver": 5625,
-    "in_window": 5625
+    "hit_secondary": 5617,
+    "reached_receiver": 5617,
+    "in_window": 5617
   },
   {
     "heliostat_id": 241,
     "step_key": "20260321_0939",
     "sun_position": "mid_morning",
     "emitted": 20000,
-    "hit_mirror": 6707,
+    "hit_mirror": 6687,
     "tip_rays": 0,
-    "hit_secondary": 6707,
-    "reached_receiver": 6707,
-    "in_window": 6707
+    "hit_secondary": 6687,
+    "reached_receiver": 6687,
+    "in_window": 6687
   },
   {
     "heliostat_id": 241,
     "step_key": "20260321_1235",
     "sun_position": "highest_elevation",
     "emitted": 20000,
-    "hit_mirror": 6950,
+    "hit_mirror": 6961,
     "tip_rays": 0,
-    "hit_secondary": 6950,
-    "reached_receiver": 6950,
-    "in_window": 6950
+    "hit_secondary": 6961,
+    "reached_receiver": 6961,
+    "in_window": 6961
   },
   {
     "heliostat_id": 414,
     "step_key": "20260321_1828",
     "sun_position": "lowest_elevation",
     "emitted": 20000,
-    "hit_mirror": 1910,
+    "hit_mirror": 1900,
     "tip_rays": 0,
-    "hit_secondary": 1910,
-    "reached_receiver": 1910,
-    "in_window": 1910
+    "hit_secondary": 1900,
+    "reached_receiver": 1900,
+    "in_window": 1900
   },
   {
     "heliostat_id": 414,
     "step_key": "20260321_0939",
     "sun_position": "mid_morning",
     "emitted": 20000,
-    "hit_mirror": 7654,
+    "hit_mirror": 7660,
     "tip_rays": 0,
-    "hit_secondary": 7654,
-    "reached_receiver": 7654,
-    "in_window": 7654
+    "hit_secondary": 7660,
+    "reached_receiver": 7660,
+    "in_window": 7660
   },
   {
     "heliostat_id": 414,
     "step_key": "20260321_1235",
     "sun_position": "highest_elevation",
     "emitted": 20000,
-    "hit_mirror": 6657,
+    "hit_mirror": 6661,
     "tip_rays": 0,
-    "hit_secondary": 6657,
-    "reached_receiver": 6657,
-    "in_window": 6657
+    "hit_secondary": 6661,
+    "reached_receiver": 6661,
+    "in_window": 6661
   },
   {
     "heliostat_id": 574,
     "step_key": "20260321_1828",
     "sun_position": "lowest_elevation",
     "emitted": 20000,
-    "hit_mirror": 5517,
+    "hit_mirror": 5515,
     "tip_rays": 0,
-    "hit_secondary": 5517,
-    "reached_receiver": 5517,
-    "in_window": 5517
+    "hit_secondary": 5515,
+    "reached_receiver": 5515,
+    "in_window": 5515
   },
   {
     "heliostat_id": 574,
     "step_key": "20260321_0939",
     "sun_position": "mid_morning",
     "emitted": 20000,
-    "hit_mirror": 6412,
+    "hit_mirror": 6410,
     "tip_rays": 0,
-    "hit_secondary": 6412,
-    "reached_receiver": 6412,
-    "in_window": 6412
+    "hit_secondary": 6410,
+    "reached_receiver": 6410,
+    "in_window": 6410
   },
   {
     "heliostat_id": 574,
     "step_key": "20260321_1235",
     "sun_position": "highest_elevation",
     "emitted": 20000,
-    "hit_mirror": 6816,
+    "hit_mirror": 6819,
     "tip_rays": 0,
-    "hit_secondary": 6816,
-    "reached_receiver": 6816,
-    "in_window": 6816
+    "hit_secondary": 6819,
+    "reached_receiver": 6819,
+    "in_window": 6819
   }
 ]

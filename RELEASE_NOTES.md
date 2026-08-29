@@ -1,3 +1,93 @@
+# Coddington 0.2 — secondary optics, a true sun, and reference fields
+
+This release adds secondary-mirror analysis to the axicon and
+Cassegrain layouts, replaces the placeholder sunshape with a
+literature-validated one, and ships four famous solar-tower fields as
+honestly-labelled reference projects. The workspace is also
+reorganized into four explicit tabs, and a run of reported bugs —
+rays, drag-panning, project save/load, and a silent startup — are
+fixed.
+
+## What's new
+
+**A reorganized workspace.** Four tabs — Design, 3D View, Heliostat
+Shape, and Analysis — replace the old single Workspace tab, and the
+app now opens straight into the live 3-D scene. Design's plan and
+elevation views switch with an explicit toggle instead of the old
+automatic viewport morph.
+
+**Secondary-mirror analysis**, new for axicon and Cassegrain layouts.
+A Receiver | Secondary selector shows irradiance and absorbed heat on
+the secondary mirror itself — read face-on as a disk with compass
+markings — alongside a reflectance setting, an FEA export, and the
+flux painted onto the secondary in the 3-D scene.
+
+**Secondary perturbations.** Decenter and tip/tilt misalignment can be
+dialed in on the secondary at every fidelity. Monte Carlo adds
+measured deformation maps and parametric warp (defocus, astigmatism),
+with a sag view showing the summed surface.
+
+**Measured error-map import for heliostats.** A gridded sag-deviation
+CSV can now be imported per heliostat in Monte Carlo, alongside the
+implied slope error it represents next to the analytic setting.
+
+**Pointing error**, a fourth optical-error input alongside slope,
+specularity, and the new measured maps, quoted on the reflected beam.
+
+**A true sun.** Every trace now uses the Buie sunshape — the model the
+companion manuscript's own published runs used — with a
+circumsolar-ratio setting for the aureole around the disk.
+Coddington's results were checked against those published runs across
+all three optical layouts and agree to within a tenth of a percent on
+concentration. This changes results from 0.1: spots are somewhat
+wider and peak flux somewhat lower. That is a correction, not a
+regression — v0.1 used a simpler stand-in sun.
+
+**Site DNI**, set as a constant or from a clear-sky model and stated
+wherever a result depends on it. Previously most power and flux
+numbers silently assumed 1000 W/m² regardless of what was shown
+elsewhere.
+
+**Four reference fields** — Gemasolar, PS10, Crescent Dunes, and a
+Stellio-based Hami field — ship as built-in projects, each clearly
+labelled a reconstruction from published parameters with citations.
+None represents an operator's real layout, and each loads as an ideal
+build with no optical errors applied.
+
+**Analysis improvements**: a single traced instant is now a
+first-class result you can study on its own, not just a step in a
+sweep; clicking a day in the year estimate opens it as a full day
+sweep; the aperture tool takes typed center and radius instead of
+drag-only; footprints open in a full-resolution viewer; and the
+irradiance map can color each heliostat in the field by the power it
+delivered.
+
+**Better maps.** Curved receivers label their horizontal axis in
+compass directions (N/E/S/W); frustums offer a true developed "fan"
+view alongside the unrolled rectangle; FEA exports carry real 3-D
+coordinates; and a faint grid that used to print over irradiance maps
+is gone.
+
+**Faster, and bigger.** Ultra Fast mode is meaningfully quicker.
+Fields of up to 15,000 heliostats can now be traced, and the 3-D view
+draws a representative subset of very large fields to stay responsive.
+
+**Tooltips throughout**, an optical-error glossary, and heliostat
+positions shown and edited in meters instead of millimeters.
+
+**Fixes**: the rays toggle now works reliably and is shared between
+the Design and 3D View tabs; dragging to pan the plan or elevation
+view no longer selects page text; project save and load, both broken,
+work again; and the first trace after starting the app now says it is
+starting worker processes instead of appearing to hang.
+
+## Upgrading from 0.1
+
+Because the sunshape changed, numbers from a v0.1 project — spot
+size, peak flux, concentration — will differ slightly when you retrace
+it under 0.2. Nothing about the saved project itself breaks; the
+results simply move to reflect a more accurate sun.
+
 # Coddington 0.1.0 — first public release
 
 Coddington is a heliostat field and solar-tower optical design tool: lay

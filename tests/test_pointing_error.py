@@ -47,6 +47,7 @@ from heliostat.geometry.receiver import FlatWindowReceiver
 from heliostat.geometry.secondary import NoSecondary
 from heliostat.trace.cone import sunshape_kernel, trace_heliostat_cone
 from heliostat.trace.mc import trace_heliostat
+from heliostat.trace.samplers import SuperGaussSampler
 from test_mc_parity import _geometry_for, _load_fixture
 from test_mc_physics_fixes import (
     SPEC_ROT_AZ,
@@ -165,11 +166,21 @@ def _mc_pooled_xy(pointing_error_mrad: float, n_instants: int, n_rays: int, base
     quasi-static pointing draws), the Monte Carlo ensemble-average
     counterpart to a cone kernel's broadened, deterministic spot.
     ``trace_args`` is the fixed geometry (everything ``trace_heliostat``
-    takes before ``n_rays``/``rng``)."""
+    takes before ``n_rays``/``rng``).
+
+    Pinned to the super-Gaussian sampler explicitly: this helper's only
+    caller (``test_cone_matches_mc_ensemble_but_not_a_single_mc_instant``)
+    compares against a cone kernel built with ``sunshape_kernel("super_gauss")``
+    -- both sides of that comparison must share one sunshape, or the RMS
+    figures are apples to oranges regardless of which shape is the app's
+    live default."""
     xs, ys = [], []
     for i in range(n_instants):
         rng = np.random.default_rng((base_seed, i))
-        out = trace_heliostat(*trace_args, n_rays, rng, pointing_error_mrad=pointing_error_mrad)
+        out = trace_heliostat(
+            *trace_args, n_rays, rng, pointing_error_mrad=pointing_error_mrad,
+            sampler=SuperGaussSampler(),
+        )
         xs.append(out["xy"][0])
         ys.append(out["xy"][1])
     return np.concatenate(xs), np.concatenate(ys)
@@ -416,8 +427,12 @@ def test_cone_matches_mc_ensemble_but_not_a_single_mc_instant():
     # that a single MC instant legitimately differs from the cone/ensemble
     # picture, per the spec's own design.
     rng = np.random.default_rng((888, 0))
+    # Same sampler pin as `_mc_pooled_xy` above: this comparison is against
+    # `kernel_base`/`kernel_broadened`, both built with
+    # sunshape_kernel("super_gauss") -- the single MC instant must match.
     single = trace_heliostat(
         *_FOCUSED_TRACE_ARGS, N_ENSEMBLE_RAYS, rng, pointing_error_mrad=POINTING_MRAD_ENSEMBLE,
+        sampler=SuperGaussSampler(),
     )
     rms_single_instant = _rms_about_own_centroid(single["xy"][0], single["xy"][1])
     assert rms_single_instant == pytest.approx(rms_cone_base, rel=0.15), (

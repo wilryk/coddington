@@ -64,6 +64,10 @@ const elevationContainer = document.getElementById("elevation-view");
 const designViewPlanBtn = document.getElementById("design-view-plan");
 const designViewElevationBtn = document.getElementById("design-view-elevation");
 const designHintChip = document.getElementById("design-hint-chip");
+// Design's own rays checkbox -- shares ui.showRays with 3D View's raysToggle
+// below (see setRaysVisible/render3DScene/renderDesignView) rather than
+// keeping a copy, so toggling either one is toggling the same thing.
+const designRaysToggle = document.getElementById("design-rays-toggle");
 
 const stageHeliostat = document.getElementById("stage-heliostat");
 const stageField = document.getElementById("stage-field");
@@ -101,6 +105,7 @@ const libraryDrawer = document.getElementById("library-drawer");
 const libraryBackdrop = document.getElementById("library-backdrop");
 const savestateEl = document.getElementById("savestate");
 const opticsTagEl = document.getElementById("optics-tag");
+const projectProvenanceEl = document.getElementById("project-provenance");
 
 libraryBtn.addEventListener("click", () => {
   store.set("ui.libraryOpen", !store.get("ui.libraryOpen"));
@@ -154,6 +159,12 @@ function renderTopbar() {
   } else {
     savestateEl.textContent = ui.dirty ? `${ui.projectName} — unsaved changes` : `${ui.projectName} — saved`;
   }
+  // docs/ui-spec-v0.2.md §P: the loaded reconstruction's citation, stamped
+  // here for as long as it's open (mockup M20's ".provtag") -- library.js's
+  // loadProject() is the only place that sets ui.projectProvenance.
+  const prov = ui.projectProvenance;
+  projectProvenanceEl.hidden = !prov;
+  if (prov) projectProvenanceEl.textContent = `⚠ Reconstruction — ${prov.citation}`;
 }
 
 const fluxOverlay = document.getElementById("flux-overlay");
@@ -178,6 +189,12 @@ const fluxSurfaceSeg = document.getElementById("flux-surfaceseg");
 const fluxSurfaceReceiverBtn = document.getElementById("flux-surface-receiver");
 const fluxSurfaceSecondaryBtn = document.getElementById("flux-surface-secondary");
 const fluxSecondaryCanvas = document.getElementById("flux-secondary-canvas");
+// docs/ui-spec-v0.2.md §C2, mockup M23: the fixed not-equal-area note, shown
+// only while Secondary is selected. (Used to sit beside a Plan/Unrolled
+// toggle -- removed now that secondary_uv's own binning is Cartesian, see
+// paintSecondaryCanvasPlan's own comment below: the grid already IS the
+// plan view, so there is no second layout left to toggle to.)
+const fluxSecondaryPlanNote = document.getElementById("flux-secondary-plannote");
 const fluxSecondaryCaption = document.getElementById("flux-secondary-caption");
 const fluxSecondaryReadout = document.getElementById("flux-secondary-readout");
 const fluxSecIncident = document.getElementById("flux-sec-incident");
@@ -186,6 +203,23 @@ const fluxSecAbsorbed = document.getElementById("flux-sec-absorbed");
 const fluxSecPeakAbsorbed = document.getElementById("flux-sec-peakabsorbed");
 const fluxSecFidelity = document.getElementById("flux-sec-fidelity");
 const fluxSecFeaExport = document.getElementById("flux-sec-fea-export");
+// v0.2 followups item 1, mockup M15: the Field option -- plan-view power
+// coloring, dot per heliostat -- alongside the existing Receiver | Secondary
+// pair (see paintFluxOverlay's three-way branch below).
+const fluxSurfaceFieldBtn = document.getElementById("flux-surface-field");
+const fluxFieldCanvas = document.getElementById("flux-field-canvas");
+const fluxFieldReadout = document.getElementById("flux-field-readout");
+const fluxFieldCount = document.getElementById("flux-field-count");
+const fluxFieldTotal = document.getElementById("flux-field-total");
+const fluxFieldLegendMin = document.getElementById("flux-field-legend-min");
+const fluxFieldLegendMax = document.getElementById("flux-field-legend-max");
+// v0.2 followups item 2: the frustum fan-view toggle -- see
+// paintFluxOverlay's own show/hide-against-receiver-kind logic and its
+// click handler below (re-runs the trace with ui.fluxView flipped, since
+// the fan is a genuinely different server render, not a client-side
+// re-paint of data already on hand).
+const fluxFanSeg = document.getElementById("flux-fan-seg");
+const fluxFanToggle = document.getElementById("flux-fan-toggle");
 
 // Field-trace progress and its cancel control, deliberately NOT gated by
 // ui.tab (unlike #runbar's contents -- see renderTabs) -- a field trace is a
@@ -297,6 +331,10 @@ function renderDesignView() {
   elevationContainer.hidden = view !== "elevation";
   designViewPlanBtn.classList.toggle("active", view === "plan");
   designViewElevationBtn.classList.toggle("active", view === "elevation");
+  // Shared with 3D View's raysToggle (see setRaysVisible) -- keeps this
+  // checkbox honest even when the store changed some other way (the 3D
+  // View checkbox, or a fresh page load's DEFAULT_UI.showRays).
+  designRaysToggle.checked = raysVisible();
 
   if (view === "plan") {
     designHintChip.textContent = "Plan view — click a heliostat to inspect it · drag-to-move lands with the layout picker";
@@ -314,6 +352,9 @@ function renderDesignView() {
 function render3DScene() {
   const heliostats = (lastGeometryResponse && lastGeometryResponse.heliostats) || [];
   const count = `${heliostats.length.toLocaleString()} heliostat${heliostats.length === 1 ? "" : "s"}`;
+  // Shared with Design's designRaysToggle (see setRaysVisible) -- keeps
+  // this checkbox honest even when the store changed some other way.
+  raysToggle.checked = raysVisible();
   raysChipText.textContent = raysVisible()
     ? `Corner chief rays — viewing aid, no shading · ${count}`
     : `Rays hidden · ${count}`;
@@ -338,20 +379,42 @@ let lastRaysResponse = null;
 const scheduleGeometry = createGeometryRequester(300);
 const scheduleRays = createGeometryRequester(450);
 
-// ui.showRays is undefined until the toggle is first used, which reads as on.
 function raysVisible() {
   return store.get("ui.showRays") !== false;
 }
 
-raysToggle.addEventListener("change", () => {
-  store.set("ui.showRays", raysToggle.checked);
+// Single handler for both rays checkboxes (3D View's raysToggle, Design's
+// designRaysToggle) so there is exactly one place that decides what
+// flipping the shared ui.showRays flag actually does.
+//
+// The bug this fixes: handleGeometrySuccess() (the cheap shapes-only pass
+// that every doc edit triggers) unconditionally nulls lastRaysResponse,
+// because a fresh geometry response invalidates whatever rays were drawn
+// against the previous one. While rays are hidden, requestRays() below
+// deliberately skips fetching a replacement (no point tracing rays nobody
+// sees) -- so any doc edit made while rays are off leaves lastRaysResponse
+// null. Turning rays back on used to only call applyRayVisibility(), which
+// re-applies that cache to the scene; with the cache null, that call is a
+// no-op and the scene stays empty even though the checkbox reads "on" --
+// until the next unrelated doc edit happens to refetch rays and the scene
+// catches up. That's the reported "sometimes working" intermittency. The
+// fix: re-enabling rays with no cache to fall back on asks for a fresh
+// pass right away instead of waiting on the next incidental edit.
+function setRaysVisible(visible) {
+  store.set("ui.showRays", visible);
   applyRayVisibility();
+  if (visible && !lastRaysResponse) requestRays();
   // Refreshes whichever of Design's two 2D views is currently showing (its
   // rays just got re-pushed by applyRayVisibility above) and 3D View's rays
-  // chip text -- same pair renderAllPanels always calls together.
+  // chip text -- same pair renderAllPanels always calls together. Also
+  // syncs both checkboxes' [checked] to the store, so the one that was not
+  // clicked follows along.
   renderDesignView();
   render3DScene();
-});
+}
+
+raysToggle.addEventListener("change", () => setRaysVisible(raysToggle.checked));
+designRaysToggle.addEventListener("change", () => setRaysVisible(designRaysToggle.checked));
 
 // The plan and elevation views draw the same corner rays the 3D scene does,
 // so they are fed from whichever pass last landed: the ray-bearing one when
@@ -515,11 +578,23 @@ let tracePollTimer = null;
 // them, not with whatever the run bar happens to show when they arrive.
 let editedDuringTrace = false;
 let tracedFidelity = null;
+// docs/ui-spec-v0.2.md §R: the exact request body the trace CURRENTLY in
+// flight (or most recently landed) went out with -- traceSucceeded copies
+// it onto ui.traceRequest alongside ui.traceResult, so a reader (Analysis's
+// Traced instant source) can rebuild the identical FEA-export/save request
+// without guessing at whatever the live doc/ui says NOW.
+let lastTraceRequestBody = null;
 
 function traceSucceeded(data) {
   store.set("ui.traceBusy", false);
   store.set("ui.traceProgress", null);
   store.set("ui.traceResult", data);
+  // docs/ui-spec-v0.2.md §R: the Analysis tab's Traced instant source reads
+  // this trace's own result straight off ui.traceResult (see below), but
+  // its FEA export and "Save this run" both need the exact REQUEST body
+  // that produced it, not a rebuild from the (possibly since-edited) live
+  // doc/ui -- so it rides along here, next to the result it belongs to.
+  store.set("ui.traceRequest", lastTraceRequestBody);
   store.set("ui.traceTimestamp", Date.now());
   // Stale means "the project moved on since this run started", so an edit
   // made WHILE a trace was running leaves its results stale the moment they
@@ -532,16 +607,44 @@ function traceSucceeded(data) {
   if (!stale && data.scene && data.scene.rays) {
     scene.showTraceRays(data.scene.rays, data.scene.miss_rays);
   }
-  // §M.3: the 3D receiver drape, same staleness rule as the rays above --
-  // flux_grid is opt-in (buildTraceRequest always asks for it) and absent
-  // for a receiver-less optics/scene, in which case scene.showFluxDrape is a
-  // no-op.
-  if (!stale && data.flux_grid) {
+  // §M.3/v0.2 followups item 2: the 3D receiver's "Flux overlay" texture,
+  // same staleness rule as the rays above -- see applyFluxOverlayVisibility.
+  applyFluxOverlayVisibility();
+  renderAllPanels();
+}
+
+// v0.2 followups item 2, mockup M16: whether the flux texture is actually
+// showing on the 3D receiver depends on THREE things now, not just "is this
+// trace fresh" -- the toggle (ui.receiverFluxOverlay, default on), the
+// staleness rule §M.3 already had, and whether this trace's own flux_grid
+// exists at all (opt-in on the request, absent for a receiver-less scene).
+// Reads straight from ui.traceResult rather than taking a `data` argument,
+// so toggling the checkbox (no new trace) can call this the same way a
+// fresh trace landing does.
+//
+// v0.2 followups item 3: the SECONDARY gets the identical treatment, gated
+// on the same "Flux overlay" toggle rather than a second checkbox -- the
+// toggle's own on-screen label already reads "Flux overlay" (not "Receiver
+// flux overlay"), so a second control would just be a second name for the
+// same idea the owner already approved one checkbox for. data.secondary is
+// only ever present for axicon/Cassegrain (app.py's _secondary_payload),
+// and only carries its own flux_grid when the request asked for one
+// (buildTraceRequest always does) -- both silently absent for prime_focus,
+// which is exactly when there is no secondary mesh to drape either.
+function applyFluxOverlayVisibility() {
+  const ui = store.get("ui");
+  const data = ui.traceResult;
+  const showing = ui.receiverFluxOverlay !== false && !ui.staleResults && data;
+  if (showing && data.flux_grid) {
     scene.showFluxDrape(data.flux_grid);
   } else {
     scene.clearFluxDrape();
   }
-  renderAllPanels();
+  if (showing && data.secondary && data.secondary.flux_grid) {
+    scene.showSecondaryFluxDrape(data.secondary.flux_grid);
+  } else {
+    scene.clearSecondaryFluxDrape();
+  }
 }
 
 function traceFailed(message) {
@@ -560,6 +663,7 @@ function runTrace() {
   const doc = store.get("doc");
   const ui = store.get("ui");
   const body = buildTraceRequest(doc, ui);
+  lastTraceRequestBody = body;
   if (doc.field.mode === "field") {
     runFieldTraceJob(body);
     return;
@@ -745,9 +849,9 @@ function fmtFlux(kwM2) {
 // plain text next to the readout, not tucked into a tooltip.
 function secondaryFidelityNote(fidelity) {
   if (fidelity === "exact") {
-    return "Exact fidelity — Monte Carlo histograms every ray that actually struck the secondary.";
+    return "Exact — Monte Carlo traces the full flux map on the secondary.";
   }
-  return "Coarse fidelity — this cone mode deposits each mirror's flux at its own chief ray's secondary hit, not a full footprint. Switch to Monte Carlo for an exact per-ray map.";
+  return "Approximate in this mode — switch to Monte Carlo for an exact map.";
 }
 
 // Same compact magma approximation as scene3d.js's fluxGridTexture (kept as
@@ -781,34 +885,146 @@ function secondaryMagmaColor(t) {
   return SECONDARY_MAGMA_STOPS[SECONDARY_MAGMA_STOPS.length - 1][1];
 }
 
-// Paints app.py's _flux_grid_payload straight onto a 2D canvas -- there is
-// no server-rendered PNG for the secondary (only the opt-in raw grid, spec
-// §C), so this is the client's own rendering of it. `values` is row-major,
-// row 0 = v_min (the bottom of the map, matplotlib's own origin="lower"
-// convention _render_flux_png uses for the receiver PNG) -- canvas row 0 is
-// its TOP, so row 0 of `values` is drawn into the canvas's LAST row,
-// exactly mirroring scene3d.js's fluxGridTexture flip.
-function paintSecondaryCanvas(canvas, grid) {
-  const { n_u, n_v, values } = grid;
+// docs/ui-spec-v0.2.md §C2, mockup M23 (updated for the Cartesian
+// plan-projection binning switch): paints app.py's _flux_grid_payload
+// straight onto a 2D canvas -- there is no server-rendered PNG for the
+// secondary (only the opt-in raw grid, spec §C). This used to be two
+// presentations (a native "unrolled" arc-length/radius raster, and a
+// polar-to-Cartesian "plan" projection of it) because the old radial (u, v)
+// parameterization's native layout wasn't a plan view. Now that
+// secondary_uv is itself a Cartesian (x_local east, y_local north) pair
+// over the aperture's own square bounding box, the grid already IS the
+// plan view -- painting it is a direct raster, not a projection, so the old
+// toggle and second painter are gone. See js/tabs/analysis.js's
+// paintSecondaryFluxCanvasPlan for the identical logic (this file's own
+// copy per its established per-file-duplication idiom for small painters).
+//
+// `values` is row-major, row 0 = v_min (south, the bottom of the map) --
+// canvas y grows down, so row 0 paints at the canvas's own bottom, the same
+// flip every other flux painter in this app uses. A bin whose centre falls
+// outside the aperture disk is left unpainted (background shows through)
+// rather than drawn in its own (always-zero, per
+// secondary_bin_areas_m2's masking) color, so the result reads as a
+// circular disk rather than a dark-cornered square.
+function paintSecondaryCanvasPlan(canvas, grid) {
+  const { n_u, n_v, u_min_mm, u_max_mm, v_min_mm, v_max_mm, values } = grid;
+  const apertureRadiusMm = Math.max((u_max_mm - u_min_mm) / 2, (v_max_mm - v_min_mm) / 2, 1e-6);
+  const size = 380;
+  canvas.width = size;
+  canvas.height = size;
+  const ctx2d = canvas.getContext("2d");
+  ctx2d.clearRect(0, 0, size, size);
+  const cx = size / 2;
+  const cy = size / 2;
+  const margin = 22;
+  const scale = (size / 2 - margin) / apertureRadiusMm;
+
   let max = 0;
   for (const v of values) if (v != null && v > max) max = v;
-  canvas.width = n_u;
-  canvas.height = n_v;
-  const ctx2d = canvas.getContext("2d");
-  const img = ctx2d.createImageData(n_u, n_v);
+  const duMm = (u_max_mm - u_min_mm) / n_u;
+  const dvMm = (v_max_mm - v_min_mm) / n_v;
+  const wPx = duMm * scale + 0.75;
+  const hPx = dvMm * scale + 0.75;
+
   for (let row = 0; row < n_v; row++) {
-    const canvasRow = n_v - 1 - row;
+    const yMm = v_min_mm + (row + 0.5) * dvMm;
     for (let col = 0; col < n_u; col++) {
+      const xMm = u_min_mm + (col + 0.5) * duMm;
+      if (Math.hypot(xMm, yMm) > apertureRadiusMm) continue;
       const val = values[row * n_u + col];
-      const [r, g, b] = secondaryMagmaColor(max > 0 && val != null ? val / max : 0);
-      const idx = (canvasRow * n_u + col) * 4;
-      img.data[idx] = r;
-      img.data[idx + 1] = g;
-      img.data[idx + 2] = b;
-      img.data[idx + 3] = 255;
+      const t = max > 0 && val != null ? val / max : 0;
+      const [r, g, b] = secondaryMagmaColor(t);
+      ctx2d.fillStyle = `rgb(${r},${g},${b})`;
+      const px = cx + xMm * scale - wPx / 2;
+      const py = cy - yMm * scale - hPx / 2;
+      ctx2d.fillRect(px, py, wPx, hPx);
     }
   }
-  ctx2d.putImageData(img, 0, 0);
+
+  ctx2d.fillStyle = "#334155";
+  ctx2d.font = "11px sans-serif";
+  ctx2d.textAlign = "center";
+  ctx2d.textBaseline = "alphabetic";
+  const rEdge = apertureRadiusMm * scale;
+  ctx2d.fillText("N", cx, cy - rEdge - 8);
+  ctx2d.fillText("S", cx, cy + rEdge + 15);
+  ctx2d.textAlign = "left";
+  ctx2d.fillText("E", cx + rEdge + 5, cy + 4);
+  ctx2d.textAlign = "right";
+  ctx2d.fillText("W", cx - rEdge - 5, cy + 4);
+}
+
+// Thin alias kept so call sites read the same as before this file's own
+// toggle removal -- there is only one secondary presentation now.
+function paintSecondaryCanvasView(canvas, grid) {
+  paintSecondaryCanvasPlan(canvas, grid);
+}
+
+// v0.2 followups item 1, mockup M15: plan-view power coloring -- one dot per
+// heliostat at its own (x_mm, y_mm), colored by its own power_w, same magma
+// family as every other flux map in the app (secondaryMagmaColor above) so
+// "more flux/power" reads the same way everywhere. `heliostats` is a field
+// trace response's own `heliostats` rows (app.py's field-trace endpoints --
+// {id, x_mm, y_mm, eta_shade, eta_block, eta, power_w[, failed]}), normalized
+// against the field's own min/max power (not from zero -- a field's power
+// spread is usually a narrow band near its own max, and mockup M15's own
+// legend example, "0.4" to "19.8", is exactly this convention). Returns
+// {minKw, maxKw} so the caller can paint the legend numbers from the same
+// values this canvas was actually colored with.
+function paintFieldMapCanvas(canvas, heliostats) {
+  const size = 460;
+  canvas.width = size;
+  canvas.height = size;
+  const ctx2d = canvas.getContext("2d");
+  ctx2d.fillStyle = "#fdfdfe";
+  ctx2d.fillRect(0, 0, size, size);
+
+  let maxR = 1;
+  let minKw = Infinity;
+  let maxKw = -Infinity;
+  for (const h of heliostats) {
+    maxR = Math.max(maxR, Math.hypot(h.x_mm, h.y_mm));
+    if (h.failed) continue;
+    const kw = (h.power_w || 0) / 1000;
+    if (kw < minKw) minKw = kw;
+    if (kw > maxKw) maxKw = kw;
+  }
+  if (!Number.isFinite(minKw)) minKw = 0;
+  if (!Number.isFinite(maxKw)) maxKw = 0;
+  const span = maxKw - minKw;
+
+  const cx = size / 2;
+  const cy = size / 2;
+  const scale = (size / 2 - 14) / maxR;
+  // Smaller dots for a bigger field, same idea as tabs/analysis.js's own
+  // drill-down mini plan -- 643 heliostats need to stay legible at this size.
+  const dotR = Math.max(1.3, Math.min(4.5, 260 / Math.sqrt(Math.max(1, heliostats.length))));
+  for (const h of heliostats) {
+    const px = cx + h.x_mm * scale;
+    // World y (north) is up on a plan view; canvas y grows downward -- flip.
+    const py = cy - h.y_mm * scale;
+    ctx2d.beginPath();
+    ctx2d.arc(px, py, dotR, 0, Math.PI * 2);
+    if (h.failed) {
+      ctx2d.fillStyle = "#c7cdd6";
+    } else {
+      const t = span > 0 ? ((h.power_w || 0) / 1000 - minKw) / span : 1;
+      const [r, g, b] = secondaryMagmaColor(t);
+      ctx2d.fillStyle = `rgb(${r},${g},${b})`;
+    }
+    ctx2d.fill();
+  }
+
+  // Tower marker, same look as tabs/analysis.js's mini plan.
+  ctx2d.beginPath();
+  ctx2d.arc(cx, cy, 4, 0, Math.PI * 2);
+  ctx2d.fillStyle = "#7b8794";
+  ctx2d.fill();
+  ctx2d.lineWidth = 1.3;
+  ctx2d.strokeStyle = "#33455c";
+  ctx2d.stroke();
+
+  return { minKw, maxKw };
 }
 
 // Repaints the overlay's Receiver | Secondary selector and body against
@@ -823,30 +1039,55 @@ function paintFluxOverlay() {
   const secondary = data.secondary;
   const optics = store.get("doc.optics");
   const hasSecondaryOptics = optics === "axicon" || optics === "cassegrain";
-  const available = !!(secondary && secondary.flux_grid);
+  const secAvailable = !!(secondary && secondary.flux_grid);
+  // v0.2 followups item 1: Field is meaningful only for a live FIELD trace --
+  // /api/field/trace(/start+result)'s own `heliostats` rows, absent from a
+  // single-heliostat /api/trace response (see app.py's response builders).
+  const heliostats = Array.isArray(data.heliostats) ? data.heliostats : null;
+  const fieldAvailable = !!(heliostats && heliostats.length);
 
-  fluxSurfaceSecondaryBtn.classList.toggle("disabled", !available);
-  fluxSurfaceSecondaryBtn.title = available
+  fluxSurfaceSecondaryBtn.classList.toggle("disabled", !secAvailable);
+  fluxSurfaceSecondaryBtn.title = secAvailable
     ? ""
     : hasSecondaryOptics
       ? "This trace carried no secondary flux map — retrace to get one."
       : "Only axicon and Cassegrain layouts have a secondary flux map.";
 
+  fluxSurfaceFieldBtn.classList.toggle("disabled", !fieldAvailable);
+  fluxSurfaceFieldBtn.title = fieldAvailable
+    ? ""
+    : "Run a field trace to color heliostats by power.";
+
   const requested = store.get("ui.fluxSurface");
-  const showSecondary = requested === "secondary" && available;
-  fluxSurfaceReceiverBtn.classList.toggle("active", !showSecondary);
+  const showSecondary = requested === "secondary" && secAvailable;
+  const showField = requested === "field" && fieldAvailable;
+  const showReceiver = !showSecondary && !showField;
+  fluxSurfaceReceiverBtn.classList.toggle("active", showReceiver);
   fluxSurfaceSecondaryBtn.classList.toggle("active", showSecondary);
+  fluxSurfaceFieldBtn.classList.toggle("active", showField);
+
+  // Every surface's own elements start hidden; only the active one's are
+  // shown below -- avoids three separate "hide everyone else" blocks.
+  fluxOverlayImg.hidden = true;
+  fluxSecondaryCanvas.hidden = true;
+  fluxSecondaryCaption.hidden = true;
+  fluxSecondaryReadout.hidden = true;
+  fluxSecFeaExport.hidden = true;
+  fluxFieldCanvas.hidden = true;
+  fluxFieldReadout.hidden = true;
+  fluxCompassN.hidden = true;
+  fluxCompassS.hidden = true;
+  fluxCompassE.hidden = true;
+  fluxCompassW.hidden = true;
+  fluxCompassAxis.hidden = true;
+  fluxFanSeg.hidden = true;
+  fluxSecondaryPlanNote.hidden = true;
 
   if (showSecondary) {
-    fluxOverlayImg.hidden = true;
-    fluxCompassN.hidden = true;
-    fluxCompassS.hidden = true;
-    fluxCompassE.hidden = true;
-    fluxCompassW.hidden = true;
-    fluxCompassAxis.hidden = true;
+    fluxSecondaryPlanNote.hidden = false;
 
     fluxSecondaryCanvas.hidden = false;
-    paintSecondaryCanvas(fluxSecondaryCanvas, secondary.flux_grid);
+    paintSecondaryCanvasView(fluxSecondaryCanvas, secondary.flux_grid);
     fluxSecondaryCaption.hidden = false;
     fluxSecondaryCaption.textContent = `incident flux on secondary, kW/m² · same colormap & units as the receiver map · peak ${fmtFlux(secondary.peak_flux_kw_m2)}`;
 
@@ -858,14 +1099,27 @@ function paintFluxOverlay() {
     fluxSecPeakAbsorbed.textContent = fmtFlux(secondary.peak_absorbed_kw_m2);
     fluxSecFidelity.textContent = secondaryFidelityNote(secondary.fidelity);
     // §C leftover: only ever exportable from a live trace's own grid --
-    // same "the raw grid, not just the picture" gate as available above.
-    fluxSecFeaExport.hidden = !available;
+    // same "the raw grid, not just the picture" gate as secAvailable above.
+    fluxSecFeaExport.hidden = !secAvailable;
+  } else if (showField) {
+    fluxFieldCanvas.hidden = false;
+    const { minKw, maxKw } = paintFieldMapCanvas(fluxFieldCanvas, heliostats);
+    fluxFieldReadout.hidden = false;
+    fluxFieldCount.textContent = heliostats.length.toLocaleString();
+    const totalW = heliostats.reduce((sum, h) => sum + (h.failed ? 0 : h.power_w || 0), 0);
+    fluxFieldTotal.textContent = fmtPower(totalW);
+    fluxFieldLegendMin.textContent = minKw.toFixed(1);
+    fluxFieldLegendMax.textContent = maxKw.toFixed(1);
   } else {
     fluxOverlayImg.hidden = false;
-    fluxSecondaryCanvas.hidden = true;
-    fluxSecondaryCaption.hidden = true;
-    fluxSecondaryReadout.hidden = true;
-    fluxSecFeaExport.hidden = true;
+    // v0.2 followups item 2: openFluxOverlay() sets this once on open, but
+    // this function is also the repaint path for "a fresh trace landing
+    // while the overlay happens to be open" (this function's own header
+    // comment) -- without refreshing .src here too, a retrace (the fan-view
+    // toggle's own click handler, or simply re-running with the overlay
+    // open) would leave the PREVIOUS render on screen while everything
+    // else around it updates. Harmless no-op when the bytes are unchanged.
+    if (data.flux_png) fluxOverlayImg.src = "data:image/png;base64," + data.flux_png;
 
     const kind = data.scene && data.scene.receiver ? data.scene.receiver.kind : null;
     const isFlat = kind === "flat";
@@ -882,6 +1136,13 @@ function paintFluxOverlay() {
         fluxCompassAxis.appendChild(span);
       }
     }
+
+    // v0.2 followups item 2: the fan-view toggle only ever means something
+    // for a frustum -- a cylinder's own u-axis is already exact arc length
+    // everywhere, so there is nothing for a "true developed view" to fix.
+    const isFrustum = kind === "frustum";
+    fluxFanSeg.hidden = !isFrustum;
+    fluxFanToggle.classList.toggle("active", isFrustum && store.get("ui.fluxView") === "fan");
   }
 }
 
@@ -890,9 +1151,26 @@ fluxSurfaceSecondaryBtn.addEventListener("click", () => {
   if (fluxSurfaceSecondaryBtn.classList.contains("disabled")) return;
   store.set("ui.fluxSurface", "secondary");
 });
+fluxSurfaceFieldBtn.addEventListener("click", () => {
+  if (fluxSurfaceFieldBtn.classList.contains("disabled")) return;
+  store.set("ui.fluxSurface", "field");
+});
 fluxSecFeaExport.addEventListener("click", (e) => {
   e.preventDefault();
   exportSecondaryFluxFeaCsv();
+});
+// v0.2 followups item 2: the fan view is a genuinely different server
+// render (app.py's TraceRequest.flux_view), not client-side data already
+// on hand -- so toggling it re-runs the SAME trace (runTrace() rebuilds
+// its request from the current doc/ui, buildTraceRequest reading the new
+// ui.fluxView) rather than trying to repaint in place. A single-heliostat
+// retrace is fast enough for a view toggle; a field trace already shows its
+// own progress bar like any other run.
+fluxFanToggle.addEventListener("click", () => {
+  if (store.get("ui.traceBusy")) return;
+  const next = store.get("ui.fluxView") === "fan" ? "rect" : "fan";
+  store.set("ui.fluxView", next);
+  runTrace();
 });
 
 function openFluxOverlay() {
@@ -971,7 +1249,15 @@ store.subscribe((path, value) => {
       store.set("ui.staleResults", true);
       scene.clearTraceRays();
       scene.clearFluxDrape();
+      scene.clearSecondaryFluxDrape();
     }
+  }
+
+  // v0.2 followups item 2: the "Flux overlay" toggle -- no retrace, just
+  // re-decides whether the last trace's own flux_grid (still on
+  // ui.traceResult) paints onto the receiver or not.
+  if (path === "ui.receiverFluxOverlay") {
+    applyFluxOverlayVisibility();
   }
 
   if (path.startsWith("doc.")) {
@@ -981,6 +1267,7 @@ store.subscribe((path, value) => {
       store.set("ui.staleResults", true);
       scene.clearTraceRays();
       scene.clearFluxDrape();
+      scene.clearSecondaryFluxDrape();
     }
     // Phase 3b save state (docs/ui-spec.md 5): any edit dirties the
     // project -- guarded so a doc.* change doesn't re-set (and re-notify

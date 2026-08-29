@@ -126,6 +126,7 @@ from heliostat.geometry.secondary import (
     secondary_nominal_sag_mm,
     secondary_uv,
     secondary_uv_extent,
+    secondary_uv_to_world,
     secondary_warp_sag_mm,
     solve_cassegrain_relay,
 )
@@ -137,12 +138,18 @@ from heliostat.geometry.shading import (
     polygon_occlusion,
     search_radius_for,
 )
-from heliostat.dni import ClearSkyDNI
+from heliostat.dni import STANDARD_DNI, ClearSkyDNI, ConstantDNI, DNIProvider, ScaledDNI
 from heliostat.solar import build_time_grid, sun_position, sunrise_sunset
 from heliostat.trace.cone import sunshape_kernel, trace_heliostat_cone
 from heliostat.trace.mc import MIRROR_HALF_X_MM, MIRROR_HALF_Y_MM, trace_heliostat
 from heliostat.trace.modes import MODES, TraceMode
-from heliostat.web.builtin_library import BUILTIN_DESIGNS, BUILTIN_RECEIVERS
+from heliostat.trace.samplers import BuieSampler
+from heliostat.web.builtin_library import (
+    BUILTIN_DESIGNS,
+    BUILTIN_PROJECT_PROVENANCE,
+    BUILTIN_PROJECTS,
+    BUILTIN_RECEIVERS,
+)
 from heliostat.web.jobs import JobRegistry
 from heliostat.web.library import (
     LibraryError,
@@ -217,25 +224,32 @@ def _flux_edges(receiver) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return u_edges, v_edges, receiver.bin_areas_m2((n_u, n_v))
 
 
-def _secondary_flux_grid(secondary) -> tuple[int, int]:
-    """``(n_u, n_v)`` for a secondary's own flux map.
+#: Fixed per-axis bin count for a secondary's own flux map, now that
+#: :func:`~heliostat.geometry.secondary.secondary_uv` is a Cartesian plan
+#: pair over a SQUARE bounding box (``secondary_uv_extent``) rather than the
+#: old radial scheme's ``(circumference, radius)`` rectangle -- there is no
+#: more aspect ratio to correct the way :func:`_receiver_flux_grid` still
+#: corrects for a curved receiver, so this is just one square constant.
+#:
+#: Chosen to match the OLD scheme's finer axis (``v``, fixed at
+#: ``FLUX_GRID`` = 128 rows spanning ``0..aperture_radius_mm``) while making
+#: every bin square (the old scheme's u-axis was capped at
+#: ``FLUX_GRID_MAX_U`` = 512, 1.57x coarser than v at a full-aperture u:v
+#: ratio of ``2*pi`` -- the anisotropy this whole switch exists to remove).
+#: ``256 * 256 == 128 * 512 == 65536``: the same total bin budget (and so
+#: the same deposit cost per sample) as the old scheme's capped grid, not a
+#: new one -- this is a reshuffle of the same resolution into square bins,
+#: not a resolution change.
+SECONDARY_FLUX_GRID_N = 256
 
-    A secondary's ``(u, v)`` (see :mod:`heliostat.geometry.secondary`) is
-    the same kind of unrolled parameterization a curved RECEIVER uses --
-    full circumference in ``u``, a bounded span in ``v`` -- so this is the
-    identical "square bins on the unrolled surface" rule
-    :func:`_receiver_flux_grid` applies to a cylinder/frustum, deliberately
-    NOT reusing that function's own edges: a secondary's aperture is its own
-    surface with its own extent, unrelated to whatever the receiver's
-    adaptive grid resolved to (a fresh change noted in this module's own
-    history -- receiver flux edges now come from an adaptive grid for curved
-    receivers, and a secondary must not silently inherit or collide with
-    that unless its own geometry happens to agree).
+
+def _secondary_flux_grid(secondary) -> tuple[int, int]:
+    """``(n_u, n_v)`` for a secondary's own flux map -- always the fixed
+    square :data:`SECONDARY_FLUX_GRID_N` now (see that constant's own note);
+    ``secondary`` is accepted only to keep this function's signature
+    identical to :func:`_receiver_flux_grid`'s at every call site.
     """
-    (u0, u1), (v0, v1) = secondary_uv_extent(secondary)
-    ratio = (u1 - u0) / (v1 - v0)
-    n_u = int(np.ceil(FLUX_GRID * ratio / FLUX_GRID_TEXTURE_DIM)) * FLUX_GRID_TEXTURE_DIM
-    return (int(np.clip(n_u, FLUX_GRID, FLUX_GRID_MAX_U)), FLUX_GRID)
+    return (SECONDARY_FLUX_GRID_N, SECONDARY_FLUX_GRID_N)
 
 
 def _secondary_flux_edges(secondary) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -266,7 +280,16 @@ def _mc_secondary_flux(
     # §E2 rigid-body misalignment exactly.
     uv = secondary_uv(secondary, secondary_xy)
     counts, _, _ = np.histogram2d(uv[1], uv[0], bins=[v_edges, u_edges])
-    flux = counts * watts_per_ray / bin_area_m2
+    # secondary_bin_areas_m2 masks bins outside the aperture disk to area=0
+    # (see that function's own note) -- guard the divide so those bins
+    # report flux=0 rather than inf/nan. A real ray that happened to land in
+    # one of these boundary-straddling bins is NOT lost from any TOTAL this
+    # module reports: power_w is always n_hit * watts_per_ray downstream
+    # (_secondary_maps_from_result), never a reintegration of this grid, so
+    # masking only ever hides a sliver of DISPLAYED flux right at the rim.
+    flux = np.divide(
+        counts * watts_per_ray, bin_area_m2, out=np.zeros_like(bin_area_m2), where=bin_area_m2 > 0
+    )
     return flux, u_edges, v_edges
 
 
@@ -377,13 +400,18 @@ def _load_manuscript_field() -> HeliostatField:
 # ---------------------------------------------------------------------------
 # field-trace limits and layout defaults
 #
-# 1000 rather than the 600 of this package's reference field
-# (``scripts/sweep_benchmark.py``): the companion paper's own field is 643
-# heliostats, and a tool that cannot express the field it reproduces is
-# the wrong tool. Large fields are slow in a browser request -- that is
-# what the day-sweep job endpoint is for -- but slow is the caller's
-# choice to make, not something to forbid.
-MAX_FIELD_HELIOSTATS = 1000
+# Raised from 1000 to match MAX_GEOMETRY_HELIOSTATS (2026-08-29, owner's
+# call): §P ships Gemasolar (2,650), Crescent Dunes (10,347) and a
+# Stellio-based Hami field (14,500), and a tool that can draw a field but
+# refuses to trace it is half a tool -- the same reasoning that set this
+# above the companion paper's own 643 in the first place. Crescent Dunes
+# is roughly sixteen times that field, so these runs are minutes rather
+# than seconds; §Q's calibration exists to say so honestly before the
+# caller commits. Slow remains the caller's choice to make, not something
+# to forbid.
+#: Kept equal to ``MAX_GEOMETRY_HELIOSTATS`` below (defined after this one,
+#: so the value is written out rather than referenced).
+MAX_FIELD_HELIOSTATS = 15_000
 
 # /api/scene/geometry's own, much larger cap. Placing and orienting a mirror
 # (one aiming solve, no shading/blocking, no receiver trace) costs nothing
@@ -392,7 +420,18 @@ MAX_FIELD_HELIOSTATS = 1000
 # the scale target explicitly: "smooth orbiting up to 10,000 heliostats".
 # Ten thousand analytic solves is still a fraction of a second; the trace
 # cap above is unaffected.
-MAX_GEOMETRY_HELIOSTATS = 10_000
+#
+# Raised from 10,000 to 15,000 for docs/ui-spec-v0.2.md §P (signed off): the
+# largest built-in reference project (the Stellio-based Hami reconstruction,
+# heliostat.web.builtin_library.BUILTIN_PROJECTS) ships 14,500 heliostats --
+# sbp's own official count for that plant, with sources disagreeing in a
+# 14,000-15,000 range (see that module's provenance notes). This is purely
+# the same validation ceiling moving to cover a real shipped field; the
+# reasoning above (analytic solves only, no trace) is unchanged, and
+# ui-spec.md's "10,000" scale target is accordingly understated as of this
+# rider, worth a note back to Ryker rather than a silent rewrite of that
+# doc's own number.
+MAX_GEOMETRY_HELIOSTATS = 15_000
 
 # Radial-staggered geometry for the ``{"type": "radial_stagger", ...}``
 # layout: 12 rings in 3 bands (3 rings x 32, 4 rings x 48, 5 rings x 71 --
@@ -1149,6 +1188,88 @@ class SunRequest(_StrictModel):
     hour: float = Field(default=12.0, ge=0.0, lt=24.0)
 
 
+class DNISetting(_StrictModel):
+    """Spec §M.7's site DNI control: what sun this project assumes when it
+    turns a trace/sweep/aperture reading into a real number.
+
+    ``mode="constant"`` (the default) is a fixed W/m^2 value, applied at
+    every elevation/time alike -- what every trace/day-sweep/aperture
+    endpoint already assumed before this control existed, since none of
+    them ever varied DNI with the sun's position (only the YEAR estimate
+    did, hardcoded to :class:`~heliostat.dni.ClearSkyDNI` with no user
+    control -- exactly the rider's complaint). Defaulting THIS control to
+    ``constant`` at :data:`~heliostat.dni.STANDARD_DNI` (1000 W/m^2), rather
+    than the rider's literally-stated "clear-sky model (default)", is a
+    deliberate deviation: a clear-sky default would make a live single/field
+    trace's power vary with ``solar_el_deg`` where it never has before,
+    moving numbers the physics-regression test suite pins at flat 1000 for
+    every existing test fixture. "Clear-sky model" is one click away in the
+    Sun panel and, once chosen, applies to every surface consistently (the
+    rider's actual ask) -- it just is not what a project gets for free.
+
+    ``mode="clearsky"`` evaluates :class:`~heliostat.dni.ClearSkyDNI`,
+    scaled by ``clearsky_scale`` (rider: "or a scale factor on the model" --
+    1.0 is the model unscaled; e.g. 0.85 models a persistent haze/dust
+    discount on an otherwise clear sky).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["constant", "clearsky"] = "constant"
+    constant_w_m2: float = Field(default=STANDARD_DNI, gt=0)
+    clearsky_scale: float = Field(default=1.0, gt=0)
+
+    def dni_at_elevation(self, elevation_deg: float) -> float:
+        """DNI in effect (W/m^2) at one instant, given only its solar
+        elevation -- what a live single/field trace and one day/year-sweep
+        timestep all have on hand, no site or calendar date required."""
+        if self.mode == "constant":
+            return self.constant_w_m2
+        return self.clearsky_scale * ClearSkyDNI.dni_at_elevation(elevation_deg)
+
+    def provider(self, site) -> DNIProvider:
+        """A full ``(date, hour) -> W/m^2`` provider, for the surfaces that
+        need one -- today, only the year estimate, whose hourly grid spans
+        far more instants than it ever traces (see
+        :func:`heliostat.energy.annual_energy`). ``site`` needs
+        ``.latitude``/``.longitude``/``.timezone`` (a plain
+        ``SimpleNamespace`` is what every caller here already builds one
+        from -- see ``_year_energy_cfg``).
+        """
+        if self.mode == "constant":
+            return ConstantDNI(self.constant_w_m2)
+        base = ClearSkyDNI(site)
+        return ScaledDNI(base, self.clearsky_scale) if self.clearsky_scale != 1.0 else base
+
+    def describe(self) -> str:
+        """Short, user-facing label -- spec §M.7: "stated on results (...)
+        so a published number always says which sun it assumed." Distinct
+        from a :class:`~heliostat.dni.DNIProvider`'s own, more technical
+        ``describe()`` (kept separately, e.g. the year estimate's
+        ``dni_provider`` diagnostic field) -- this one is the short rider
+        wording, not the physics-parameter dump."""
+        if self.mode == "constant":
+            return f"{self.constant_w_m2:g} W/m² fixed"
+        if self.clearsky_scale == 1.0:
+            return "clear-sky model"
+        return f"clear-sky model x{self.clearsky_scale:g}"
+
+
+def _resolve_dni(setting: DNISetting, elevation_deg: float) -> tuple[float, float]:
+    """``(scale, dni_w_m2)`` for one instant, given only its elevation.
+
+    ``scale`` is the multiplier every already-1000-normalised power/flux
+    number (the trace convention -- see ``heliostat.dni``'s own module
+    docstring) gets multiplied by; ``dni_w_m2`` is the same number in W/m^2,
+    for display. The one choke point every live-instant caller (single
+    trace, field trace, one day-sweep timestep) applies its site DNI
+    through, so "scale flux/power by dni/1000" is written in exactly one
+    place rather than once per endpoint.
+    """
+    value = setting.dni_at_elevation(elevation_deg)
+    return value / STANDARD_DNI, value
+
+
 class PreviewRequest(_StrictModel):
     design: DesignParams
 
@@ -1165,6 +1286,21 @@ class _TraceRequestBase(_StrictModel):
     optics: Literal["prime_focus", "axicon", "cassegrain"]
     solar_az_deg: float = Field(ge=0, le=360)
     solar_el_deg: float
+    #: docs/ui-spec-v0.2.md §O: the Buie sunshape's circumsolar ratio --
+    #: fraction of the sun's radiance in the hazy aureole around the disk
+    #: versus the disk itself, the standard SolTrace/SolarPILOT convention.
+    #: ``0`` (default) is today's shipped hard-cutoff, no-aureole Buie disk,
+    #: BIT-IDENTICAL to before this field existed -- see
+    #: :func:`heliostat.trace.cone.sunshape_kernel` and
+    #: :class:`~heliostat.trace.samplers.BuieSampler` for the binding
+    #: ``circumsolar_ratio == 0`` guarantee. Sibling of ``solar_az_deg``/
+    #: ``solar_el_deg`` rather than a field on ``design`` -- it describes the
+    #: SUN's angular shape, not the mirror -- but is threaded through
+    #: exactly the same request/``_trace_core``/field/day/year/sweep path
+    #: those two optical-error fields already take, so a single/field/day/
+    #: year trace and a ``heliostat.sweep.run_sweep`` call move together at
+    #: every fidelity.
+    circumsolar_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
     # Tower geometry overrides, validated against the chosen layout's own
     # model by resolve_optics_params (the model cannot be declared here --
     # which one applies depends on `optics`). Absent means "the defaults",
@@ -1192,6 +1328,11 @@ class _TraceRequestBase(_StrictModel):
     #: single-valued flux-map parameterization (see
     #: :func:`~heliostat.geometry.secondary.secondary_has_flux_map`).
     include_secondary_flux: bool = False
+    #: Spec §M.7: the site DNI in effect for this trace/sweep. Absent means
+    #: the default (constant, 1000 W/m^2) -- see :class:`DNISetting`'s own
+    #: docstring for why that default, not the rider's literal "clear-sky",
+    #: is what reproduces every prior response bit-for-bit.
+    dni: DNISetting = Field(default_factory=DNISetting)
 
     def trace_mode(self) -> TraceMode:
         """The fidelity mode this request asks for, ray budget applied."""
@@ -1214,6 +1355,23 @@ class _TraceRequestBase(_StrictModel):
 class TraceRequest(_TraceRequestBase):
     heliostat_x_mm: float = 0.0
     heliostat_y_mm: float = -89609.0
+    #: Opt-in higher-resolution ``flux_png`` render (docs/ui-spec-v0.2.md
+    #: §M.2's drill-down "click to expand" -- js/tabs/analysis.js's footprint
+    #: overlay). ``None`` keeps the existing dpi=110 render exactly as
+    #: before, so every other caller of this endpoint (scripts, the flux CSV
+    #: endpoints, the existing test suite) is unaffected. Bounded well above
+    #: the default so a client asking for the expanded view cannot demand an
+    #: arbitrarily large server-side render.
+    flux_png_dpi: int | None = Field(default=None, ge=110, le=320)
+    #: v0.2 followups item 2: the frustum's TRUE developed (annular-sector,
+    #: "fan") view, as an alternative to the default parameter-space
+    #: rectangle (see _render_flux_png's own rim-distortion note and
+    #: _render_flux_fan_png's docstring for why the rectangle distorts and
+    #: what the fan view fixes). A view PREFERENCE, not a fidelity change --
+    #: silently ignored (renders the rectangle) for any receiver that is not
+    #: a frustum, so a client can leave this set across an optics change
+    #: without a 422.
+    flux_view: Literal["rect", "fan"] = "rect"
 
 
 # ---------------------------------------------------------------------------
@@ -1571,6 +1729,16 @@ class DaySite(_StrictModel):
     year: int = Field(default=2026, ge=1901, le=2099)
     month: int = Field(default=3, ge=1, le=12)
     day: int = Field(default=21, ge=1, le=31)
+    #: Pre-existing bug fixed in passing (unrelated to spec §M.7): a day
+    #: sweep itself never reads this (it traces every hour from sunrise to
+    #: sunset, not one clock hour -- see _day_timesteps), but this same
+    #: model is also ProjectSun.site, and the Sun panel's "site & time"
+    #: fields always carry an ``hour`` (js/store.js's DEFAULT_DOC.sun.site,
+    #: js/panels/sun.js's SUN_SITE_FIELDS) -- so every project save posted
+    #: a ``sun.site.hour`` this model, with ``extra="forbid"``, rejected.
+    #: Optional-with-default so an old saved project (which never carried
+    #: one either way) keeps validating unchanged.
+    hour: float = Field(default=12.0, ge=0.0, lt=24.0)
 
 
 class DayTraceRequest(_TraceRequestBase):
@@ -1628,10 +1796,16 @@ class YearTraceRequest(_TraceRequestBase):
     ``fast_mode`` (default on) traces 7 dates rather than 12; the other 5 of
     the 12 reported sample days are reconstructed by mirroring a traced
     date's optics onto its declination twin on the far side of a solstice
-    (see :func:`_year_report_days`), not by tracing them. DNI is always
-    :class:`heliostat.dni.ClearSkyDNI` -- the only provider that needs no
-    data file (see that module's docstring) -- so the reported total is a
-    clear-sky upper bound, not a weather-corrected estimate.
+    (see :func:`_year_report_days`), not by tracing them. DNI (spec §M.7)
+    defaults to :class:`heliostat.dni.ClearSkyDNI` -- overriding the
+    ``dni`` field's OWN default (``_TraceRequestBase``'s, "constant" at
+    1000 W/m^2) because THIS endpoint's default has always been clear-sky,
+    unconditionally, since before the site DNI control existed; keeping
+    that default here (rather than the base class's) is what makes a year
+    estimate posted with no ``dni`` field at all -- every year estimate
+    ever posted before this control shipped -- keep reporting the exact
+    same clear-sky upper bound it always did. An explicit ``dni`` (constant
+    or a scaled clear-sky) overrides it like any other surface.
     """
 
     site: YearSite = Field(default_factory=YearSite)
@@ -1646,6 +1820,7 @@ class YearTraceRequest(_TraceRequestBase):
     exclude_ids: list[int] = Field(default_factory=list)
     heliostat_x_mm: float = 0.0
     heliostat_y_mm: float = -89609.0
+    dni: DNISetting = Field(default_factory=lambda: DNISetting(mode="clearsky"))
 
 
 # ---------------------------------------------------------------------------
@@ -1703,11 +1878,27 @@ class ReceiverDocument(_StrictModel):
 
 class ProjectField(_StrictModel):
     """Where the mirrors stand, mirroring a trace request's own
-    "layout, else a single position" choice (see :class:`DayTraceRequest`)."""
+    "layout, else a single position" choice (see :class:`DayTraceRequest`).
+
+    ``layout`` deliberately takes the wider :data:`GeometryFieldLayout`
+    (cap :data:`MAX_GEOMETRY_HELIOSTATS`) rather than a live trace's own
+    :data:`FieldLayout` (cap :data:`MAX_FIELD_HELIOSTATS`, ten times
+    smaller): a *saved* field is storage, not a trace request, and
+    docs/ui-spec-v0.2.md §P's built-in reference projects (Gemasolar,
+    Crescent Dunes, the Stellio-based Hami field) all carry more heliostats
+    than :data:`MAX_FIELD_HELIOSTATS` allows. This does not loosen a live
+    field trace's own cap -- :class:`FieldTraceRequest` still validates
+    against the narrower :data:`FieldLayout`, so opening one of these
+    projects and asking to trace the whole field still 422s there,
+    unaffected by this widening. Backward compatible: every existing saved
+    project has at most :data:`MAX_FIELD_HELIOSTATS` positions already, well
+    inside the wider cap, so nothing that validated before stops validating
+    now.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    layout: FieldLayout | None = None
+    layout: GeometryFieldLayout | None = None
     heliostat_x_mm: float = 0.0
     heliostat_y_mm: float = -89609.0
 
@@ -1727,6 +1918,17 @@ class ProjectSun(_StrictModel):
     azimuth_deg: float = Field(ge=0, le=360)
     elevation_deg: float = Field(le=90)
     site: DaySite | None = None
+    #: Spec §M.7, persisted like every other site setting. Absent (a
+    #: project saved before this control existed) means the default --
+    #: constant, 1000 W/m^2 -- which is exactly what that project already
+    #: traced at, so it keeps reopening bit-identical.
+    dni: DNISetting = Field(default_factory=DNISetting)
+    #: Spec §O, persisted like every other Sun-stage setting. Absent (a
+    #: project saved before this rider shipped) means the default -- ``0``,
+    #: today's hard-cutoff Buie disk -- which is exactly the physics that
+    #: project already traced at (§O's own binding bit-identity
+    #: requirement), so it keeps reopening unchanged.
+    circumsolar_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 class ProjectRun(_StrictModel):
@@ -1780,7 +1982,17 @@ class SavedRunDocument(_StrictModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["day", "year"]
+    # docs/ui-spec-v0.2.md §R: "instant" persists one traced field/single
+    # instant from the 3D View trace bar (ui.traceResult on the client) --
+    # `request` is the exact FieldTraceRequest/TraceRequest body it was
+    # traced with, `result` is that trace's own response with its `scene`
+    # key dropped (3D View regenerates geometry cheaply from `request`;
+    # Analysis's instruments never read it, and keeping it would roughly
+    # double the saved size for no benefit here -- see js/tabs/analysis.js's
+    # saveInstantRun). `flux_pngs` carries exactly one entry, key `"0"`
+    # (the day/year machinery's own per-step-index convention, reused for
+    # this run's one and only "step").
+    kind: Literal["day", "year", "instant"]
     project_name: str | None = None
     request: dict
     result: dict
@@ -1834,12 +2046,14 @@ def _validate_library_document(collection: str, document: dict) -> None:
 
 #: Built-in, read-only entries per collection -- see
 #: heliostat.web.builtin_library for the numbers and where they come from.
-#: ``projects`` and ``runs`` have none: both are always something a user
-#: made, never a manuscript default.
+#: ``runs`` has none: a finished run is always something a user made, never
+#: a manuscript default. ``projects`` gained its first four with
+#: docs/ui-spec-v0.2.md §P (BUILTIN_PROJECTS: Gemasolar, PS10, Crescent
+#: Dunes, the Stellio-based Hami field) -- previously always empty.
 _BUILTIN_LIBRARY: dict[str, dict[str, dict]] = {
     "designs": BUILTIN_DESIGNS,
     "receivers": BUILTIN_RECEIVERS,
-    "projects": {},
+    "projects": BUILTIN_PROJECTS,
     "runs": {},
 }
 
@@ -2351,6 +2565,7 @@ def _trace_core(
     secondary_defocus_um: float = 0.0,
     secondary_astig_um: float = 0.0,
     secondary_astig_axis_deg: float = 0.0,
+    circumsolar_ratio: float = 0.0,
 ) -> dict:
     """Trace ONE heliostat -- the exact call both endpoints make.
 
@@ -2420,9 +2635,23 @@ def _trace_core(
     below never reads them, so a secondary map/warp changes nothing about
     ``sunshape_kernel``/the cone deposit by construction, exactly the same
     MC-only guarantee ``error_map`` already has above.
+
+    ``circumsolar_ratio`` (docs/ui-spec-v0.2.md §O) is the Buie sunshape's
+    circumsolar ratio, forwarded into whichever backend ran: an explicit
+    :class:`~heliostat.trace.samplers.BuieSampler` for MC (``None`` at
+    ``circumsolar_ratio <= 0``, which is ``trace_heliostat``'s own pinned
+    CSR=0 default sampler, so that path is bit-identical to before this
+    parameter existed), and straight into ``sunshape_kernel``'s own
+    ``circumsolar_ratio`` for cone. The one caller-visible number that
+    drives both, per the spec's "one model, every fidelity" requirement.
     """
     want_secondary = return_secondary_flux and secondary_has_flux_map(secondary)
     if mode.backend == "mc":
+        # docs/ui-spec-v0.2.md §O: circumsolar_ratio <= 0 passes sampler=None
+        # through unchanged -- trace_heliostat's own pinned CSR=0
+        # BuieSampler() default, bit-identical to before this parameter
+        # existed. Only circumsolar_ratio > 0 builds an explicit sampler.
+        sampler = BuieSampler(circumsolar_ratio=circumsolar_ratio) if circumsolar_ratio > 0 else None
         result = {
             "backend": "mc",
             **trace_heliostat(
@@ -2439,6 +2668,7 @@ def _trace_core(
                 receiver,
                 mode.n_rays,
                 np.random.default_rng(mc_seed),
+                sampler=sampler,
                 source_disk_radius_mm="auto",
                 return_paths=mc_return_paths,
                 return_secondary_hits=want_secondary,
@@ -2466,10 +2696,11 @@ def _trace_core(
         return result
 
     kernel = sunshape_kernel(
-        "super_gauss",
+        "buie",
         slope_error_mrad=slope_error_mrad,
         specularity_mrad=specularity_mrad,
         pointing_error_mrad=pointing_error_mrad,
+        circumsolar_ratio=circumsolar_ratio,
     )
     cone_kwargs = dict(mode.cone_kwargs)
     # Same rule every flux-map consumer bins against (_flux_edges) -- a
@@ -2610,6 +2841,23 @@ def _acquire_field_pool(min_size: int) -> ProcessPoolExecutor:
         return _field_pool
 
 
+def _field_pool_cold_start_expected(min_size: int) -> bool:
+    """Whether the next :func:`_acquire_field_pool` call will (re)create the
+    pool rather than reuse a live one.
+
+    Read-only mirror of :func:`_acquire_field_pool`'s own condition -- never
+    mutates pool state, so calling this has no effect on the pool that call
+    would itself create. Exists purely so a caller can narrate a first-trace
+    warmup honestly: on this machine, spawning ~7 worker processes and
+    having each reimport this module (numpy/scipy/matplotlib, the
+    manuscript-field CSV, the sunshape kernel table) costs several seconds
+    of genuine wall time with nothing else to show for it -- see
+    field_trace_start's own use of this.
+    """
+    with _field_pool_lock:
+        return _field_pool is None or (_field_pool_size < min_size and _field_pool_inflight == 0)
+
+
 def _release_field_pool() -> None:
     global _field_pool_inflight
     with _field_pool_lock:
@@ -2651,6 +2899,7 @@ def _field_trace_task(task: tuple) -> tuple[int, dict]:
         secondary_defocus_um,
         secondary_astig_um,
         secondary_astig_axis_deg,
+        circumsolar_ratio,
     ) = task
     result = _trace_core(
         design,
@@ -2674,6 +2923,7 @@ def _field_trace_task(task: tuple) -> tuple[int, dict]:
         secondary_defocus_um=secondary_defocus_um,
         secondary_astig_um=secondary_astig_um,
         secondary_astig_axis_deg=secondary_astig_axis_deg,
+        circumsolar_ratio=circumsolar_ratio,
     )
     return index, result
 
@@ -2727,6 +2977,8 @@ def _trace_field_heliostats(
     secondary_defocus_um: float = 0.0,
     secondary_astig_um: float = 0.0,
     secondary_astig_axis_deg: float = 0.0,
+    dni_w_m2: float = STANDARD_DNI,
+    circumsolar_ratio: float = 0.0,
 ) -> dict:
     """One trace per heliostat, summed onto the receiver grid -- the whole
     field endpoint's "phase 3", shared by the synchronous endpoint and the
@@ -2760,6 +3012,13 @@ def _trace_field_heliostats(
     focus, pyramid).
     """
     n = xy_mm.shape[0]
+    # Spec §M.7: the one choke point this field trace scales through -- every
+    # per-heliostat result below is still at the trace's native DNI=1000
+    # normalisation when consume() reads it; dni_scale turns that into the
+    # real number, applied once per heliostat rather than once on the
+    # already-summed total, so a per-heliostat `rows[i]["power_w"]` is
+    # honest too, not just the field total.
+    dni_scale = dni_w_m2 / STANDARD_DNI
     # Cost-weighted companion to the plain per-heliostat count, passed to
     # ``on_progress`` alongside it so a caller's ETA/progress-bar fraction
     # can track wall-time share instead of racing through cheap inner rings
@@ -2816,19 +3075,20 @@ def _trace_field_heliostats(
             counts, _, _ = np.histogram2d(
                 result["xy"][1], result["xy"][0], bins=[v_edges, u_edges]
             )
-            own_power = result["watts_per_ray"] * result["counters"].get("in_window", 0)
-            flux += counts * result["watts_per_ray"] / bin_area_m2 * eta
+            watts_per_ray = result["watts_per_ray"] * dni_scale
+            own_power = watts_per_ray * result["counters"].get("in_window", 0)
+            flux += counts * watts_per_ray / bin_area_m2 * eta
         else:
-            own_power = result["power_w"]
-            incident_power_w += result["incident_power_w"] * eta_incident
-            flux += result["flux"] * eta
+            own_power = result["power_w"] * dni_scale
+            incident_power_w += result["incident_power_w"] * dni_scale * eta_incident
+            flux += result["flux"] * dni_scale * eta
         power_w += own_power * eta
         if want_field_secondary:
             sec_maps = _secondary_maps_from_result(result, secondary)
             if sec_maps is not None:
                 s_flux, _s_u, _s_v, s_power_w, s_fidelity = sec_maps
-                secondary_flux = secondary_flux + s_flux * eta
-                secondary_power_w += s_power_w * eta
+                secondary_flux = secondary_flux + s_flux * dni_scale * eta
+                secondary_power_w += s_power_w * dni_scale * eta
                 secondary_fidelity = s_fidelity
         for k, v in result["counters"].items():
             counters[k] = counters.get(k, 0) + v
@@ -2884,6 +3144,7 @@ def _trace_field_heliostats(
                     secondary_defocus_um=secondary_defocus_um,
                     secondary_astig_um=secondary_astig_um,
                     secondary_astig_axis_deg=secondary_astig_axis_deg,
+                    circumsolar_ratio=circumsolar_ratio,
                 )
             except Exception as exc:  # noqa: BLE001 - isolated per heliostat, see record_failure
                 record_failure(i, exc)
@@ -2938,6 +3199,7 @@ def _trace_field_heliostats(
                     secondary_defocus_um,
                     secondary_astig_um,
                     secondary_astig_axis_deg,
+                    circumsolar_ratio,
                 ),
             )
             future_index[future] = i
@@ -3109,22 +3371,6 @@ def _day_secondary_grid_blob_key(step: int) -> str:
     return f"day-secondary-grid/{step}"
 
 
-def _day_dni_provider(req: "DayTraceRequest") -> ClearSkyDNI:
-    """Clear-sky DNI source for a day sweep's own per-timestep
-    ``dni_w_m2`` -- §M.4's average-concentration readout (avg flux / DNI)
-    needs a DNI number to divide by, and the day sweep otherwise reports
-    none (unlike the year estimate, which already leans on this same
-    :class:`~heliostat.dni.ClearSkyDNI` model via ``heliostat.energy``).
-    Display/analysis only: never fed back into the trace, the flux grid, or
-    the collected-power numbers, which is why this lives beside
-    ``_day_timesteps`` rather than inside ``_trace_instant_metrics``.
-    """
-    site = req.site
-    return ClearSkyDNI(
-        SimpleNamespace(latitude=site.latitude_deg, longitude=site.longitude_deg, timezone=site.timezone_h)
-    )
-
-
 def _day_timesteps(req: "DayTraceRequest") -> list:
     """The day's sample times, from true sunrise to true sunset."""
     site = req.site
@@ -3284,6 +3530,7 @@ def _trace_instant_metrics(
             pointing_error_mrad=req.design.pointing_error_mrad,
             pointing_rng=pointing_rng,
             return_secondary_flux=want_secondary_flux,
+            circumsolar_ratio=req.circumsolar_ratio,
             **secondary_perturb_kwargs,
         )
         eta = float(eta_union[i])
@@ -3373,24 +3620,32 @@ def _flux_grid_for(
         reflectance=body.design.reflectance,
         error_map=_build_error_map(body.design),
         pointing_error_mrad=body.design.pointing_error_mrad,
+        circumsolar_ratio=body.circumsolar_ratio,
         **_secondary_perturb_kwargs(optics_params),
     )
+    # Spec §M.7: the same DNI an on-screen /api/trace call for this body
+    # would apply -- so an exported CSV always matches what the UI shows
+    # for identical inputs, never a silently-different flat-1000 number.
+    dni_scale, _dni_w_m2 = _resolve_dni(body.dni, body.solar_el_deg)
     if result["backend"] == "mc":
         flux, u_edges, v_edges, _rms, _cen = _mc_flux_and_metrics(
-            result["xy"], result["watts_per_ray"], receiver
+            result["xy"], result["watts_per_ray"] * dni_scale, receiver
         )
         return flux, u_edges, v_edges, receiver
-    return result["flux"], result["u_edges"], result["v_edges"], receiver
+    return result["flux"] * dni_scale, result["u_edges"], result["v_edges"], receiver
 
 
 def _secondary_flux_grid_for(
     body: "TraceRequest",
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, float] | None:
-    """``(flux_w_m2, u_edges, v_edges, secondary_reflectance)`` on the
-    secondary's own surface for one single-heliostat request, or ``None``
-    when there is nothing to export (``optics="prime_focus"``, or any other
-    secondary with no single-valued flux-map parameterization -- see
-    :func:`~heliostat.geometry.secondary.secondary_has_flux_map`).
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, "Secondary"] | None:
+    """``(flux_w_m2, u_edges, v_edges, secondary_reflectance, secondary)`` on
+    the secondary's own surface for one single-heliostat request, or
+    ``None`` when there is nothing to export (``optics="prime_focus"``, or
+    any other secondary with no single-valued flux-map parameterization --
+    see :func:`~heliostat.geometry.secondary.secondary_has_flux_map`). The
+    ``secondary`` object itself rides along so a caller building the §D FEA
+    export can turn its ``(u, v)`` grid into true world coordinates via
+    :func:`~heliostat.geometry.secondary.secondary_uv_to_world`.
 
     The secondary-map analogue of :func:`_flux_grid_for`, sharing its own
     solve/design/trace path via :func:`_trace_core` so the export can never
@@ -3429,6 +3684,7 @@ def _secondary_flux_grid_for(
         error_map=_build_error_map(body.design),
         pointing_error_mrad=body.design.pointing_error_mrad,
         return_secondary_flux=True,
+        circumsolar_ratio=body.circumsolar_ratio,
         **_secondary_perturb_kwargs(optics_params),
     )
     secondary_maps = _secondary_maps_from_result(result, secondary)
@@ -3436,7 +3692,87 @@ def _secondary_flux_grid_for(
         return None
     flux, u_edges, v_edges, _power_w, _fidelity = secondary_maps
     secondary_reflectance = getattr(optics_params, "secondary_reflectance", 0.90)
-    return flux, u_edges, v_edges, secondary_reflectance
+    # Spec §M.7 -- see _flux_grid_for's identical comment.
+    dni_scale, _dni_w_m2 = _resolve_dni(body.dni, body.solar_el_deg)
+    return flux * dni_scale, u_edges, v_edges, secondary_reflectance, secondary
+
+
+def _field_trace_phase(body: "FieldTraceRequest", *, return_secondary_flux: bool = False) -> dict:
+    """Solve, occlude and trace one field instant -- ``/api/field/trace``'s
+    own phases 1-3 (solve, occlusion, sum-onto-the-receiver), shared with the
+    field-level FEA CSV export endpoints below so an export is never a
+    second, possibly-drifted computation of the same field a live trace
+    already summed. Skips phase 4+ (the flux PNG, the 3-D scene) -- callers
+    that need those still go through ``/api/field/trace`` itself.
+
+    docs/ui-spec-v0.2.md §R's own gap: a live field trace has no synchronous
+    CSV export today, only the day-sweep job's internal per-kept-step call
+    to :func:`_flux_fea_csv`/:func:`_secondary_flux_fea_csv`. This is the
+    field-level analogue of :func:`_flux_grid_for`/:func:`_secondary_flux_grid_for`
+    (the single-heliostat versions those two endpoints already share), kept
+    as its own function rather than folded into ``field_trace`` itself so
+    that well-tested, synchronous endpoint stays untouched.
+    """
+    if body.solar_el_deg <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail="solar_el_deg must be > 0 (the sun is below the horizon)",
+        )
+    optics_params = resolve_optics_params(body.optics, body.optics_params)
+    try:
+        xy_mm, ids = _field_positions(body.layout, body.exclude_ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    secondary, receiver = _geometry_for(body.optics, optics_params)
+    mode = body.trace_mode()
+    try:
+        solutions, designs, _slants = _solve_field(
+            body.optics, optics_params, body.design, xy_mm, body.solar_az_deg, body.solar_el_deg
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    eta_shade, eta_block, eta_union, outline = _field_occlusion(
+        xy_mm, ids, solutions, designs[0], body.solar_az_deg, body.solar_el_deg
+    )
+    u_edges, v_edges, bin_area_m2 = _flux_edges(receiver)
+    _dni_scale, dni_w_m2 = _resolve_dni(body.dni, body.solar_el_deg)
+    traced = _trace_field_heliostats(
+        designs,
+        xy_mm,
+        ids,
+        solutions,
+        eta_shade,
+        eta_block,
+        eta_union,
+        secondary,
+        receiver,
+        mode,
+        body.solar_az_deg,
+        body.solar_el_deg,
+        body.design.slope_error_mrad,
+        body.design.specularity_mrad,
+        body.design.reflectance,
+        u_edges,
+        v_edges,
+        bin_area_m2,
+        error_map=_build_error_map(body.design),
+        pointing_error_mrad=body.design.pointing_error_mrad,
+        workers=body.workers or 1,
+        return_secondary_flux=return_secondary_flux,
+        dni_w_m2=dni_w_m2,
+        circumsolar_ratio=body.circumsolar_ratio,
+        **_secondary_perturb_kwargs(optics_params),
+    )
+    return {
+        "optics_params": optics_params,
+        "xy_mm": xy_mm,
+        "ids": ids,
+        "secondary": secondary,
+        "receiver": receiver,
+        "u_edges": u_edges,
+        "v_edges": v_edges,
+        "traced": traced,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -3490,19 +3826,16 @@ def _fea_csv_bytes(header: str, rows) -> bytes:
     return out.getvalue().encode("utf-8")
 
 
-#: Wording for the curved-receiver unrolling convention, shared between the
-#: run bar's on-screen axis caption (js/panels/run.js) and the FEA flux-CSV
-#: header comment, so the two never describe the same grid differently.
-_RECEIVER_UNROLL_NOTE = {
-    "cylinder": (
-        "unrolled receiver: u = arc length around the cylinder, seam at "
-        "north (+y); v = height above the receiver's own centre"
-    ),
-    "frustum": (
-        "unrolled receiver: u = arc length around the frustum at its mean "
-        "radius, seam at north (+y); v = slant distance from the bottom rim"
-    ),
-}
+#: v0.2 followups item 3 (owner, verbatim: "yeah, we should do just x/y/z. I
+#: don't think we need u/v at all. I think it would just make it harder for
+#: someone using Ansys to import for thermal analysis."): the shared
+#: world-frame convention statement for every §D flux export below --
+#: receiver and secondary alike, one wording so the two never drift apart.
+#: Replaces the old per-shape "unrolled (u, v)" note this constant used to
+#: carry (see git history), since neither export unrolls anything any more.
+_FEA_WORLD_FRAME_NOTE = (
+    "3-D convention: x east, y north, z up (meters); the tower axis sits at x = y = 0"
+)
 
 
 def _sag_fea_csv(
@@ -3539,80 +3872,100 @@ def _sag_fea_csv(
 def _flux_fea_csv(
     flux_w_m2: np.ndarray, u_edges_mm: np.ndarray, v_edges_mm: np.ndarray, receiver, subject_line: str
 ) -> bytes:
-    """§D irradiance-map export: ``x_m, y_m, flux_w_m2`` -- one row per bin
-    centre, in meters and W/m² (never the display kW/m² the PNG and
+    """§D irradiance-map export: ``x_m, y_m, z_m, flux_w_m2`` -- one row per
+    bin centre, in meters and W/m² (never the display kW/m² the PNG and
     ``/api/trace/flux.csv`` use -- §D is explicit that units are always
     stated, never implied, and W/m² is the unit that header states).
 
-    For a flat receiver ``x, y`` are plain receiver-plane coordinates; for a
-    curved one (cylinder/frustum) they are the unrolled ``(u, v)`` grid
-    (arc length × height/slant) converted straight to meters -- ANSYS
-    maps flat coordinates, so the header spells out the unrolling
-    convention rather than leaving a caller to guess why "x" is really an
-    arc length.
+    v0.2 followups item 3 (old format: ``x_m, y_m, flux_w_m2``, with x/y the
+    unrolled ``(u, v)`` grid for a curved receiver -- see git history for the
+    exact prior wording): every receiver kind now exports TRUE world
+    coordinates via :meth:`Receiver.uv_to_world` -- the exact inverse of
+    :meth:`Receiver.intersect` (pinned by
+    ``tests/test_receiver_shapes.py::test_uv_to_world_is_the_exact_inverse_of_intersect``)
+    -- so an ANSYS import places flux at the bin's real 3-D position on the
+    surface rather than an arc-length coordinate an importer would otherwise
+    read as flat. A flat receiver's ``z`` is simply its own plane height,
+    exported uniformly alongside x, y like every other shape -- no branch
+    needed, :meth:`FlatWindowReceiver.uv_to_world` already returns a
+    constant z column.
     """
     u_mid = 0.5 * (u_edges_mm[:-1] + u_edges_mm[1:])
     v_mid = 0.5 * (v_edges_mm[:-1] + v_edges_mm[1:])
     gu, gv = np.meshgrid(u_mid, v_mid)  # (n_v, n_u), matches flux's own shape
-    extra = (_RECEIVER_UNROLL_NOTE[receiver.kind],) if receiver.kind in _RECEIVER_UNROLL_NOTE else ()
+    world_mm = receiver.uv_to_world(np.vstack([gu.ravel(), gv.ravel()]))
     header = _fea_csv_header(
-        units_line="x_m, y_m in meters; flux_w_m2 in W/m²",
+        units_line="x_m, y_m, z_m in meters; flux_w_m2 in W/m²",
         subject_line=subject_line,
         grid_line=f"{gu.shape[1]} x {gu.shape[0]} bins",
-        extra_lines=extra,
+        extra_lines=(_FEA_WORLD_FRAME_NOTE,),
     )
-    xs_m = gu.ravel() / 1000.0
-    ys_m = gv.ravel() / 1000.0
+    xs_m = world_mm[0] / 1000.0
+    ys_m = world_mm[1] / 1000.0
+    zs_m = world_mm[2] / 1000.0
     flux_flat = flux_w_m2.ravel()
-    return _fea_csv_bytes(header, zip(xs_m, ys_m, flux_flat))
-
-
-#: docs/secondary-irradiance-plan.md's u/v convention, the secondary-map
-#: analogue of _RECEIVER_UNROLL_NOTE above -- both AxiconSecondary and
-#: CassegrainSecondary share one parameterization (geometry.secondary), so
-#: unlike the receiver note this needs no per-kind branch.
-_SECONDARY_UNROLL_NOTE = (
-    "secondary surface: u = azimuthal arc length at the aperture rim, seam "
-    "at north (+y); v = horizontal radial distance from the tower axis "
-    "(not true slant distance along the surface)"
-)
+    return _fea_csv_bytes(header, zip(xs_m, ys_m, zs_m, flux_flat))
 
 
 def _secondary_flux_fea_csv(
     flux_w_m2: np.ndarray,
     u_edges_mm: np.ndarray,
     v_edges_mm: np.ndarray,
+    secondary,
     secondary_reflectance: float,
     subject_line: str,
 ) -> bytes:
     """Spec §C / §D irradiance-map export for the SECONDARY's own surface:
-    ``x_m, y_m, flux_w_m2, absorbed_w_m2`` -- one row per bin centre, same
-    commented-header convention as :func:`_flux_fea_csv`
-    and :func:`_sag_fea_csv`, plus the fourth ``absorbed`` column §D calls
+    ``x_m, y_m, z_m, flux_w_m2, absorbed_w_m2`` -- one row per bin centre,
+    same commented-header convention as :func:`_flux_fea_csv`
+    and :func:`_sag_fea_csv`, plus the fifth ``absorbed`` column §D calls
     for on this map specifically (``(1 - secondary_reflectance) *
     flux_w_m2``, the same formula the live absorbed-heat readout uses).
 
-    ``x, y`` are the secondary's unrolled ``(u, v)`` converted straight to
-    meters, exactly as a curved receiver's export already does -- see
-    :data:`_SECONDARY_UNROLL_NOTE`.
+    v0.2 followups item 3 (old format: ``x_m, y_m, flux_w_m2, absorbed_w_m2``,
+    with x/y the secondary's unrolled ``(u, v)``): ``x, y, z`` are now true
+    world coordinates via
+    :func:`~heliostat.geometry.secondary.secondary_uv_to_world` -- the exact
+    inverse of :func:`~heliostat.geometry.secondary.secondary_uv` (pinned by
+    ``tests/test_secondary_flux.py::test_uv_to_world_is_the_exact_inverse_of_secondary_uv``),
+    in the surface's own NOMINAL frame moved back to world exactly as a real
+    ray hit would be (spec §E2: a decenter/tilt relocates these points along
+    with the physical part).
+
+    Bins whose centre falls outside the aperture disk (the Cartesian grid's
+    own square bounding box is bigger than the round aperture it covers --
+    see :func:`~heliostat.geometry.secondary.secondary_bin_areas_m2`'s own
+    masking note) are DROPPED rather than emitted: there is no real surface
+    point at a masked centre for ``secondary_uv_to_world`` to place honestly
+    (its ``z`` would be the nominal figure's bare extrapolation past the
+    physical rim), so this follows the same convention :func:`_sag_fea_csv`
+    already uses for a point outside every facet -- excluded, not written
+    as a row of nonsense.
     """
     u_mid = 0.5 * (u_edges_mm[:-1] + u_edges_mm[1:])
     v_mid = 0.5 * (v_edges_mm[:-1] + v_edges_mm[1:])
     gu, gv = np.meshgrid(u_mid, v_mid)  # (n_v, n_u), matches flux's own shape
+    in_aperture = (np.hypot(gu, gv) <= secondary.aperture_radius_mm).ravel()
+    n_total = in_aperture.size
+    n_valid = int(in_aperture.sum())
+    world_mm = secondary_uv_to_world(
+        secondary, np.vstack([gu.ravel()[in_aperture], gv.ravel()[in_aperture]])
+    )
     header = _fea_csv_header(
         units_line=(
-            "x_m, y_m in meters; flux_w_m2, absorbed_w_m2 in W/m² "
+            "x_m, y_m, z_m in meters; flux_w_m2, absorbed_w_m2 in W/m² "
             f"(absorbed = (1 - secondary_reflectance) * flux, secondary_reflectance={secondary_reflectance:g})"
         ),
         subject_line=subject_line,
-        grid_line=f"{gu.shape[1]} x {gu.shape[0]} bins",
-        extra_lines=(_SECONDARY_UNROLL_NOTE,),
+        grid_line=f"{gu.shape[1]} x {gu.shape[0]} bins, {n_valid} of {n_total} inside the aperture disk",
+        extra_lines=(_FEA_WORLD_FRAME_NOTE,),
     )
-    xs_m = gu.ravel() / 1000.0
-    ys_m = gv.ravel() / 1000.0
-    flux_flat = flux_w_m2.ravel()
+    xs_m = world_mm[0] / 1000.0
+    ys_m = world_mm[1] / 1000.0
+    zs_m = world_mm[2] / 1000.0
+    flux_flat = flux_w_m2.ravel()[in_aperture]
     absorbed_flat = flux_flat * (1.0 - secondary_reflectance)
-    return _fea_csv_bytes(header, zip(xs_m, ys_m, flux_flat, absorbed_flat))
+    return _fea_csv_bytes(header, zip(xs_m, ys_m, zs_m, flux_flat, absorbed_flat))
 
 
 def _render_day_png(steps: list[dict]) -> bytes:
@@ -4264,8 +4617,80 @@ def _secondary_sag_fea_csv(
     return _fea_csv_bytes(header, zip(xs_m, ys_m, zs_mm))
 
 
+def _unwrap_receiver_for_map(receiver) -> "Receiver | None":
+    """The receiver actually parameterizing a flux map's ``(u, v)`` grid --
+    unwraps an :class:`ApertureClippedReceiver` to its inner absorbing
+    surface, the same rule :func:`heliostat.web.scene._receiver_dict` uses
+    for exactly this reason (a cavity's ``uv``/extent/``u_period_mm`` all
+    already delegate to ``inner`` -- see that class's own methods -- so its
+    map is described by the inner shape, not by the flat aperture in front
+    of it)."""
+    if receiver is None:
+        return None
+    return receiver.inner if isinstance(receiver, ApertureClippedReceiver) else receiver
+
+
+#: v0.2 followups item 1: the N/W/S/E/N cardinal ordering left-to-right
+#: across a periodic receiver's unrolled u-axis. PROOF (not assumed): u = R
+#: * az with az = atan2(x, -y) measured from -y/south (receiver.py's module
+#: docstring + CylinderReceiver/FrustumReceiver's own docstrings), so at
+#: u=0 (az=0) x=0, y=-R -- due south. uv_to_world confirms the same sense
+#: everywhere (x = R*sin(az), y = -R*cos(az)): az=+pi/2 gives x=+R, y=0 --
+#: due EAST -- so u increasing (rightward on the chart, origin="lower"/
+#: left-to-right x-axis) moves toward east, and az=+pi (u at its positive
+#: extreme) gives x=0, y=+R -- due north, the seam. Symmetrically az=-pi/2
+#: (u negative) is due west and az=-pi (u at its negative extreme) is the
+#: SAME physical seam, north again. This is independently corroborated by
+#: two other already-shipped renderings of the identical convention: (1)
+#: js/scene3d.js's bakeCylindricalUV, whose own comment states plainly "the
+#: compass sequence this produces (N . W . S . E . N left to right)"; (2)
+#: js/main.js's CYLINDER_AXIS_COMPASS = ["N","W","S","E","N"], derived (see
+#: that file's own comment) from the exact same atan2(x, -y) convention.
+#: All three (this module, the 3D drape, and the flux-overlay caption) must
+#: therefore never disagree -- they are three renderings of one proof.
+_AZIMUTH_CARDINALS = (("N", -1.0), ("W", -0.5), ("S", 0.0), ("E", 0.5), ("N", 1.0))
+
+
+def _azimuth_deg_ticks(u_period_mm: float) -> tuple[list[float], list[str]]:
+    """Tick positions (mm, in ``u`` units) and two-line "letter / degrees"
+    labels for :data:`_AZIMUTH_CARDINALS`, degrees measured from south
+    (0 deg = S, the chart's own centre; +/-180 deg = N, the seam at both
+    edges) rather than the conventional from-north bearing -- chosen so the
+    numbers read in the SAME left-to-right sense u already has (u increases
+    -> az increases -> degrees increase), with no wrap discontinuity inside
+    the plotted range and no north labelled with two different numbers."""
+    half = u_period_mm / 2.0
+    positions = [frac * half for _letter, frac in _AZIMUTH_CARDINALS]
+    labels = [f"{letter}\n{frac * 180.0:.0f}°" for letter, frac in _AZIMUTH_CARDINALS]
+    return positions, labels
+
+
+def _frustum_rect_distortion_note(frustum: "FrustumReceiver") -> str:
+    """v0.2 followups item 2: the one-line disclosure §the rectangular flux
+    map owes its reader -- the exact stretch/compression its own u-axis
+    carries at each rim, per :func:`_render_flux_fan_png`'s docstring
+    (``r_mean_mm / r(v)`` at ``v``'s own rim). Always stated as "narrow
+    rim stretched / wide rim compressed" rather than "bottom/top", which
+    would flip sign for an inverted (r_top < r_bot) frustum."""
+    r_bot, r_top, r_mean = frustum.r_bot_mm, frustum.r_top_mm, frustum.r_mean_mm
+    bot_pct = (r_mean / r_bot - 1.0) * 100.0
+    top_pct = (r_mean / r_top - 1.0) * 100.0
+    narrow_pct, wide_pct = (bot_pct, top_pct) if r_bot < r_top else (top_pct, bot_pct)
+    return (
+        f"rectangle view stretches the narrow rim {narrow_pct:+.0f}% and "
+        f"compresses the wide rim {wide_pct:+.0f}% vs. true arc length -- "
+        "see the fan view for the undistorted development"
+    )
+
+
 def _render_flux_png(
-    flux: np.ndarray, u_edges: np.ndarray, v_edges: np.ndarray, mode: str, elapsed_ms: float
+    flux: np.ndarray,
+    u_edges: np.ndarray,
+    v_edges: np.ndarray,
+    mode: str,
+    elapsed_ms: float,
+    dpi: int = 110,
+    receiver=None,
 ) -> bytes:
     # Lazy import, same reasoning as HeliostatDesign.preview(): matplotlib
     # is a real dependency but no other endpoint in this module needs it.
@@ -4274,6 +4699,14 @@ def _render_flux_png(
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    # `dpi` only scales the OUTPUT raster (the savefig() call below) -- the
+    # figure itself is still built at figsize=(5.6, 4.6) inches with the same
+    # point-sized fonts/line widths, so a higher dpi yields a genuinely
+    # sharper render of the identical layout (more pixels per element, not a
+    # stretched/upscaled one), same idea as a "retina" screenshot. Every
+    # caller except the footprint drill-down's expanded view passes the
+    # default 110, so their PNG dimensions are unchanged (see TraceRequest's
+    # `flux_png_dpi`, None by default).
     fig, ax = plt.subplots(figsize=(5.6, 4.6))
     # Displayed in kW/m2: a tower receiver runs in the hundreds to
     # thousands of kW/m2, and five- and six-digit W/m2 tick labels are
@@ -4288,14 +4721,196 @@ def _render_flux_png(
     )
     cbar = fig.colorbar(im, ax=ax)
     cbar.set_label("kW/m²")
-    ax.set_xlabel("u (mm)")
+
+    # v0.2 followups item 1: for a receiver that closes on itself (u_period_mm
+    # not None -- the exact gate heliostat.trace.cone's own wrap machinery
+    # uses, so "periodic" here always means what the tracer means by it), the
+    # millimetre u-axis is misleading (exact only at the cylinder's radius /
+    # the frustum's mean radius) and the owner asked for compass context
+    # ("N / S / E / W labelled") instead -- see _AZIMUTH_CARDINALS above for
+    # the proof of the ordering used here.
+    unwrapped = _unwrap_receiver_for_map(receiver)
+    u_period_mm = getattr(unwrapped, "u_period_mm", None)
+    if u_period_mm:
+        positions, labels = _azimuth_deg_ticks(u_period_mm)
+        ax.set_xticks(positions)
+        ax.set_xticklabels(labels)
+        xlabel = "azimuth, degrees from south (seam/N at both edges)"
+        if isinstance(unwrapped, FrustumReceiver):
+            xlabel += "\n" + _frustum_rect_distortion_note(unwrapped)
+        ax.set_xlabel(xlabel, fontsize=8 if isinstance(unwrapped, FrustumReceiver) else 10)
+    else:
+        ax.set_xlabel("u (mm)")
     ax.set_ylabel("v (mm)")
     ax.set_title(f"{mode}, {elapsed_ms:.0f} ms")
     fig.tight_layout()
 
     buf = BytesIO()
     try:
-        fig.savefig(buf, format="png", dpi=110)
+        fig.savefig(buf, format="png", dpi=dpi)
+    finally:
+        plt.close(fig)
+    return buf.getvalue()
+
+
+def _frustum_fan_sin_half_angle(frustum: "FrustumReceiver") -> float:
+    """``sin`` of the frustum's own cone half-angle -- ``|r_top - r_bot| /
+    slant_length`` (opposite over hypotenuse of the bottom-to-top-rim
+    triangle). See :func:`_render_flux_fan_png`'s docstring for why this one
+    ratio holds at every latitude of a right circular cone, which is what
+    makes it the single scale factor the whole fan development needs."""
+    return abs(frustum.r_top_mm - frustum.r_bot_mm) / frustum.slant_length_mm
+
+
+def _frustum_fan_rho_direction(frustum: "FrustumReceiver") -> float:
+    """``+1`` if distance-from-the-(virtual)-apex INCREASES from the bottom
+    rim to the top rim, ``-1`` if it decreases -- i.e. whether the apex sits
+    below the band (the common, "normal" ``r_top > r_bot`` case: climbing
+    the band means climbing away from the apex) or above it (an INVERTED
+    frustum, ``r_top < r_bot``: the band narrows going up, so climbing it
+    means approaching the apex, and rho falls as ``v`` rises). ``v`` itself
+    (:meth:`FrustumReceiver.intersect`'s slant distance from the bottom rim)
+    is always non-negative and increasing regardless of orientation -- this
+    sign is what turns that into the correct SIGNED step on rho."""
+    return 1.0 if frustum.r_top_mm >= frustum.r_bot_mm else -1.0
+
+
+def _frustum_fan_xy_grid_m(
+    frustum: "FrustumReceiver", u_edges: np.ndarray, v_edges: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(X, Y)`` meshgrid, meters, of the frustum's true developed (fan)
+    surface at every ``(u_edges, v_edges)`` bin corner -- the pure geometry
+    :func:`_render_flux_fan_png` paints, split out so it can be pinned by
+    ``tests/test_flux_fan.py`` without touching matplotlib. ``rho(v) =
+    rho_bot_mm + direction*v`` (``v`` is already slant distance from the
+    bottom rim -- ``FrustumReceiver.intersect``'s own docstring; ``direction``
+    is :func:`_frustum_fan_rho_direction`, +1 for a normal frustum, -1 for
+    an inverted one where the virtual apex sits above the band instead of
+    below it); ``phi(u) = (u / r_mean_mm) * sin_half_angle`` scales the full
+    azimuth down to the developed sector's true angle. Local ``(x, y) =
+    (rho*sin(phi), -rho*cos(phi))`` is the same trig
+    :meth:`FrustumReceiver.uv_to_world` uses for ``(r, az)``, so the apex
+    sits at the origin and the sector opens downward, symmetric about the
+    vertical."""
+    sin_half_angle = _frustum_fan_sin_half_angle(frustum)
+    rho_bot_mm = frustum.r_bot_mm / sin_half_angle
+    direction = _frustum_fan_rho_direction(frustum)
+    rho_edges_m = (rho_bot_mm + direction * v_edges) / 1000.0
+    phi_edges = (u_edges / frustum.r_mean_mm) * sin_half_angle
+    phi_grid, rho_grid = np.meshgrid(phi_edges, rho_edges_m)
+    return rho_grid * np.sin(phi_grid), -rho_grid * np.cos(phi_grid)
+
+
+def _frustum_fan_cardinal_points_m(
+    frustum: "FrustumReceiver", u_edges: np.ndarray, v_edges: np.ndarray
+) -> list[tuple[str, float, float]]:
+    """``[(letter, x_m, y_m), ...]`` for :data:`_AZIMUTH_CARDINALS`, placed
+    just outside the fan's own OUTER rim -- ``max(rho_bot, rho_top) * 1.05``,
+    since an inverted frustum's outer (apex-farthest) rim is the bottom, not
+    the top -- at each cardinal's true angular position: the same
+    ``u``-fraction -> ``sin_half_angle``-scaled-angle map
+    :func:`_frustum_fan_xy_grid_m` uses for the flux surface itself, so a
+    marker always sits on the physical seam/E/W point it names, never a
+    cosmetic quarter-split of the sector. Two entries share the label "N"
+    (both edges are the one physical seam, at different developed-plane
+    positions) -- a list, not a dict keyed by letter, so neither is lost."""
+    sin_half_angle = _frustum_fan_sin_half_angle(frustum)
+    rho_bot_mm = frustum.r_bot_mm / sin_half_angle
+    rho_top_mm = rho_bot_mm + _frustum_fan_rho_direction(frustum) * float(v_edges[-1])
+    rho_out_m = max(rho_bot_mm, rho_top_mm) * 1.05 / 1000.0
+    half_circ_u = 0.5 * (float(u_edges[-1]) - float(u_edges[0]))
+    points = []
+    for letter, frac in _AZIMUTH_CARDINALS:
+        phi = (frac * half_circ_u / frustum.r_mean_mm) * sin_half_angle
+        points.append((letter, rho_out_m * np.sin(phi), -rho_out_m * np.cos(phi)))
+    return points
+
+
+def _render_flux_fan_png(
+    flux: np.ndarray,
+    u_edges: np.ndarray,
+    v_edges: np.ndarray,
+    frustum: "FrustumReceiver",
+    mode: str,
+    elapsed_ms: float,
+    dpi: int = 110,
+) -> bytes:
+    """v0.2 followups item 2: the frustum's TRUE developed view -- an
+    annular sector, not the parameter-space rectangle :func:`_render_flux_png`
+    always draws (see :func:`_frustum_rect_distortion_note` for exactly how
+    much that rectangle distorts). The flux VALUES were already correct
+    (``FrustumReceiver.bin_areas_m2`` divides by true per-row area); only the
+    SHAPE drawn was wrong.
+
+    Standard technical-drawing cone development: unrolling a right circular
+    cone's lateral surface produces an annular sector whose radius from the
+    (virtual) cone apex is the TRUE slant distance -- ``rho(v) = rho_bot +
+    v`` since ``v`` is already slant distance from the bottom rim
+    (``FrustumReceiver.intersect``'s own docstring) -- and whose angle is the
+    full ``2*pi`` azimuth scaled by ``sin(half_angle)``. ``sin(half_angle) =
+    |r_top - r_bot| / slant_length`` (opposite over hypotenuse of the
+    bottom-to-top-rim triangle): a right circular cone has ``r(z)/rho(z)``
+    constant at every latitude (both are linear in the same distance-from-
+    apex parameter), which is what makes ONE sector angle correct for the
+    whole band -- verified as the exact inverse of ``intersect``/``bin_areas_m2``
+    by ``tests/test_flux_fan.py``'s own closed-form checks against
+    ``r_bot_mm``/``r_top_mm``.
+
+    Screen layout: local ``(x, y) = (rho*sin(phi), -rho*cos(phi))`` -- the
+    SAME trig :meth:`FrustumReceiver.uv_to_world` uses for ``(r, az)`` --
+    puts the (virtual) apex at the origin and the sector opening downward,
+    symmetric about the vertical; cardinal markers use the identical
+    u-fraction positions as :data:`_AZIMUTH_CARDINALS`, scaled through the
+    same ``sin(half_angle)`` factor, so they land on the true physical
+    seam/E/W points, not a cosmetic quarter-split of whatever angle the
+    sector happens to draw at.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    x_grid, y_grid = _frustum_fan_xy_grid_m(frustum, u_edges, v_edges)
+    cardinals_m = _frustum_fan_cardinal_points_m(frustum, u_edges, v_edges)
+
+    fig, ax = plt.subplots(figsize=(5.6, 5.6))
+    im = ax.pcolormesh(x_grid, y_grid, flux / 1000.0, cmap="magma", shading="flat")
+    ax.set_aspect("equal")
+    cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.06)
+    cbar.set_label("kW/m²")
+
+    for letter, x, y in cardinals_m:
+        ax.annotate(
+            letter,
+            (x, y),
+            ha="center",
+            va="center",
+            fontsize=10,
+            fontweight="bold",
+            color="#3a3a3a",
+        )
+
+    # The cardinal markers sit deliberately OUTSIDE the pcolormesh data (just
+    # past the outer rim -- see _frustum_fan_cardinal_points_m), which
+    # pcolormesh's own autoscale knows nothing about: left alone, the N/E/W
+    # letters render past the axes' auto-fit limits and are clipped off the
+    # saved PNG (caught visually verifying this function's own output).
+    # Explicitly folding the marker positions into the data limits before
+    # autoscaling fixes that; harmless if a caller's markers ever happened
+    # to already sit inside the mesh.
+    xs = [x for _letter, x, _y in cardinals_m]
+    ys = [y for _letter, _x, y in cardinals_m]
+    ax.update_datalim(list(zip(xs, ys)))
+    ax.autoscale_view()
+
+    ax.set_xlabel("developed x (m)")
+    ax.set_ylabel("developed y (m)")
+    ax.set_title(f"{mode}, true developed (fan) view, {elapsed_ms:.0f} ms", fontsize=10)
+    fig.tight_layout()
+
+    buf = BytesIO()
+    try:
+        fig.savefig(buf, format="png", dpi=dpi)
     finally:
         plt.close(fig)
     return buf.getvalue()
@@ -4746,11 +5361,6 @@ def create_app():
         # (receiver kind/curved-unrolling note), so a kept timestep's export
         # never has to re-resolve optics params or rebuild the geometry.
         _, day_receiver = _geometry_for(body.optics, optics_params)
-        # §M.4: clear-sky DNI per timestep, for the aperture readout's
-        # "avg concentration = avg flux / DNI" -- cheap (no tracing), see
-        # _day_dni_provider.
-        day_dni_provider = _day_dni_provider(body)
-        day_date = _dt.date(body.site.year, body.site.month, body.site.day)
         if body.layout is None:
             day_heliostat_desc = (
                 f"single heliostat at x={body.heliostat_x_mm / 1000.0:.3f} m, "
@@ -4803,9 +5413,33 @@ def create_app():
                     job.done = index + 1
                     continue
                 elapsed_ms = (time.perf_counter() - t0) * 1000.0
+                # Spec §M.7: this timestep's own site DNI, from its own
+                # elevation -- applied HERE, once, rather than inside
+                # _trace_instant_metrics (which the year endpoint also
+                # calls, through its OWN choke point -- energy.py's
+                # dni_provider -- and must not have this scaling applied a
+                # second time; see year_start's own comment). A day sweep's
+                # power/flux is therefore honestly the number this
+                # project's DNI setting says it is at each timestep's own
+                # sun elevation, not always flat 1000 regardless of where
+                # the sun is (the gap the rider actually complains about).
+                step_scale, step_dni_w_m2 = _resolve_dni(body.dni, step.solar_el_deg)
+                metrics["power_w"] = metrics["power_w"] * step_scale
+                metrics["peak_flux_kw_m2"] = metrics["peak_flux_kw_m2"] * step_scale
+                metrics["mean_flux_kw_m2"] = metrics["mean_flux_kw_m2"] * step_scale
+                if "flux" in metrics:
+                    metrics["flux"] = metrics["flux"] * step_scale
+                if "secondary_flux" in metrics:
+                    metrics["secondary_flux"] = metrics["secondary_flux"] * step_scale
+                    metrics["secondary_power_w"] = metrics["secondary_power_w"] * step_scale
                 if want_flux:
                     job.blobs[_day_flux_blob_key(index)] = _render_flux_png(
-                        metrics["flux"], metrics["u_edges"], metrics["v_edges"], body.mode, elapsed_ms
+                        metrics["flux"],
+                        metrics["u_edges"],
+                        metrics["v_edges"],
+                        body.mode,
+                        elapsed_ms,
+                        receiver=day_receiver,
                     )
                     heliostat_desc = day_heliostat_desc or (
                         f"field of {metrics['n_heliostats']} heliostats"
@@ -4866,9 +5500,13 @@ def create_app():
                         },
                         "n_heliostats": metrics["n_heliostats"],
                         "has_flux_map": want_flux,
-                        # §M.4: clear-sky DNI at this instant, display/analysis
-                        # only -- see _day_dni_provider.
-                        "dni_w_m2": round(float(day_dni_provider.dni(day_date, float(step.hour))), 2),
+                        # Spec §M.7: the site DNI actually applied to THIS
+                        # timestep's power/flux above (was previously a
+                        # separate, display-only clear-sky-only computation
+                        # that never affected power_w -- see this endpoint's
+                        # git history; now the two are the same number by
+                        # construction).
+                        "dni_w_m2": round(step_dni_w_m2, 2),
                     }
                 )
                 job.done = index + 1
@@ -4880,6 +5518,7 @@ def create_app():
                 "mode": body.mode,
                 "optics": body.optics,
                 "n_heliostats": rows[0]["n_heliostats"] if rows else 0,
+                "dni_note": body.dni.describe(),
             }
 
         job = JOBS.start(len(steps), work, label=f"day trace, {len(steps)} timesteps")
@@ -5154,7 +5793,17 @@ def create_app():
                 }
 
             summary = pd.DataFrame(rows)
-            dni_provider = ClearSkyDNI(cfg.site)
+            # Spec §M.7: this project's own site DNI, not a hardcoded
+            # ClearSkyDNI -- energy.annual_energy/traced_day_energy are
+            # THEIR OWN choke point for turning `rows`' flat-1000
+            # `power_w` into a real number (they divide by STANDARD_DNI to
+            # get eta_optical, then re-multiply by dni_provider.dni(date,
+            # hour) -- see that module's docstring). YearTraceRequest.dni
+            # defaults to clear-sky (overriding the base class's own
+            # constant/1000 default -- see that field's comment), so a
+            # request with no ``dni`` at all resolves to exactly the same
+            # ClearSkyDNI(cfg.site) this endpoint has always used.
+            dni_provider = body.dni.provider(cfg.site)
             annual = energy.annual_energy(summary, cfg, dni_provider, year=year, n_heliostats=n_heliostats)
 
             days_out = []
@@ -5190,6 +5839,7 @@ def create_app():
                 "fast_mode": body.fast_mode,
                 "year": year,
                 "dni_provider": dni_provider.describe(),
+                "dni_note": body.dni.describe(),
                 "extrapolated_fraction": round(extrap, 4) if np.isfinite(extrap) else None,
                 "days": days_out,
                 "failed_steps": failed_steps,
@@ -5278,7 +5928,7 @@ def create_app():
     @app.post("/api/trace/secondary_flux_fea.csv")
     def trace_secondary_flux_fea_csv(body: TraceRequest) -> Response:
         """Spec §C/§D: the secondary's own incident-flux map as an FEA CSV
-        grid -- ``x, y, flux, absorbed`` (:func:`_secondary_flux_fea_csv`),
+        grid -- ``x, y, z, flux, absorbed`` (:func:`_secondary_flux_fea_csv`),
         the same commented-header convention as
         ``/api/trace/flux_fea.csv``/the sag export. 404s for a layout with
         no secondary flux map (prime focus; any secondary with no
@@ -5294,7 +5944,7 @@ def create_app():
                     "(prime focus has no secondary; only axicon/Cassegrain do)"
                 ),
             )
-        flux, u_edges, v_edges, secondary_reflectance = grid
+        flux, u_edges, v_edges, secondary_reflectance, secondary = grid
         subject = _fea_subject_line(
             f"single heliostat at x={body.heliostat_x_mm / 1000.0:.3f} m, "
             f"y={body.heliostat_y_mm / 1000.0:.3f} m",
@@ -5302,7 +5952,7 @@ def create_app():
             body.solar_el_deg,
             body.mode,
         )
-        csv_bytes = _secondary_flux_fea_csv(flux, u_edges, v_edges, secondary_reflectance, subject)
+        csv_bytes = _secondary_flux_fea_csv(flux, u_edges, v_edges, secondary, secondary_reflectance, subject)
         return Response(
             content=csv_bytes,
             media_type="text/csv",
@@ -5602,9 +6252,18 @@ def create_app():
             error_map=_build_error_map(body.design),
             pointing_error_mrad=body.design.pointing_error_mrad,
             return_secondary_flux=body.include_secondary_flux,
+            circumsolar_ratio=body.circumsolar_ratio,
             **_secondary_perturb_kwargs(optics_params),
         )
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
+
+        # Spec §M.7: the site DNI in effect for this instant -- the ONE
+        # choke point every downstream watt/flux number is scaled through
+        # (see DNISetting/_resolve_dni). Every backend result above (and the
+        # secondary maps below) is still at the trace's native DNI=1000
+        # normalisation at this point; dni_scale is what turns that into the
+        # real number, applied once, here, rather than at every consumer.
+        dni_scale, dni_w_m2 = _resolve_dni(body.dni, body.solar_el_deg)
 
         if result["backend"] == "mc":
             traced_paths = result["paths"]
@@ -5612,7 +6271,7 @@ def create_app():
             traced_miss_dirs = result["miss_dirs"]
             xy = result["xy"]
             counters = result["counters"]
-            watts_per_ray = result["watts_per_ray"]
+            watts_per_ray = result["watts_per_ray"] * dni_scale
             power_w = watts_per_ray * counters.get("in_window", 0)
             incident_power_w = None
             flux, u_edges, v_edges, rms_mm, centroid = _mc_flux_and_metrics(
@@ -5622,14 +6281,39 @@ def create_app():
             traced_paths = None  # cone optics carries no rays; the scene samples its own
             traced_miss_paths = None
             traced_miss_dirs = None
-            flux = result["flux"]
+            flux = result["flux"] * dni_scale
             u_edges, v_edges = result["u_edges"], result["v_edges"]
-            power_w = result["power_w"]
-            incident_power_w = result["incident_power_w"]
+            power_w = result["power_w"] * dni_scale
+            incident_power_w = result["incident_power_w"] * dni_scale
             counters = result["counters"]
             rms_mm, centroid = _cone_metrics(flux, u_edges, v_edges)
 
-        png_bytes = _render_flux_png(flux, u_edges, v_edges, body.mode, elapsed_ms)
+        # v0.2 followups item 2: the fan view only ever applies to a frustum
+        # -- silently falls back to the rectangle for any other receiver
+        # (flat, cylinder, or a request left over from before an optics
+        # change), rather than 422ing a view preference the client did not
+        # actually get to choose meaningfully.
+        unwrapped_receiver = _unwrap_receiver_for_map(receiver)
+        if body.flux_view == "fan" and isinstance(unwrapped_receiver, FrustumReceiver):
+            png_bytes = _render_flux_fan_png(
+                flux,
+                u_edges,
+                v_edges,
+                unwrapped_receiver,
+                body.mode,
+                elapsed_ms,
+                dpi=body.flux_png_dpi or 110,
+            )
+        else:
+            png_bytes = _render_flux_png(
+                flux,
+                u_edges,
+                v_edges,
+                body.mode,
+                elapsed_ms,
+                dpi=body.flux_png_dpi or 110,
+                receiver=receiver,
+            )
 
         # Spec §C: incident flux on the secondary's own surface, alongside
         # the receiver map -- only when requested and only for a secondary
@@ -5640,8 +6324,13 @@ def create_app():
         if body.include_secondary_flux:
             secondary_maps = _secondary_maps_from_result(result, secondary)
             if secondary_maps is not None:
+                s_flux, s_u_edges, s_v_edges, s_power_w, s_fidelity = secondary_maps
                 secondary_payload = _secondary_payload(
-                    *secondary_maps,
+                    s_flux * dni_scale,
+                    s_u_edges,
+                    s_v_edges,
+                    s_power_w * dni_scale,
+                    s_fidelity,
                     secondary_reflectance=getattr(optics_params, "secondary_reflectance", 0.90),
                     include_flux_grid=body.include_flux_grid,
                 )
@@ -5690,6 +6379,13 @@ def create_app():
                 # copy of these defaults.
                 "optics_resolved": optics_params.model_dump(),
                 "scene": scene,
+                # Spec §M.7: the DNI this response's power/flux were scaled
+                # by, and a short label for what assumed it -- so a live
+                # trace, like every other surface, states its own DNI
+                # instead of leaving it implicit (commit 45d6515's "a live
+                # trace carries no DNI to divide by" is exactly this gap).
+                "dni_w_m2": _clean(dni_w_m2),
+                "dni_note": body.dni.describe(),
             }
         )
 
@@ -5778,6 +6474,13 @@ def create_app():
         # inside _trace_field_heliostats is always False).
         u_edges, v_edges, bin_area_m2 = _flux_edges(receiver)
 
+        # Spec §M.7: this field's site DNI, resolved once from the sun
+        # elevation the whole field shares -- passed into
+        # _trace_field_heliostats so every per-heliostat contribution (and
+        # the summed total) is scaled through that one function's own choke
+        # point, not re-scaled here afterwards.
+        _dni_scale, dni_w_m2 = _resolve_dni(body.dni, body.solar_el_deg)
+
         traced = _trace_field_heliostats(
             designs,
             xy_mm,
@@ -5801,6 +6504,8 @@ def create_app():
             pointing_error_mrad=body.design.pointing_error_mrad,
             workers=body.workers or 1,
             return_secondary_flux=body.include_secondary_flux,
+            dni_w_m2=dni_w_m2,
+            circumsolar_ratio=body.circumsolar_ratio,
             **_secondary_perturb_kwargs(optics_params),
         )
         flux = traced["flux"]
@@ -5825,7 +6530,7 @@ def create_app():
 
         rms_mm, centroid = _cone_metrics(flux, u_edges, v_edges)
         elapsed_ms = (t_trace - t0) * 1000.0
-        png_bytes = _render_flux_png(flux, u_edges, v_edges, body.mode, elapsed_ms)
+        png_bytes = _render_flux_png(flux, u_edges, v_edges, body.mode, elapsed_ms, receiver=receiver)
 
         scene = build_field_scene(
             [
@@ -5880,6 +6585,9 @@ def create_app():
                 "heliostats": rows,
                 "failed_heliostats": failed,
                 "scene": scene,
+                # Spec §M.7 -- see /api/trace's identically-named fields.
+                "dni_w_m2": _clean(dni_w_m2),
+                "dni_note": body.dni.describe(),
             }
         )
 
@@ -5948,7 +6656,21 @@ def create_app():
                 job.weight_done = weight_done
                 job.detail = f"{done} / {n} heliostats"
 
-            job.detail = f"0 / {n} heliostats"
+            # A cold pool (first field trace since the server started, or
+            # the first one asking for more workers than it currently has)
+            # spends several seconds spawning worker processes before any
+            # of them can report progress -- see _field_pool_cold_start_expected.
+            # Left at "0 / n heliostats", that whole stall looks identical
+            # to a hung trace: the count never advances, because nothing
+            # has run yet to advance it. Narrating it honestly here costs
+            # nothing on a warm pool -- on_progress's first callback
+            # overwrites this within milliseconds, same as before.
+            if _field_pool_cold_start_expected(min(workers, n)):
+                job.detail = "starting worker processes"
+            else:
+                job.detail = f"0 / {n} heliostats"
+            # Spec §M.7 -- see /api/field/trace's identical comment.
+            _dni_scale, dni_w_m2 = _resolve_dni(body.dni, body.solar_el_deg)
             try:
                 traced = _trace_field_heliostats(
                     designs,
@@ -5975,6 +6697,8 @@ def create_app():
                     should_cancel=job.cancelled,
                     on_progress=on_progress,
                     return_secondary_flux=body.include_secondary_flux,
+                    dni_w_m2=dni_w_m2,
+                    circumsolar_ratio=body.circumsolar_ratio,
                     **_secondary_perturb_kwargs(optics_params),
                 )
             except _TraceCancelled:
@@ -6002,7 +6726,7 @@ def create_app():
 
             rms_mm, centroid = _cone_metrics(flux, u_edges, v_edges)
             elapsed_ms = (t_trace - t0) * 1000.0
-            png_bytes = _render_flux_png(flux, u_edges, v_edges, body.mode, elapsed_ms)
+            png_bytes = _render_flux_png(flux, u_edges, v_edges, body.mode, elapsed_ms, receiver=receiver)
 
             job.detail = "building scene"
             scene = build_field_scene(
@@ -6058,6 +6782,9 @@ def create_app():
                 "failed_heliostats": failed,
                 "scene": scene,
                 "workers": workers,
+                # Spec §M.7 -- see /api/trace's identically-named fields.
+                "dni_w_m2": _clean(dni_w_m2),
+                "dni_note": body.dni.describe(),
             }
 
         job = JOBS.start(n, work, label=f"field trace, {n} heliostats, {workers} workers")
@@ -6093,6 +6820,72 @@ def create_app():
         payload["state"] = job.state
         payload["elapsed_s"] = round(job.elapsed_s, 2)
         return JSONResponse(payload)
+
+    @app.post("/api/field/trace/flux_fea.csv")
+    def field_trace_flux_fea_csv(body: FieldTraceRequest) -> Response:
+        """docs/ui-spec-v0.2.md §R: the field-level analogue of
+        ``/api/trace/flux_fea.csv`` -- a live field instant's receiver flux
+        map as a §D FEA CSV grid, so the Analysis tab's Traced instant
+        source has a synchronous export to call (today this grid only ever
+        reaches a CSV inside the day-sweep job's per-kept-step blobs). Same
+        commented-header convention, via the same :func:`_flux_fea_csv`
+        helper, as every other §D export.
+        """
+        phase = _field_trace_phase(body, return_secondary_flux=False)
+        subject = _fea_subject_line(
+            f"field of {len(phase['ids'])} heliostats",
+            body.solar_az_deg,
+            body.solar_el_deg,
+            body.mode,
+        )
+        csv_bytes = _flux_fea_csv(
+            phase["traced"]["flux"], phase["u_edges"], phase["v_edges"], phase["receiver"], subject
+        )
+        return Response(
+            content=csv_bytes,
+            media_type="text/csv",
+            headers={"Content-Disposition": 'attachment; filename="field-flux-fea.csv"'},
+        )
+
+    @app.post("/api/field/trace/secondary_flux_fea.csv")
+    def field_trace_secondary_flux_fea_csv(body: FieldTraceRequest) -> Response:
+        """docs/ui-spec-v0.2.md §R / §C / §D: the field-level analogue of
+        ``/api/trace/secondary_flux_fea.csv`` -- a live field instant's
+        SECONDARY flux map as a §D FEA CSV grid (``x_m, y_m, z_m,
+        flux_w_m2, absorbed_w_m2``). 404s for a layout with no secondary
+        flux map (prime focus; any secondary with no single-valued (u, v)
+        parameterization), same as the single-heliostat endpoint.
+        """
+        phase = _field_trace_phase(body, return_secondary_flux=True)
+        traced = phase["traced"]
+        if "secondary_flux" not in traced:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"optics={body.optics!r} has no secondary irradiance map "
+                    "(prime focus has no secondary; only axicon/Cassegrain do)"
+                ),
+            )
+        secondary_reflectance = getattr(phase["optics_params"], "secondary_reflectance", 0.90)
+        subject = _fea_subject_line(
+            f"field of {len(phase['ids'])} heliostats",
+            body.solar_az_deg,
+            body.solar_el_deg,
+            body.mode,
+        )
+        csv_bytes = _secondary_flux_fea_csv(
+            traced["secondary_flux"],
+            traced["secondary_u_edges"],
+            traced["secondary_v_edges"],
+            phase["secondary"],
+            secondary_reflectance,
+            subject,
+        )
+        return Response(
+            content=csv_bytes,
+            media_type="text/csv",
+            headers={"Content-Disposition": 'attachment; filename="field-secondary-flux-fea.csv"'},
+        )
 
     @app.post("/api/scene/geometry")
     def scene_geometry(body: GeometryRequest) -> JSONResponse:
@@ -6297,14 +7090,30 @@ def create_app():
     def library_load(collection: str, name: str) -> JSONResponse:
         _require_known_collection(collection)
         if name in _BUILTIN_LIBRARY[collection]:
+            # docs/ui-spec-v0.2.md §P's binding provenance requirement: a
+            # built-in project's citation/reconstruction metadata rides
+            # alongside its document (never inside it -- ProjectDocument
+            # forbids extra fields, same as every other library document),
+            # so the client can badge the card and stamp the citation
+            # without a second request. `None` for every collection/name
+            # with no provenance entry (designs, receivers, and any project
+            # this rider didn't add) -- not an error, just "nothing to show".
             return JSONResponse(
-                {"name": name, "builtin": True, "document": _BUILTIN_LIBRARY[collection][name]}
+                {
+                    "name": name,
+                    "builtin": True,
+                    "document": _BUILTIN_LIBRARY[collection][name],
+                    "provenance": BUILTIN_PROJECT_PROVENANCE.get(name) if collection == "projects" else None,
+                }
             )
         try:
             payload = load_entry(collection, name)
         except LibraryError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return JSONResponse({**payload, "builtin": False})
+        # `provenance` always present (None here) so a client can read
+        # `data.provenance` uniformly rather than special-casing "the key
+        # might be missing" -- only a built-in project ever has one.
+        return JSONResponse({**payload, "builtin": False, "provenance": None})
 
     @app.delete("/api/library/{collection}/{name:path}")
     def library_delete(collection: str, name: str) -> JSONResponse:

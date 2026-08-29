@@ -47,15 +47,25 @@ BUDGETS = {
     "CLAUDE.md": 400,
     # Not user documentation: the signed-off v0.2 build contract (same
     # reasoning and lifecycle as ui-spec.md above -- freezes at sign-off,
-    # delete when v0.2 ships and the content moves into guide.md). Headroom
-    # for the M.5-M.7 riders still awaiting sign-off.
-    "docs/ui-spec-v0.2.md": 4400,
+    # delete when v0.2 ships and the content moves into guide.md). Raised
+    # 2026-08-29 (1st time): added draft riders §O (sunshape CSR) and §P
+    # (pre-built reference fields), awaiting their own sign-off alongside
+    # §M/§N. Raised again 2026-08-29 (2nd time): added draft rider §Q
+    # ("Measure performance" calibrated duration estimates), awaiting its
+    # own sign-off alongside §M/§N/§O/§P. Raised again 2026-08-29 (3rd time):
+    # added draft rider §R (single-instant field results on the Analysis
+    # tab) and draft sub-rider §C2 (secondary irradiance in plan
+    # projection), both awaiting sign-off alongside §M/§N/§O/§P/§Q.
+    "docs/ui-spec-v0.2.md": 7500,
     # Not user documentation: the formula-level build plan spec §C was
     # implemented from. Historical once §C shipped (2026-08-28); kept as
     # the derivation record for the secondary parameterization. Frozen.
     "docs/secondary-irradiance-plan.md": 700,
-    # User-facing notes for the published release.
-    "RELEASE_NOTES.md": 900,
+    # User-facing notes for the published release. Raised 2026-08-29: the
+    # v0.2 entry covers a full feature wave (secondary optics, a validated
+    # sunshape, site DNI, four reference fields) and is kept alongside
+    # 0.1.0's, not in place of it.
+    "RELEASE_NOTES.md": 1300,
     "examples/paper/README.md": 1600,
     "packaging/desktop/README.md": 400,
 }

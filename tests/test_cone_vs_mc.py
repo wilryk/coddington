@@ -45,7 +45,7 @@ SOURCE_POWER_W = 38484.5
 N_RAYS_EMITTED = 20000
 WATTS_PER_RAY = SOURCE_POWER_W / N_RAYS_EMITTED
 
-KERNEL = sunshape_kernel("super_gauss")
+KERNEL = sunshape_kernel("buie")
 
 # Noise-derived tolerance is max(4*se, floor); the floor only matters when se
 # itself is ~0 (not reached by any of the 45 fixture cases, all N in
@@ -78,6 +78,11 @@ SHAPE_TEST_GRID = (40, 40)
 # a given heliostat/timestep. This is one noisy draw exceeding a tight fixed
 # band, not three independent backend bugs; not loosened here per the task
 # instructions -- flagged with strict xfail and exact numbers instead.
+#
+# A sixth case (axicon h48 mid_morning) joined this list after the sunshape
+# swap (super_gauss -> buie): the fixed 15mm centroid sanity band, not the
+# noise gate. axicon-only, not the shared-seed cross-config pattern above --
+# see its own entry below for the numbers.
 XFAIL_REASONS = {
     ("prime_focus", 241, "20260321_1235"): (
         "power |d|=225.71W=1.688% exceeds the 1.5% sanity band (200.60W); "
@@ -107,6 +112,24 @@ XFAIL_REASONS = {
         "noise gate passes at 0.761se of 4se=318.19W. Same (heliostat, "
         "timestep) as the prime_focus h414 case above -- low-N fixture "
         "noise (N=1887) wider than the fixed 1.5% floor."
+    ),
+    # Re-derived after the sunshape swap (super_gauss -> buie, owner's
+    # ruling: super-Gaussian is not a legitimate sunshape). KERNEL and the
+    # mc_parity fixtures were both regenerated under Buie at the same seeds,
+    # so the noise-gate/sanity-band methodology above is unchanged -- this
+    # is one case among the 45 that now sits just past the fixed absolute
+    # centroid band while the noise gate itself passes comfortably; not
+    # present in the super_gauss run (Buie's wider tail shifts each config's
+    # centroid slightly differently from super_gauss's, so which cases land
+    # on which side of a fixed 15mm floor is not preserved across the
+    # swap). axicon-only -- prime_focus/cassegrain at the same
+    # (heliostat, timestep) sit at 1.16se/1.44se of the same 4se gate,
+    # comfortably inside both bands, so this is not the shared-RNG-seed
+    # cross-config pattern the four cases above document.
+    ("axicon", 48, "20260321_0939"): (
+        "centroid |d|=16.40mm exceeds the 15.0mm sanity band; noise gate "
+        "passes at 2.368se of 4se=27.69mm (se=6.92mm). mid_morning "
+        "(44.9deg)."
     ),
 }
 

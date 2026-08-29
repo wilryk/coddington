@@ -181,6 +181,27 @@ a:hover {
   color: var(--muted);
   font-size: 12px;
 }
+/* docs/ui-spec-v0.2.md §P, binding: while a built-in reconstruction project
+   is loaded, its citation stamps into the top bar (main.js's
+   renderTopbar(), from ui.projectProvenance) so a result screenshot
+   carries the provenance, not just the plant name -- mockup M20's
+   ".provtag". Hidden (index.html) whenever no reconstruction is loaded. */
+.provtag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--warn-text);
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  border-radius: 5px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 360px;
+}
 
 /* -- shell: sidebar + viewport ------------------------------------------ */
 
@@ -481,6 +502,78 @@ input.val::-webkit-inner-spin-button {
   align-self: stretch;
 }
 
+/* v0.2 followups item 2, mockup M16: "Flux overlay" toggle (owner's own
+   label -- not mockup M16's "drape") for whether a trace's flux map paints
+   onto the 3D receiver mesh. Same plain checkbox+label idiom as the rays
+   chip's own toggle (#rays-toggle-label). */
+.fluxoverlaytoggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--text);
+  cursor: pointer;
+  align-self: stretch;
+}
+.fluxoverlaytoggle input {
+  vertical-align: -1px;
+}
+
+/* v0.2 followups item 3, mockup M17: the results dock's own analysis
+   aperture, reading the LAST TRACE's own flux_grid (js/aperture.js's shared
+   math/painting) -- replaces the plain thumbnail when a flux grid is on
+   screen for a flat receiver, since that is the only case the aperture
+   math (js/aperture.js's apertureReceiverIsFlat) supports today. */
+.dock .apwrap {
+  width: 100%;
+}
+.dock .apcanvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #000;
+  /* v0.2 followups item 4: a plain click opens the full map now (that's
+     the common case), so "pointer" is the resting cursor; run.js's own
+     hover handler (apHandlePointerMove) swaps to grab/grabbing over the
+     circle body/handle, the two spots that actually drag. */
+  cursor: pointer;
+  touch-action: none;
+}
+.dock .apreadout {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--bg);
+}
+.dock .apreadout .rmetric {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 5px 0;
+  border-bottom: 1px solid #eef1f4;
+}
+.dock .apreadout .rmetric:last-of-type {
+  border-bottom: none;
+}
+.dock .apreadout .rnum {
+  font-size: 13.5px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+.dock .apreadout .rlbl {
+  font-size: 11px;
+  color: var(--muted);
+  text-align: right;
+}
+.dock .apcaption {
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 4px;
+}
+
 /* Compact, read-only sun chip (docs/ui-spec-v0.2.md §N, mockup M18b) --
    top-left rather than the mockup's top-right so it never sits under the
    floating #inspector, which is fixed top-right (this app's own established
@@ -530,6 +623,12 @@ input.val::-webkit-inner-spin-button {
   display: block;
   width: 100%;
   height: 100%;
+  /* v0.2 followups item 1: belt-and-suspenders alongside handlePointerDown's
+     own e.preventDefault() (see plan.js/elevation.js) -- a drag-pan that
+     starts on the SVG but is dragged past it (fast mouse movement can
+     outrun pointermove) should still never pick up native text selection. */
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 /* Elevation view's dimension callouts: absolutely-positioned over the SVG,
@@ -839,6 +938,18 @@ input.val::-webkit-inner-spin-button {
   height: auto;
   border-radius: 4px;
 }
+/* v0.2 followups item 1, mockup M15: the field map, same sizing idiom as
+   the secondary canvas above -- square, since it is a plan view centered
+   on the tower rather than a receiver-shaped grid. */
+#flux-field-canvas {
+  display: block;
+  max-width: 70vw;
+  max-height: 70vh;
+  width: 460px;
+  height: 460px;
+  border-radius: 4px;
+  background: #fdfdfe;
+}
 
 /* Absorbed-heat readout (spec §C) -- same rmetric/rformula idiom mockup M9
    and js/tabs/analysis.js's aperture readout both use, so the number reads
@@ -943,6 +1054,36 @@ input.val::-webkit-inner-spin-button {
   color: var(--muted);
   font-size: 11px;
   letter-spacing: 0.03em;
+}
+
+/* v0.2 followups item 1, mockup M15: the field map's own legend, folded
+   into the app's existing .readout container (id="flux-field-readout")
+   instead of M15's floating chip -- see index.html's own comment. */
+.fieldlegend {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+.fieldlegend-title {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.fieldlegend-bar {
+  height: 10px;
+  border-radius: 5px;
+  /* Same magma stops as scene3d.js's MAGMA_STOPS / main.js's
+     secondaryMagmaColor, expressed as a CSS gradient. */
+  background: linear-gradient(90deg, #000004, #2b1154, #781c6d, #c43c4f, #fb8761, #fcfdbf);
+}
+.fieldlegend-ends {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
 }
 
 /* -- Library slide-over ---------------------------------------------------
@@ -1066,11 +1207,45 @@ input.val::-webkit-inner-spin-button {
   border: 1px solid var(--warn-border);
   color: var(--warn-text);
 }
+/* docs/ui-spec-v0.2.md §P / mockup M20: the RECONSTRUCTION badge and its
+   citation/caveats block, on the four built-in reference-field cards. Same
+   amber palette as .badge.import (--warn-*) -- both mean "read this before
+   you trust the number". */
+.badge.recon {
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  color: var(--warn-text);
+}
 .cardsub {
   color: var(--muted);
   font-size: 12px;
   margin-top: 4px;
   font-variant-numeric: tabular-nums;
+}
+.idealnote {
+  color: var(--accent-dark);
+  font-size: 11px;
+  margin-top: 5px;
+}
+.citation {
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 5px;
+  line-height: 1.4;
+  border-top: 1px dashed var(--border);
+  padding-top: 5px;
+}
+.citation strong {
+  color: var(--text);
+  font-weight: 600;
+}
+ul.citation.caveats {
+  margin: 4px 0 0 0;
+  padding: 0 0 0 16px;
+  border-top: none;
+}
+ul.citation.caveats li {
+  margin-top: 3px;
 }
 .cardactions {
   display: flex;
@@ -1311,5 +1486,32 @@ input.val::-webkit-inner-spin-button {
   flex: 0 0 auto;
   border: 1px solid var(--border);
   border-radius: 6px;
+  cursor: pointer;
+}
+/* v0.2 followups item 3: the sag map's small stand-in shown in the header
+   once the heliostat locator has swapped into the big frame below it --
+   same box as .locator (border/radius/cursor), sized explicitly since it
+   wraps an <img> rather than sizing itself via SVG width/height attrs. */
+.locator.sagthumb {
+  width: 84px;
+  height: 56px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #fff;
+}
+.locator.sagthumb img {
+  max-width: 100%;
+  max-height: 100%;
+  display: block;
+}
+/* The locator enlarged to fill the sag frame while swapped -- .frame is a
+   centering flexbox, so align-self:stretch is needed for a 100%-height
+   child to actually fill it rather than just centering at its own size. */
+.tabcontent .frame svg.locator-big {
+  width: 100%;
+  height: 100%;
+  align-self: stretch;
   cursor: pointer;
 }

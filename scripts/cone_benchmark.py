@@ -43,6 +43,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 from heliostat.trace.cone import sunshape_kernel, trace_heliostat_cone  # noqa: E402
 from heliostat.trace.mc import trace_heliostat  # noqa: E402
+from heliostat.trace.samplers import SuperGaussSampler  # noqa: E402
 from test_mc_parity import _geometry_for, _load_fixture  # noqa: E402
 
 CONFIGS = ["prime_focus", "axicon", "cassegrain"]
@@ -52,6 +53,16 @@ MC_RAY_COUNTS = [20_000, 120_000, 1_000_000]
 HIGH_FIDELITY_N = 1_000_000
 FLUX_GRID = (100, 100)
 KERNEL = sunshape_kernel("super_gauss")
+# Every trace_heliostat() call below must pass this explicit sampler: with
+# no sampler= it draws from the app-wide Buie default (commit 7c4fd08),
+# which is WIDER than the super-Gaussian KERNEL above, so its MC peak reads
+# systematically lower and every "cone vs MC" residual/pixel-diff this
+# script computes would be inflated by the sunshape mismatch alone, not by
+# a real backend discrepancy -- confirmed the hard way: before this fix,
+# this script measured a cone-vs-MC map residual dominated by exactly this
+# effect. See tests/test_pointing_error.py's `_mc_pooled_xy` for the same
+# pattern.
+MC_SAMPLER = SuperGaussSampler()
 
 
 def _mc_flux_map(xy: np.ndarray, watts_per_ray: float, u_edges: np.ndarray, v_edges: np.ndarray):
@@ -118,6 +129,7 @@ def run_config(config: str, out_dir: Path) -> dict:
             receiver,
             n,
             rng,
+            sampler=MC_SAMPLER,
         )
         dt = time.perf_counter() - t0
         mc_times[n] = dt
@@ -142,6 +154,7 @@ def run_config(config: str, out_dir: Path) -> dict:
         receiver,
         MC_RAY_COUNTS[0],
         rng2,
+        sampler=MC_SAMPLER,
     )
     mc_20k_b_flux = _mc_flux_map(mc_20k_b["xy"], mc_20k_b["watts_per_ray"], u_edges, v_edges)
 

@@ -39,6 +39,45 @@
         "8746"
       ],
       "port": 8746
+    },
+    {
+      "name": "coddington-web-8747",
+      "runtimeExecutable": "C:\\gitlab\\coddington\\.venv\\Scripts\\python.exe",
+      "runtimeArgs": [
+        "-m",
+        "uvicorn",
+        "heliostat.web.app:create_app",
+        "--factory",
+        "--port",
+        "8747"
+      ],
+      "port": 8747
+    },
+    {
+      "name": "coddington-web-8748",
+      "runtimeExecutable": "C:\\gitlab\\coddington\\.venv\\Scripts\\python.exe",
+      "runtimeArgs": [
+        "-m",
+        "uvicorn",
+        "heliostat.web.app:create_app",
+        "--factory",
+        "--port",
+        "8748"
+      ],
+      "port": 8748
+    },
+    {
+      "name": "coddington-web-8749",
+      "runtimeExecutable": "C:\\gitlab\\coddington\\.venv\\Scripts\\python.exe",
+      "runtimeArgs": [
+        "-m",
+        "uvicorn",
+        "heliostat.web.app:create_app",
+        "--factory",
+        "--port",
+        "8749"
+      ],
+      "port": 8749
     }
   ]
 }

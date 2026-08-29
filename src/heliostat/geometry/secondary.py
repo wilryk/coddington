@@ -744,35 +744,34 @@ def secondary_uv(secondary: Secondary, p: np.ndarray) -> np.ndarray:
     :meth:`Secondary.redirect`, exactly as :meth:`Receiver.intersect`'s
     callers hand it their own already-clipped world hits.
 
-    ``p`` is first mapped through :meth:`Secondary.to_local_point` into the
-    surface's own nominal (unperturbed) frame, so a spec §E2 rigid-body
-    misalignment does not move the flux map in world space along with the
-    part -- ``(u, v)`` stays anchored to wherever on the physical surface
-    the ray actually landed, which is what a §C secondary map is for.
-    Identity when there is no perturbation (or none to undo).
+    CARTESIAN PLAN-PROJECTION SCHEME (owner-proposed, superseding the
+    original radial ``u`` = arc length / ``v`` = radius parameterization --
+    see git history for that version's own formula and reasoning): ``u`` and
+    ``v`` are simply ``x_local`` (east) and ``y_local`` (north), the point's
+    own horizontal position in ``secondary``'s nominal (unperturbed) LOCAL
+    frame -- looking straight down the tower axis, exactly the "plan
+    projection" the 3-D scene and the 2-D map already draw this surface as.
 
-    ``u`` is azimuthal arc length measured at the APERTURE RIM: ``u =
-    aperture_radius_mm * atan2(x, -y)``, the same ``-y``/north-seam
-    convention :mod:`heliostat.geometry.receiver` uses for its cylinder and
-    frustum (azimuth zero at south, seam at north/+y where a heliostat can
-    legitimately be aimed dead centre). Because ``u`` is scaled by the
-    aperture radius rather than each point's own local radius, ``du``
-    converts to a true angular increment via a single division by
-    ``aperture_radius_mm`` everywhere on the surface -- see
-    :func:`secondary_bin_areas_m2`.
+    ``p`` is first mapped through :meth:`Secondary.to_local_point`, so a
+    spec §E2 rigid-body misalignment does not move the flux map in world
+    space along with the part -- ``(u, v)`` stays anchored to wherever on
+    the physical surface the ray actually landed. Identity when there is no
+    perturbation (or none to undo).
 
-    ``v`` is radial distance from the axis in horizontal projection,
-    ``hypot(x, y)`` -- not true slant distance along the surface. Horizontal
-    distance needs no ``z`` and is trivially invertible; a Cassegrain's true
-    slant arc-length has no closed form (it would need ODE integration), so
-    radial distance is what keeps both shapes on one code path.
-
-    Unlike :mod:`heliostat.geometry.receiver`'s azimuth, no seam-continuity
-    unwrapping is needed here: this function reports one ``(u, v)`` per
-    already-known 3-D point rather than finite-differencing a bundle of
-    same-origin rays, so plain ``arctan2`` -- always principal-valued in
-    ``(-pi*R, pi*R]``, i.e. already inside :func:`secondary_uv_extent` -- is
-    exact.
+    Why Cartesian over radial: the radial scheme's ``u:v`` aspect is exactly
+    ``2*pi`` on a full aperture, which wants far more azimuthal than radial
+    bins to keep pixels square -- the app's own ``FLUX_GRID_MAX_U`` cap left
+    real maps visibly anisotropic (~1.57:1). A plan-projection Cartesian
+    grid needs no aspect correction (bins are square by construction, see
+    :func:`secondary_bin_areas_m2`), has NO SEAM (there is no wrapping
+    coordinate for a receiver-style wrap-fix to apply to), and has NO AXIS
+    SINGULARITY (every azimuth no longer converges on one degenerate point
+    at ``h=0`` -- worst for the Cassegrain, whose vertex sits at the centre
+    of the map). The bounding SQUARE this grid tiles is bigger than the
+    aperture DISK it actually needs (~21% of the square's bins have no
+    physical surface under them at all) -- :func:`secondary_bin_areas_m2`
+    masks exactly those bins to zero area; see that function's own note for
+    why a hit can still legitimately land in one near the rim.
     """
     if not secondary_has_flux_map(secondary):
         raise ValueError(
@@ -780,21 +779,82 @@ def secondary_uv(secondary: Secondary, p: np.ndarray) -> np.ndarray:
             "parameterization -- secondary_has_flux_map() is False for it"
         )
     p_local = secondary.to_local_point(p)
-    x, y = p_local[0], p_local[1]
-    u = secondary.aperture_radius_mm * np.arctan2(x, -y)
-    v = np.hypot(x, y)
-    return np.vstack([u, v])
+    return np.vstack([p_local[0], p_local[1]])
+
+
+def secondary_uv_to_world(secondary: Secondary, uv: np.ndarray) -> np.ndarray:
+    """Exact inverse of :func:`secondary_uv`: world-frame ``(3, K)`` points
+    (mm) for ``(u, v)`` surface coordinates (mm) -- the secondary-map
+    analogue of :meth:`~heliostat.geometry.receiver.Receiver.uv_to_world`,
+    backing the §D FEA export's true-3-D columns (v0.2 followups item 3:
+    "I don't think we need u/v at all... it would just make it harder for
+    someone using Ansys to import").
+
+    Near-trivial now that :func:`secondary_uv` is a literal Cartesian pair:
+    ``(u, v)`` ARE ``(x_local, y_local)`` already, so no azimuth/radius
+    recovery is needed at all (contrast the old radial scheme's
+    ``x = v*sin(u/R), y = -v*cos(u/R)``, kept only in git history). Local
+    height comes from :func:`secondary_nominal_sag_mm`, the SAME closed-form
+    ``z(h)`` :meth:`AxiconSecondary.redirect`/:meth:`CassegrainSecondary.redirect`
+    solve for internally (that function's own docstring: "in the SAME local
+    frame ... redirect trace in") -- so this is provably the same surface,
+    not a second, possibly-drifted description of it. Called with a point
+    outside the aperture disk (one of :func:`secondary_bin_areas_m2`'s
+    masked bin centres) still returns a finite point on the extrapolated
+    ``z(h)`` surface -- never a real physical point, so a caller exporting a
+    grid (:func:`~heliostat.web.app._secondary_flux_fea_csv`) drops those
+    rows rather than emitting them, exactly like the sag export already
+    drops off-facet points.
+
+    Finally transformed OUT of the nominal-local frame :func:`secondary_uv`
+    read ``p`` in (via ``to_local_point``) back to world, the exact inverse
+    of that transform -- the same position-only rotate+decenter
+    :func:`_to_secondary_world` applies to a real hit point, so a §E2
+    rigid-body misalignment relocates this export's points exactly as it
+    would relocate the physical part. Identity when the secondary carries no
+    perturbation (:func:`_secondary_is_unperturbed`).
+
+    Pinned in tests/test_secondary_flux.py by round-tripping against the
+    forward map (``Secondary.redirect``, via
+    ``heliostat.trace.mc.trace_heliostat``'s ``return_secondary_hits``) --
+    mirroring tests/test_receiver_shapes.py's identical receiver pin.
+    """
+    if not secondary_has_flux_map(secondary):
+        raise ValueError(
+            f"{type(secondary).__name__} has no single-valued (u, v) flux-map "
+            "parameterization -- secondary_has_flux_map() is False for it"
+        )
+    uv = np.asarray(uv, dtype=float)
+    x_local, y_local = uv[0], uv[1]
+    z_rel = secondary_nominal_sag_mm(secondary, x_local, y_local)
+
+    if isinstance(secondary, AxiconSecondary):
+        base_z = secondary.apex_height_mm
+    else:  # CassegrainSecondary -- the only other secondary_has_flux_map() case
+        base_z = secondary.vertex_z_mm
+    p_local = np.vstack([x_local, y_local, base_z + z_rel])
+
+    dx, dy, dz = secondary.dx_mm, secondary.dy_mm, secondary.dz_mm
+    tip, tilt = secondary.tip_mrad, secondary.tilt_mrad
+    if _secondary_is_unperturbed(dx, dy, dz, tip, tilt):
+        return p_local
+    r_mat = _secondary_rotation_matrix(tip, tilt)
+    vertex = np.array([0.0, 0.0, base_z])
+    decenter = np.array([dx, dy, dz])
+    return r_mat @ (p_local - vertex[:, None]) + (vertex + decenter)[:, None]
 
 
 def secondary_uv_extent(secondary: Secondary) -> tuple[tuple[float, float], tuple[float, float]]:
     """``((u_min, u_max), (v_min, v_max))`` of ``secondary``'s ``(u, v)``
     parameterization, mm -- mirrors :meth:`Receiver.uv_extent`.
 
-    ``u`` spans one full turn, ``aperture_radius_mm * (-pi, pi]`` (the
-    surface closes on itself, like a receiver cylinder/frustum); ``v`` spans
-    ``0`` (the axis) to ``aperture_radius_mm`` (the rim). Both shapes are
-    circular in plan, clipped at ``aperture_radius_mm``, so this needs no
-    per-shape branch.
+    The BOUNDING SQUARE of the aperture disk, ``[-aperture_radius_mm,
+    +aperture_radius_mm]`` on both axes: :func:`secondary_uv` is now a plan
+    Cartesian pair (``u = x_local``, ``v = y_local``), so its natural extent
+    is a square, not the old radial scheme's ``(circumference, radius)``
+    rectangle. The square is bigger than the disk it actually needs to cover
+    (~21% of its area/bins have no physical surface under them) --
+    :func:`secondary_bin_areas_m2` is what masks those bins to zero area.
     """
     if not secondary_has_flux_map(secondary):
         raise ValueError(
@@ -802,7 +862,7 @@ def secondary_uv_extent(secondary: Secondary) -> tuple[tuple[float, float], tupl
             "parameterization -- secondary_has_flux_map() is False for it"
         )
     r = secondary.aperture_radius_mm
-    return (-np.pi * r, np.pi * r), (0.0, r)
+    return (-r, r), (-r, r)
 
 
 def _secondary_sec_local_slope(secondary: Secondary, h_mm: np.ndarray) -> np.ndarray:
@@ -842,34 +902,61 @@ def secondary_bin_areas_m2(secondary: Secondary, grid: tuple[int, int]) -> np.nd
     """True surface area of each ``(u, v)`` flux bin, ``(n_v, n_u)`` in m² --
     mirrors :meth:`Receiver.bin_areas_m2`/``FrustumReceiver``'s own override.
 
-    Per bin: ``dA = h * sec(local_slope(h)) * dh * du / aperture_radius_mm``,
-    evaluated at each ``v``-bin's midpoint radius ``h`` (a row is constant
-    across ``u`` by rotational symmetry, exactly like
-    ``FrustumReceiver.bin_areas_m2``'s row-by-row scaling). ``du /
-    aperture_radius_mm`` is the true angular width ``d(phi)`` of a bin,
-    because :func:`secondary_uv`'s ``u`` is arc length AT THE RIM -- fixed
-    radius ``aperture_radius_mm`` -- not at the bin's own (smaller) radius
-    ``h``, so this one division converts it correctly everywhere.
+    Per bin, at its own midpoint ``(x, y)`` (``h = hypot(x, y)``): ``dA = dx
+    * dy * sec(local_slope(h))`` -- the flat plan-projection area ``dx*dy``
+    scaled up by the surface's own local slope, the standard "area of a
+    tilted patch, seen from directly above" correction (replaces the old
+    radial scheme's ``h * sec(slope) * dh * du / aperture_radius_mm``, an
+    annulus-arc formula that no longer applies once bins are square in
+    ``x, y`` rather than polar).
 
-    The midpoint rule integrates a LINEAR integrand exactly for any bin
-    count: for the axicon (constant ``sec(slope)``, so ``h * sec(slope)`` is
-    linear in ``h``) the bin-area sum equals the closed-form cone lateral
-    area ``pi * aperture_radius_mm^2 / cos(half_angle_deg)`` to machine
-    precision. The Cassegrain's integrand is not linear, so its bin-area sum
-    only converges to the (numerically integrated) true area as ``n_v``
-    grows -- the same approximation ``FrustumReceiver.bin_areas_m2`` makes
-    for its own (also nonlinear in general, but there linear because a
-    frustum's radius is linear in slant position) row scaling.
+    MASKING: a bin whose CENTRE lies outside the aperture disk (``h >
+    aperture_radius_mm`` at the midpoint -- roughly 21% of a square grid's
+    bins, ``1 - pi/4``) gets area ``0.0``, not the formula above: there is no
+    physical surface material under most of that bin, so counting its full
+    ``dx*dy`` footprint would overstate the true illuminated area. This is
+    the ONE place that decision is made -- every consumer (the MC histogram
+    in :func:`~heliostat.web.app._mc_secondary_flux`, the cone backend's
+    true-area correction in :mod:`heliostat.trace.cone`, the mean/peak-flux
+    readouts) divides by or weights against this array, so a zero here is
+    what keeps a masked bin out of every power total and mean-flux
+    denominator downstream -- automatically, with no separate mask array to
+    keep in sync.
+
+    A bin near the rim can still receive a handful of REAL hits despite
+    being masked this way (its centre sits just outside the disk, but a
+    corner of the bin does not) -- those hits still count in every TOTAL
+    this module's callers report, because power totals are computed from
+    raw hit/weight counts, never from ``sum(flux * area)`` (that identity is
+    exactly what breaks at a zero-area bin, which is why callers guard the
+    divide rather than relying on it). What a masked bin loses is only its
+    own sliver of DISPLAYED flux -- forced to ``0`` rather than the
+    ``inf``/``nan`` an unguarded divide would otherwise produce -- a small,
+    resolution-bounded blind spot right at the rim, not a hole in the energy
+    accounting.
+
+    Consequently this is no longer exact for ANY bin count the way the old
+    radial scheme's axicon case was (its ``h*sec(slope)`` integrand was
+    linear in the single coordinate ``v``, so 1-D midpoint quadrature was
+    exact regardless of resolution). Pixelating a disk with a square grid
+    has the same ``O(1/n)`` boundary error for both shapes now -- the
+    bin-area sum converges to the analytic surface area as the grid gets
+    finer, but is only approximate at any fixed, finite resolution; see
+    ``tests/test_secondary_flux.py``'s convergence tests for measured rates.
     """
     (u0, u1), (v0, v1) = secondary_uv_extent(secondary)
     n_u, n_v = grid
+    u_edges = np.linspace(u0, u1, n_u + 1)
     v_edges = np.linspace(v0, v1, n_v + 1)
+    u_mid = 0.5 * (u_edges[:-1] + u_edges[1:])
     v_mid = 0.5 * (v_edges[:-1] + v_edges[1:])
-    du_mm = (u1 - u0) / n_u
+    gu, gv = np.meshgrid(u_mid, v_mid)  # (n_v, n_u), matches flux's own shape
+    h = np.hypot(gu, gv)
+    sec_slope = _secondary_sec_local_slope(secondary, h)
+    du_mm = u_edges[1] - u_edges[0]
     dv_mm = v_edges[1] - v_edges[0]
-    sec_slope = _secondary_sec_local_slope(secondary, v_mid)
-    row_m2 = (v_mid * sec_slope * dv_mm * du_mm / secondary.aperture_radius_mm) / 1.0e6
-    return np.repeat(row_m2[:, None], n_u, axis=1)
+    area_m2 = (du_mm * dv_mm * sec_slope) / 1.0e6
+    return np.where(h <= secondary.aperture_radius_mm, area_m2, 0.0)
 
 
 # Outward plan unit vectors of the pyramid's four faces, east/north/west/south.

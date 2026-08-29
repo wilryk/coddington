@@ -68,7 +68,15 @@ export function serializeProject(doc, ui) {
   // The site rides along whether or not the sun is currently being solved
   // from it, so reopening a project restores the place and moment its
   // author was working in, not just the angles that came out.
-  const sun = { azimuth_deg: doc.sun.az, elevation_deg: doc.sun.el, site: doc.sun.site };
+  const sun = {
+    azimuth_deg: doc.sun.az,
+    elevation_deg: doc.sun.el,
+    site: doc.sun.site,
+    // Spec §M.7: persisted like every other site setting.
+    dni: doc.sun.dni,
+    // Spec §O: persisted like every other Sun-stage setting.
+    circumsolar_ratio: doc.sun.csr || 0,
+  };
   const run = {
     mode: ui.fidelity,
     n_rays: ui.fidelity === "monte_carlo" ? ui.mcRays : null,
@@ -97,8 +105,14 @@ export function applyProject(document) {
   }
   const field = (document && document.field) || {};
   if (field.layout && field.layout.type === "positions") {
-    if (!xyMatchesManuscriptField(field.layout.xy_mm)) {
-      return "custom position layouts arrive with the layout picker";
+    // Any positions blob loads now (docs/ui-spec-v0.2.md §P's built-in
+    // reference projects are the reason this stopped being "manuscript or
+    // reject" -- see the "positions" branch below and doc.field.positions
+    // in store.js). The only real requirement is that it's a real array of
+    // real [x, y] pairs; a malformed one still 422s before it does anything
+    // else useful, so accept the shape here rather than second-guess it.
+    if (!Array.isArray(field.layout.xy_mm) || field.layout.xy_mm.length === 0) {
+      return "field layout \"positions\" is missing its xy_mm positions";
     }
   } else if (field.layout && field.layout.type === "radial_stagger") {
     const bc = field.layout.band_counts;
@@ -164,13 +178,24 @@ export function applyProject(document) {
       band2Count: bc ? bc[2] : defaults.band2Count,
     });
   } else if (field.layout && field.layout.type === "positions") {
-    // Validated above: xy_mm matches the cached manuscript field exactly,
-    // so this project's field IS the manuscript layout -- store it as that
-    // symbolic choice rather than a frozen positions blob, so it stays live
-    // (and re-fetchable/re-serializable) exactly like a freshly-defaulted
-    // document's field does.
-    store.set("doc.field.mode", "field");
-    store.set("doc.field.layout", "manuscript");
+    if (xyMatchesManuscriptField(field.layout.xy_mm)) {
+      // The manuscript's own field, byte-for-byte -- store it as that
+      // symbolic choice rather than a frozen positions blob, so it stays
+      // live (and re-fetchable/re-serializable) exactly like a
+      // freshly-defaulted document's field does.
+      store.set("doc.field.mode", "field");
+      store.set("doc.field.layout", "manuscript");
+    } else {
+      // Any other positions layout (docs/ui-spec-v0.2.md §P's built-in
+      // reference projects: Gemasolar, PS10, Crescent Dunes, the
+      // Stellio-based field) -- no parametric generator reconstructs these
+      // client-side, so the positions ride verbatim in doc.field.positions
+      // and currentLayoutPayload's "positions" branch sends them back out
+      // unchanged for both geometry requests and a re-save.
+      store.set("doc.field.mode", "field");
+      store.set("doc.field.layout", "positions");
+      store.set("doc.field.positions", { xy_mm: field.layout.xy_mm });
+    }
   } else {
     store.set("doc.field.mode", "single");
   }
@@ -181,12 +206,27 @@ export function applyProject(document) {
 
   const sun = (document && document.sun) || {};
   store.set("doc.sun", {
-    // A document saved before the Sun stage grew a site simply has none,
-    // and falls back to the default place rather than failing to load.
-    mode: doc_sun_mode(sun),
+    // Pre-existing bug fixed in passing (unrelated to spec §M.7): this
+    // referenced an undefined `doc_sun_mode(sun)`, throwing on every
+    // project load. ProjectSun does not persist a mode at all (only
+    // azimuth_deg/elevation_deg/site/dni) -- az/el are the authoritative
+    // numbers regardless of how they were arrived at (see this function's
+    // own "site rides along" comment above serializeProject), so reopening
+    // always lands in "direct" and shows exactly the angles the project
+    // was saved at; "Site & time" is one click away if a re-solve from the
+    // carried site is wanted.
+    mode: "direct",
     az: sun.azimuth_deg != null ? sun.azimuth_deg : DEFAULT_DOC.sun.az,
     el: sun.elevation_deg != null ? sun.elevation_deg : DEFAULT_DOC.sun.el,
     site: Object.assign({}, DEFAULT_DOC.sun.site, sun.site || {}),
+    // A document saved before spec §M.7 simply has no dni block, and falls
+    // back to the same default (constant, 1000 W/m^2) that project already
+    // traced at -- so it keeps reopening bit-identical.
+    dni: Object.assign({}, DEFAULT_DOC.sun.dni, sun.dni || {}),
+    // A document saved before spec §O simply has no circumsolar_ratio at
+    // all, and falls back to 0 -- the same hard-cutoff physics that project
+    // already traced at, so it keeps reopening bit-identical.
+    csr: sun.circumsolar_ratio != null ? sun.circumsolar_ratio : DEFAULT_DOC.sun.csr,
   });
 
   const run = (document && document.run) || {};

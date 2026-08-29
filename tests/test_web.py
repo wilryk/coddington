@@ -79,6 +79,7 @@ from heliostat.web.app import (  # noqa: E402
 )
 from heliostat.web.scene import (  # noqa: E402
     FIELD_SILHOUETTE_VERTICES,
+    MAX_FIELD_SCENE_HELIOSTATS,
     MAX_SCENE_RAYS,
     _outline_sample_points,
     build_field_scene,
@@ -261,8 +262,15 @@ def test_trace_flux_grid_shape_and_extent(client):
     assert values and all(v >= 0 for v in values)
     # A block-averaged grid can only ever read at or below the true peak
     # (peak_flux_kw_m2 is the single hottest FLUX_GRID bin; averaging
-    # several of those into one coarser bin never raises the max).
-    assert max(values) <= data["peak_flux_kw_m2"] + 1e-6
+    # several of those into one coarser bin never raises the max). But
+    # _flux_grid_payload rounds its values to 2 decimal digits in kW/m2
+    # (see its docstring) while peak_flux_kw_m2 is unrounded, so a value
+    # right at the true peak can round UP by up to half the 0.01 rounding
+    # step -- e.g. 5.598637... rounds to 5.60, which is 0.0014 above the
+    # unrounded peak. The tolerance here is rounding-limited, not physics-
+    # limited: 0.005 (half the documented rounding step) plus a tiny epsilon
+    # for float noise.
+    assert max(values) <= data["peak_flux_kw_m2"] + 0.005 + 1e-9
 
 
 def test_trace_flux_grid_matches_a_curved_receiver_extent(client):
@@ -506,8 +514,42 @@ def test_scene_is_deterministic_and_does_not_disturb_the_trace(client, mode):
 # measured 0.073% accuracy envelope), and power now equals incident
 # BITWISE -- the B-spline evaluation clamps its undershoot and rescales to
 # the deposit's exact total, so the full-pass bound holds exactly.
+#
+# Re-pinned 2026-08-28 for the sunshape swap (owner's ruling: super-Gaussian
+# is not a legitimate sunshape -- Buie is now the default everywhere,
+# heliostat.trace.cone.sunshape_kernel's own default param and every
+# app-side choke point). incident_power_w and slant_range_m are UNCHANGED --
+# both are purely geometric (cosine-weighted mirror area, and the
+# heliostat-to-receiver distance) and never touch the kernel. power_w is
+# unchanged to 12 significant figures (the B-spline deposit's exact-total
+# rescale is kernel-agnostic, so it still lands within 1 ULP of incident_w,
+# not bitwise-identical to it this time -- ordinary float noise from a
+# differently-shaped kernel's deposit weights, not a broken invariant).
+# rms_radius_mm moved from 505.51851375643406 to 629.9313684622526 (+24.6%):
+# Buie's flatter, more evenly-spread profile (see
+# heliostat.trace.samplers.BuieSampler's docstring: "measurably wider ...
+# sampled RMS") puts more power at larger radii than the super-Gaussian did,
+# widening the default trace's spot exactly as the EE audit predicted
+# (scratchpad ee_audit_report.md: axicon r90 0.608m -> 0.730m, a similar-
+# sized broadening on this different geometry/metric).
+#
+# Re-pinned 2026-08-29 for commit 77535f8 ("Cache the matrix, halve the
+# coarsening, get the peak back"): CONTROL_GRID_COARSEN dropped 4 -> 2 per
+# axis (now affordable at field scale because the upsample matrices, which
+# depend only on grid geometry, are cached), giving the B-spline deposit a
+# finer control grid and restoring peak-flux accuracy. incident_power_w and
+# slant_range_m are UNCHANGED -- still purely geometric, untouched by the
+# deposit's control-grid resolution. power_w moved by 1 ULP, from
+# 8225.855000744927 to 8225.855000744928, landing it exactly on
+# incident_power_w bitwise again (the exact-total rescale is grid-resolution
+# agnostic; this is float noise from a differently-sized deposit, not a
+# broken invariant -- verified power_w <= incident_power_w still holds).
+# rms_radius_mm moved from 629.9313684622526 to 624.0305355341139 (-0.94%):
+# a finer control grid resolves the peak better without materially
+# reshaping the spot, so the small narrowing is exactly what "get the peak
+# back" without a wild RMS swing should look like.
 PIN_DEFAULT_RECT_POWER_W = 8225.855000744928
-PIN_DEFAULT_RECT_RMS_MM = 505.51851375643406
+PIN_DEFAULT_RECT_RMS_MM = 624.0305355341139
 PIN_DEFAULT_RECT_INCIDENT_W = 8225.855000744928
 PIN_DEFAULT_RECT_SLANT_M = 96.32411487265273
 
@@ -681,10 +723,21 @@ def test_flat_rect_washes_and_leaves_the_legacy_path(client):
     """surface="flat" on the default-size rectangle must NOT take the legacy
     path (which hard-codes the astigmatic figure): with no figure at all the
     spot is a mirror-sized wash, several times the focused rms, and the cone
-    backend still reports real power through it."""
+    backend still reports real power through it.
+
+    The multiplier was 3.0 (actual ratio ~3.14) under the super-Gaussian
+    sunshape; re-derived to 2.25 (actual ratio ~2.52, still comfortable
+    margin above 1) after the sunshape swap (owner's ruling: super-Gaussian
+    is not legitimate, Buie is now the default everywhere) -- the flat
+    wash's rms is dominated by the mirror's own geometric spread and barely
+    moves with the sunshape (1586.4 mm here vs a similar order under
+    super_gauss), while the TWISTING baseline's rms grew +24.6% (505.5 ->
+    629.9 mm, see PIN_DEFAULT_RECT_RMS_MM above) because a focused spot's
+    width is dominated by the sunshape's own profile -- compressing the
+    ratio between the two, not a sign either number is wrong."""
     twisting = client.post("/api/trace", json=_trace_payload(RECT_DESIGN)).json()
     flat = client.post("/api/trace", json=_trace_payload({**RECT_DESIGN, "surface": "flat"})).json()
-    assert flat["rms_radius_mm"] > 3.0 * twisting["rms_radius_mm"]
+    assert flat["rms_radius_mm"] > 2.25 * twisting["rms_radius_mm"]
     assert flat["power_w"] > 0
 
 
@@ -1665,11 +1718,20 @@ def test_field_scene_is_one_silhouette_per_heliostat(client, design_key):
     assert scene["field"]["ray_sources"] == 7
 
 
-def test_field_scene_payload_at_600_stays_small():
+def test_field_scene_payload_at_cap_stays_small():
     """The whole point of drawing silhouettes instead of facets: a full field
     has to fit in a response the browser will actually parse. Built directly
-    rather than over HTTP -- 600 traces is a minute of wall time and this
-    asserts nothing about the trace."""
+    rather than over HTTP -- this solves MAX_FIELD_HELIOSTATS (the trace cap)
+    heliostats but never traces any of them, so it stays fast even at 15,000.
+
+    MAX_FIELD_HELIOSTATS and the scene's own MAX_FIELD_SCENE_HELIOSTATS are
+    deliberately different numbers: the former is how many heliostats the
+    trace endpoint will accept (big enough for real reference fields like
+    Hami's 14,500), the latter is how many silhouettes the 3-D scene actually
+    draws (bounded by the response-size budget below). This asserts the
+    scene decimates the field down to the SCENE cap even when the request is
+    at the full TRACE cap, so raising the trace cap can never again silently
+    blow up the browser payload."""
     xy = FermatLayout(n=MAX_FIELD_HELIOSTATS).positions_mm()
     params = resolve_optics_params("prime_focus", None)
     secondary, receiver = _geometry_for("prime_focus", params)
@@ -1702,7 +1764,7 @@ def test_field_scene_payload_at_600_stays_small():
     _region, outline, _hw, _hh = _field_geometry(design)
     scene = build_field_scene(heliostats, outline, 180.0, 45.0, secondary, receiver)
 
-    assert len(scene["heliostat"]) == MAX_FIELD_HELIOSTATS
+    assert len(scene["heliostat"]) == MAX_FIELD_SCENE_HELIOSTATS
     assert {len(p) for p in scene["heliostat"]} == {FIELD_SILHOUETTE_VERTICES}
     assert scene["field"]["decimated"] is True
     assert len(json.dumps(scene)) < 1_500_000
@@ -1841,8 +1903,15 @@ def test_radial_stagger_rejects_mismatched_or_nonpositive_shapes(kwargs):
 
 def test_radial_stagger_over_the_trace_cap_is_422(client):
     """band_counts x band_ring_counts exceeding MAX_FIELD_HELIOSTATS is
-    rejected the same way an oversized Fermat ``n`` is."""
-    layout = {"type": "radial_stagger", "band_counts": [2000], "band_ring_counts": [1], "ring_radii_m": [50.0]}
+    rejected the same way an oversized Fermat ``n`` is. Referencing the
+    constant rather than a literal so this cannot rot again if the cap
+    changes."""
+    layout = {
+        "type": "radial_stagger",
+        "band_counts": [MAX_FIELD_HELIOSTATS + 1],
+        "band_ring_counts": [1],
+        "ring_radii_m": [50.0],
+    }
     assert client.post("/api/field/trace", json=_field_payload(layout=layout)).status_code == 422
 
 
@@ -2528,10 +2597,12 @@ def test_sag_csv_rejects_a_sun_below_the_horizon(client):
 
 
 def test_flux_fea_csv_is_a_meters_and_w_m2_point_grid(client):
-    """The new FEA convention must never be confused with the existing
-    kW/m2 millimetre matrix export: same trace, different file. Cross-checked
-    against /api/trace/flux.csv's own peak (kW/m2) so a unit slip (a factor
-    of 1000, or mm vs m) would fail this test."""
+    """v0.2 followups item 3: the FEA convention is now ``x, y, z, flux``
+    (was ``x, y, flux`` -- see git history) -- four columns, world-frame
+    coordinates. Must never be confused with the existing kW/m2 millimetre
+    matrix export: same trace, different file. Cross-checked against
+    /api/trace/flux.csv's own peak (kW/m2) so a unit slip (a factor of
+    1000, or mm vs m) would fail this test."""
     payload = _trace_payload(RECT_DESIGN)
     matrix_resp = client.post("/api/trace/flux.csv", json=payload)
     assert matrix_resp.status_code == 200
@@ -2545,59 +2616,123 @@ def test_flux_fea_csv_is_a_meters_and_w_m2_point_grid(client):
     assert resp.headers["content-type"].startswith("text/csv")
     comments, rows = _parse_fea_csv(resp.text)
     assert len(rows) == FLUX_GRID * FLUX_GRID
+    assert all(len(r) == 4 for r in rows)  # x, y, z, flux
 
     units_line = next(c for c in comments if c.startswith("# units:"))
     assert "meters" in units_line
     assert "flux_w_m2" in units_line and "W/m" in units_line
+    assert "z_m" in units_line
 
     grid_line = next(c for c in comments if c.startswith("# grid:"))
     assert f"{FLUX_GRID}" in grid_line
 
-    peak_w_m2 = max(r[2] for r in rows)
+    peak_w_m2 = max(r[3] for r in rows)
     assert peak_w_m2 == pytest.approx(matrix_peak_kw_m2 * 1000.0, rel=1e-4)
-    assert all(r[2] >= 0 for r in rows)
+    assert all(r[3] >= 0 for r in rows)
 
 
-def test_flux_fea_csv_notes_curved_receiver_unrolling(client):
-    """A cylinder/frustum receiver's x/y are really an unrolled (arc length,
-    height-or-slant) grid -- ANSYS maps flat coordinates, so §D requires the
-    header to say so explicitly rather than leave "x" looking like a plain
-    world coordinate."""
+def test_flux_fea_csv_points_lie_on_the_true_receiver_surface(client):
+    """v0.2 followups item 3 (owner: "I don't think we need u/v at all"):
+    x, y, z are true WORLD coordinates now, not an unrolled (u, v) grid --
+    proven here by an independent geometric check for each receiver kind,
+    using nothing from the export itself except the coordinates: a flat
+    receiver's z is its own constant plane height; a cylinder's every point
+    satisfies sqrt(x^2+y^2) == its radius; a frustum's every point satisfies
+    sqrt(x^2+y^2) == the taper's own radius AT THAT POINT's z."""
     flat_payload = _trace_payload(RECT_DESIGN)
     flat_resp = client.post("/api/trace/flux_fea.csv", json=flat_payload)
     assert flat_resp.status_code == 200
-    flat_comments, _ = _parse_fea_csv(flat_resp.text)
-    assert not any("arc length" in c for c in flat_comments)
+    _flat_comments, flat_rows = _parse_fea_csv(flat_resp.text)
+    assert flat_rows
+    z_m = [r[2] for r in flat_rows]
+    assert max(z_m) - min(z_m) < 1e-6  # a flat window's z is one constant
 
     cyl_payload = _trace_payload(RECT_DESIGN)
     cyl_payload["optics_params"] = {"receiver_type": "cylinder"}
     cyl_resp = client.post("/api/trace/flux_fea.csv", json=cyl_payload)
     assert cyl_resp.status_code == 200
-    cyl_comments, _ = _parse_fea_csv(cyl_resp.text)
-    assert any("arc length" in c for c in cyl_comments)
+    _cyl_comments, cyl_rows = _parse_fea_csv(cyl_resp.text)
+    assert cyl_rows
+    radius_m = PRIME_FOCUS_CYLINDER_RADIUS_MM / 1000.0
+    for x_m, y_m, _z_m, _flux in cyl_rows:
+        # abs tolerance, not 1e-6: _fea_csv_bytes formats every value at 6
+        # significant figures (f"{v:.6g}"), which for O(1-30) m coordinates
+        # already carries ~1e-6 to 1e-5 m of its own round-trip noise --
+        # this bar catches a real placement bug while tolerating that.
+        assert math.hypot(x_m, y_m) == pytest.approx(radius_m, abs=2e-4)
+
+    frustum_payload = _trace_payload(RECT_DESIGN)
+    frustum_payload["optics_params"] = {"receiver_type": "frustum"}
+    frustum_resp = client.post("/api/trace/flux_fea.csv", json=frustum_payload)
+    assert frustum_resp.status_code == 200
+    _frustum_comments, frustum_rows = _parse_fea_csv(frustum_resp.text)
+    assert frustum_rows
+    z_bot_m = (PRIME_FOCUS_HEIGHT_MM - PRIME_FOCUS_FRUSTUM_HEIGHT_MM / 2.0) / 1000.0
+    z_top_m = (PRIME_FOCUS_HEIGHT_MM + PRIME_FOCUS_FRUSTUM_HEIGHT_MM / 2.0) / 1000.0
+    r_bot_m = PRIME_FOCUS_FRUSTUM_BOTTOM_RADIUS_MM / 1000.0
+    r_top_m = PRIME_FOCUS_FRUSTUM_TOP_RADIUS_MM / 1000.0
+    for x_m, y_m, z_m, _flux in frustum_rows:
+        frac = (z_m - z_bot_m) / (z_top_m - z_bot_m)
+        expected_r_m = r_bot_m + frac * (r_top_m - r_bot_m)
+        assert math.hypot(x_m, y_m) == pytest.approx(expected_r_m, abs=2e-4)
 
 
 @pytest.mark.parametrize("optics", ["axicon", "cassegrain"])
 def test_secondary_flux_fea_csv_is_a_meters_and_w_m2_point_grid_with_absorbed(client, optics):
     """Spec §C/§D: the secondary's own irradiance map export carries a
-    fourth ``absorbed`` column -- ``(1 - secondary_reflectance) * flux`` --
-    on top of the receiver export's ``x, y, flux`` (docs/
-    secondary-irradiance-plan.md build step 6)."""
+    fifth ``absorbed`` column -- ``(1 - secondary_reflectance) * flux`` --
+    on top of the receiver export's ``x, y, z, flux`` (v0.2 followups item
+    3: old format was ``x, y, flux, absorbed`` with x/y the secondary's
+    unrolled (u, v) -- see git history)."""
     payload = _trace_payload(RECT_DESIGN, optics=optics)
     resp = client.post("/api/trace/secondary_flux_fea.csv", json=payload)
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/csv")
     comments, rows = _parse_fea_csv(resp.text)
     assert rows
-    assert all(len(r) == 4 for r in rows)  # x, y, flux, absorbed
+    assert all(len(r) == 5 for r in rows)  # x, y, z, flux, absorbed
 
     units_line = next(c for c in comments if c.startswith("# units:"))
     assert "meters" in units_line and "secondary_reflectance=0.9" in units_line
-    assert any("aperture rim" in c for c in comments)  # secondary u/v note
+    assert "z_m" in units_line
+    assert any("tower axis" in c for c in comments)  # new world-frame note
 
-    assert all(r[2] >= 0 for r in rows)
-    for _x, _y, flux_w_m2, absorbed_w_m2 in rows:
+    assert all(r[3] >= 0 for r in rows)
+    for _x, _y, _z, flux_w_m2, absorbed_w_m2 in rows:
         assert absorbed_w_m2 == pytest.approx(flux_w_m2 * 0.1, rel=1e-9, abs=1e-9)
+
+
+def test_secondary_flux_fea_csv_points_lie_on_the_true_secondary_surface(client):
+    """v0.2 followups item 3: x, y, z are now the secondary's true WORLD
+    coordinates -- proven here by independently recomputing each shape's own
+    closed-form z(h) (h = sqrt(x^2+y^2)) from nothing but its public design
+    constants (AXICON_*/CASSEGRAIN_*, already used to build the fixture in
+    heliostat.web.app itself), never by calling back into
+    secondary_uv_to_world or secondary_nominal_sag_mm."""
+    axicon_payload = _trace_payload(RECT_DESIGN, optics="axicon")
+    axicon_resp = client.post("/api/trace/secondary_flux_fea.csv", json=axicon_payload)
+    assert axicon_resp.status_code == 200
+    _comments, axicon_rows = _parse_fea_csv(axicon_resp.text)
+    assert axicon_rows
+    k = math.tan(math.radians(AXICON_HALF_ANGLE_DEG))
+    for x_m, y_m, z_m, _flux, _absorbed in axicon_rows:
+        h_mm = math.hypot(x_m, y_m) * 1000.0
+        expected_z_m = (AXICON_APEX_HEIGHT_MM + k * h_mm) / 1000.0
+        assert z_m == pytest.approx(expected_z_m, abs=2e-4)
+
+    cassegrain_payload = _trace_payload(RECT_DESIGN, optics="cassegrain")
+    cassegrain_resp = client.post("/api/trace/secondary_flux_fea.csv", json=cassegrain_payload)
+    assert cassegrain_resp.status_code == 200
+    _comments, cassegrain_rows = _parse_fea_csv(cassegrain_resp.text)
+    assert cassegrain_rows
+    r = CASSEGRAIN_VERTEX_RADIUS_MM
+    kk = 1.0 + CASSEGRAIN_CONIC
+    for x_m, y_m, z_m, _flux, _absorbed in cassegrain_rows:
+        h_mm = math.hypot(x_m, y_m) * 1000.0
+        disc = max(r * r - kk * h_mm * h_mm, 0.0)
+        zeta_mm = (r - math.sqrt(disc)) / kk
+        expected_z_m = (CASSEGRAIN_VERTEX_Z_MM + zeta_mm) / 1000.0
+        assert z_m == pytest.approx(expected_z_m, abs=2e-4)
 
 
 def test_secondary_flux_fea_csv_404s_when_there_is_no_secondary(client):
@@ -2605,6 +2740,95 @@ def test_secondary_flux_fea_csv_404s_when_there_is_no_secondary(client):
     silently returning an empty/meaningless file."""
     payload = _trace_payload(RECT_DESIGN, optics="prime_focus")
     resp = client.post("/api/trace/secondary_flux_fea.csv", json=payload)
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# field-level FEA CSV exports (docs/ui-spec-v0.2.md §R: /api/field/trace/
+# flux_fea.csv, /api/field/trace/secondary_flux_fea.csv) -- the same §D
+# convention as the single-heliostat exports above, closing §R's own
+# "no synchronous field-level export exists" gap.
+
+
+def test_field_flux_fea_csv_matches_field_trace_own_peak(client):
+    """Cross-checked against a plain /api/field/trace call for the identical
+    body: the two must never silently drift (_field_trace_phase shares its
+    solve/occlusion/trace phases with field_trace itself)."""
+    payload = _field_payload(RECT_DESIGN, layout={"type": "fermat", "n": 5})
+    trace_resp = client.post("/api/field/trace", json=payload)
+    assert trace_resp.status_code == 200
+    expected_peak_w_m2 = trace_resp.json()["peak_flux_kw_m2"] * 1000.0
+
+    resp = client.post("/api/field/trace/flux_fea.csv", json=payload)
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/csv")
+    comments, rows = _parse_fea_csv(resp.text)
+    assert rows
+    assert all(len(r) == 4 for r in rows)  # x, y, z, flux
+    units_line = next(c for c in comments if c.startswith("# units:"))
+    assert "meters" in units_line and "flux_w_m2" in units_line
+    subject_line = next(c for c in comments if c.startswith("# heliostat:"))
+    assert "field of 5 heliostats" in subject_line
+
+    peak_w_m2 = max(r[3] for r in rows)
+    assert peak_w_m2 == pytest.approx(expected_peak_w_m2, rel=1e-3)
+    assert all(r[3] >= 0 for r in rows)
+
+
+def test_field_flux_fea_csv_points_lie_on_the_true_receiver_surface(client):
+    """Same independent geometric proof as the single-heliostat export's own
+    test, run against a small field instead of one mirror."""
+    payload = _field_payload(RECT_DESIGN, layout={"type": "fermat", "n": 5})
+    payload["optics_params"] = {"receiver_type": "cylinder"}
+    resp = client.post("/api/field/trace/flux_fea.csv", json=payload)
+    assert resp.status_code == 200
+    _comments, rows = _parse_fea_csv(resp.text)
+    assert rows
+    radius_m = PRIME_FOCUS_CYLINDER_RADIUS_MM / 1000.0
+    for x_m, y_m, _z_m, _flux in rows:
+        assert math.hypot(x_m, y_m) == pytest.approx(radius_m, abs=2e-4)
+
+
+def test_field_flux_fea_csv_422s_when_sun_is_below_horizon(client):
+    payload = _field_payload(RECT_DESIGN, layout={"type": "fermat", "n": 4}, solar_el_deg=0.0)
+    resp = client.post("/api/field/trace/flux_fea.csv", json=payload)
+    assert resp.status_code == 422
+
+
+@pytest.mark.parametrize("optics", ["axicon", "cassegrain"])
+def test_field_secondary_flux_fea_csv_matches_field_trace_own_absorbed(client, optics):
+    payload = _field_payload(RECT_DESIGN, layout={"type": "fermat", "n": 5}, optics=optics)
+    resp = client.post("/api/field/trace/secondary_flux_fea.csv", json=payload)
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/csv")
+    comments, rows = _parse_fea_csv(resp.text)
+    assert rows
+    assert all(len(r) == 5 for r in rows)  # x, y, z, flux, absorbed
+    units_line = next(c for c in comments if c.startswith("# units:"))
+    assert "secondary_reflectance=0.9" in units_line
+    assert any("tower axis" in c for c in comments)
+
+    assert all(r[3] >= 0 for r in rows)
+    for _x, _y, _z, flux_w_m2, absorbed_w_m2 in rows:
+        assert absorbed_w_m2 == pytest.approx(flux_w_m2 * 0.1, rel=1e-9, abs=1e-9)
+
+
+def test_field_secondary_flux_fea_csv_points_lie_on_the_true_secondary_surface(client):
+    payload = _field_payload(RECT_DESIGN, layout={"type": "fermat", "n": 5}, optics="axicon")
+    resp = client.post("/api/field/trace/secondary_flux_fea.csv", json=payload)
+    assert resp.status_code == 200
+    _comments, rows = _parse_fea_csv(resp.text)
+    assert rows
+    k = math.tan(math.radians(AXICON_HALF_ANGLE_DEG))
+    for x_m, y_m, z_m, _flux, _absorbed in rows:
+        h_mm = math.hypot(x_m, y_m) * 1000.0
+        expected_z_m = (AXICON_APEX_HEIGHT_MM + k * h_mm) / 1000.0
+        assert z_m == pytest.approx(expected_z_m, abs=2e-4)
+
+
+def test_field_secondary_flux_fea_csv_404s_when_there_is_no_secondary(client):
+    payload = _field_payload(RECT_DESIGN, layout={"type": "fermat", "n": 4}, optics="prime_focus")
+    resp = client.post("/api/field/trace/secondary_flux_fea.csv", json=payload)
     assert resp.status_code == 404
 
 
@@ -2625,7 +2849,7 @@ def test_day_flux_fea_csv_matches_the_stored_pngs_peak(client):
     units_line = next(c for c in comments if c.startswith("# units:"))
     assert "meters" in units_line and "W/m" in units_line
 
-    peak_w_m2 = max(r[2] for r in rows)
+    peak_w_m2 = max(r[3] for r in rows)  # x, y, z, flux (v0.2 followups item 3)
     assert peak_w_m2 == pytest.approx(step["peak_flux_kw_m2"] * 1000.0, rel=1e-3)
 
 

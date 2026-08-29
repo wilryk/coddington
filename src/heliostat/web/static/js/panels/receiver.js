@@ -186,7 +186,7 @@ function buildSecondaryMapUi(wrap) {
   sagRow.style.marginTop = "2px";
   const sagLabel = document.createElement("label");
   sagLabel.textContent = "Secondary sag";
-  sagLabel.title = "Nominal figure + parametric warp + imported map, summed -- same jet colormap and stated contour interval as the heliostat's own sag map.";
+  sagLabel.title = "Nominal figure + parametric warp + imported map, summed.";
   sagRow.appendChild(sagLabel);
   const viewSagBtn = document.createElement("div");
   viewSagBtn.className = "btn small";

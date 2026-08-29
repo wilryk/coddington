@@ -6,7 +6,15 @@
 // the floating inspector can render the identical rows when the sun is
 // selected in the scene.
 import { store } from "../store.js";
-import { numberRow, setVal, segButton, SUN_FIELDS, SUN_SITE_FIELDS } from "../fields.js";
+import {
+  numberRow,
+  setVal,
+  segButton,
+  sectionHeaderRow,
+  SUN_FIELDS,
+  SUN_SITE_FIELDS,
+  SUN_CSR_FIELD,
+} from "../fields.js";
 
 let built = false;
 let els = {};
@@ -146,11 +154,113 @@ function build(container) {
   const el = numberRow(directFields, SUN_FIELDS[1]);
   body.appendChild(directFields);
 
+  // docs/ui-spec-v0.2.md §O: the Buie sunshape's circumsolar ratio -- the
+  // one user-adjustable knob on the sun's ANGULAR shape (as opposed to its
+  // intensity, the DNI control below). Every trace, at every fidelity,
+  // draws from the same Buie limb-darkened solar disk
+  // (heliostat.trace.samplers.BuieSampler / heliostat.trace.cone's
+  // sunshape_kernel), CSR-broadened identically; the super-Gaussian sampler
+  // this app shipped with initially is still in the codebase (kernel-level
+  // tests exercise it) but nothing user-facing selects it any more.
+  sectionHeaderRow(body, "Sunshape");
+  const csr = numberRow(body, SUN_CSR_FIELD);
+
+  const csrHint = document.createElement("div");
+  csrHint.className = "hint";
+  csrHint.textContent =
+    "Clear-sky conditions typically read CSR ≈ 0.0–0.1; hazy/high-aerosol skies read higher, commonly 0.1–0.3 and up. Site/instrument dependent, not a hard limit.";
+  body.appendChild(csrHint);
+
+  // §G-style disclosure -- states the CSR in effect, not just the profile
+  // name (spec: "must name the CSR in effect"); its exact text is computed
+  // in render() below since it depends on doc.sun.csr.
+  const sunshapeNote = document.createElement("div");
+  sunshapeNote.className = "summary";
+  body.appendChild(sunshapeNote);
+
+  // -- spec §M.7: site DNI -- independent of how az/el were arrived at
+  // (site & time, or a typed angle pair), so this shows either way rather
+  // than living inside siteFields/directFields above.
+  const dniHead = document.createElement("div");
+  dniHead.className = "subhead";
+  dniHead.textContent = "Sun intensity (DNI)";
+  body.appendChild(dniHead);
+
+  const dniSeg = document.createElement("div");
+  dniSeg.className = "seg";
+  const dniBtns = {
+    constant: segButton(
+      dniSeg,
+      "Constant",
+      true,
+      () => store.set("doc.sun.dni.mode", "constant"),
+      "A fixed direct normal irradiance, applied the same at every sun position. The default (1000 W/m² -- the trace's own native normalisation), so a fresh project's numbers match what every trace already assumed."
+    ),
+    clearsky: segButton(
+      dniSeg,
+      "Clear-sky model",
+      false,
+      () => store.set("doc.sun.dni.mode", "clearsky"),
+      "Beer-Lambert clear-sky DNI (heliostat.dni.ClearSkyDNI): highest near solar noon, falling toward sunrise/sunset as the beam crosses more atmosphere. No weather, no clouds -- a cloud-free upper bound, not a forecast."
+    ),
+  };
+  body.appendChild(dniSeg);
+
+  const dniConstant = numberRow(body, {
+    key: "dni_constant_w_m2",
+    label: "DNI (W/m²)",
+    path: "doc.sun.dni.constant_w_m2",
+    min: 1,
+    max: 1500,
+    step: 1,
+    tooltip:
+      "Direct normal irradiance assumed at every sun position -- scales power, flux, and concentration consistently across every trace, sweep, and estimate.",
+  });
+
+  const dniNote = document.createElement("div");
+  dniNote.className = "summary";
+  body.appendChild(dniNote);
+
   container.appendChild(head);
   container.appendChild(body);
 
-  els = { chev, body, modeBtns, siteFields, directFields, lat, lon, tz, date, hour, az, el, solvedLine, siteErr };
+  els = {
+    chev,
+    body,
+    modeBtns,
+    siteFields,
+    directFields,
+    lat,
+    lon,
+    tz,
+    date,
+    hour,
+    az,
+    el,
+    solvedLine,
+    siteErr,
+    csr,
+    sunshapeNote,
+    dniBtns,
+    dniConstant,
+    dniNote,
+  };
   built = true;
+}
+
+// Mirrors heliostat.web.app's DNISetting.describe() -- the short, rider-
+// wording label ("DNI: clear-sky model" / "DNI: 850 W/m² fixed"), NOT the
+// verbose heliostat.dni provider describe() strings a day/year result also
+// carries as a diagnostic. Kept in lockstep with that Python method if it
+// ever changes.
+function describeDni(dni) {
+  const d = dni || { mode: "constant", constant_w_m2: 1000 };
+  if (d.mode !== "clearsky") {
+    const v = d.constant_w_m2 != null ? d.constant_w_m2 : 1000;
+    return `DNI: ${v} W/m² fixed`;
+  }
+  const scale = d.clearsky_scale;
+  return scale && scale !== 1 ? `DNI: clear-sky model x${scale}` : "DNI: clear-sky model";
 }
 
 function fmtHour(h) {
@@ -184,6 +294,17 @@ export function render(container) {
   setVal(els.az, doc.sun.az);
   setVal(els.el, doc.sun.el);
 
+  // docs/ui-spec-v0.2.md §O: disclosure line names the CSR in effect --
+  // "+ aureole" only appears once CSR > 0, and the number always shows
+  // (mirrors heliostat.web.app's own wording, e.g. sun.js's earlier
+  // fixed-text version this replaces).
+  const csrVal = doc.sun.csr || 0;
+  setVal(els.csr, csrVal);
+  els.sunshapeNote.innerHTML =
+    csrVal > 0
+      ? `<strong>Sunshape:</strong> Buie limb-darkened solar disk + aureole (CSR ${csrVal}). Applied identically at every fidelity.`
+      : "<strong>Sunshape:</strong> Buie limb-darkened solar disk (CSR 0, today's default -- no aureole). Applied identically at every fidelity.";
+
   els.siteErr.hidden = !solveError;
   if (solveError) els.siteErr.textContent = solveError;
 
@@ -199,6 +320,18 @@ export function render(container) {
       els.solvedLine.textContent = "Solving…";
     }
   }
+
+  // -- spec §M.7: site DNI. The mode toggle always shows; the constant
+  // input hides under "Clear-sky model" (it has no effect there), and the
+  // note line states the assumption in effect either way -- the rider's
+  // core ask: never leave DNI an implicit, unstated default.
+  const dni = doc.sun.dni || { mode: "constant", constant_w_m2: 1000, clearsky_scale: 1 };
+  const dniClearsky = dni.mode === "clearsky";
+  els.dniBtns.constant.classList.toggle("active", !dniClearsky);
+  els.dniBtns.clearsky.classList.toggle("active", dniClearsky);
+  els.dniConstant.parentElement.style.display = dniClearsky ? "none" : "";
+  setVal(els.dniConstant, dni.constant_w_m2);
+  els.dniNote.textContent = describeDni(dni);
 }
 
 // Any site edit re-solves; main.js's subscriber calls render() on every
