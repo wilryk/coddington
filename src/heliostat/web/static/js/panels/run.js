@@ -106,6 +106,22 @@ let apCenterUMm = null;
 let apCenterVMm = null;
 let apRadiusMm = null;
 let apDrag = null; // {mode: "move"|"resize"} while a pointer drag is live
+// v0.2 followups item 4 (owner-reported): the aperture canvas replaced the
+// plain thumbnail's whole-canvas click-to-open, so a plain click landed
+// inside the circle used to just silently start a "move" drag from
+// pointerdown -- the owner's "I lost the obvious way in" report. Fix: a
+// pointerdown no longer engages a drag by itself, it only records what
+// WOULD be dragged (apPending, from the same resize-handle/circle-body hit
+// test apHandlePointerDown always did); apHandlePointerMove only promotes
+// that to a real drag (apDrag) once the pointer has moved past a small
+// threshold, and apHandlePointerUp treats "pointer went up with no drag
+// ever engaged" as a plain click and opens the full map -- so a click
+// anywhere on the canvas (handle, circle, or open space) opens the map,
+// and only an actual drag gesture, started from the handle or the circle
+// body, edits the aperture.
+let apPending = null; // {mode: "move"|"resize"|null, startX, startY} while the pointer is down but no drag has engaged yet
+let apDockActions = null; // actions.onOpenFlux, captured once in build()
+const AP_CLICK_THRESHOLD_PX = 4;
 let apGrid = null; // the CURRENT flux_grid the canvas/readout below read
 let apMetricsLike = null; // ui.traceResult itself -- carries centroid_mm/rms_radius_mm/power_w
 // Which trace this aperture's center/radius were last set against -- a new
@@ -148,32 +164,57 @@ function paintDockAperture() {
   els.apConcNum.textContent = dni ? (avgFluxWM2 / dni).toFixed(0) + "×" : "—";
 }
 
-function apHandlePointerDown(e) {
-  if (!apGrid) return;
-  const canvas = e.currentTarget;
+// Which affordance a point hits: "resize" for the handle square at the
+// circle's edge, "move" for anywhere inside the circle body, null for open
+// canvas -- the same two explicit affordances the aperture always offered,
+// just no longer engaged straight from pointerdown (see apPending's
+// comment above).
+function apHitAffordance(canvas, x, y) {
   const center = apCurrentCenter();
   const radius = apCurrentRadius();
-  const [x, y] = apertureCanvasEventPoint(canvas, e);
   const [cx, cy] = apertureDataToCanvas(apGrid, canvas, center.u, center.v);
   const pxPerMm = canvas.width / (apGrid.u_max_mm - apGrid.u_min_mm);
   const rPx = radius * pxPerMm;
   const dHandle = Math.hypot(x - (cx + rPx), y - cy);
   const dCenter = Math.hypot(x - cx, y - cy);
-  if (dHandle <= 10) {
-    apDrag = { mode: "resize" };
-  } else if (dCenter <= rPx + 10) {
-    apDrag = { mode: "move" };
-  } else {
-    return;
-  }
-  canvas.setPointerCapture(e.pointerId);
-  e.preventDefault();
+  if (dHandle <= 10) return "resize";
+  if (dCenter <= rPx + 10) return "move";
+  return null;
+}
+
+function apHandlePointerDown(e) {
+  if (!apGrid) return;
+  const canvas = e.currentTarget;
+  const [x, y] = apertureCanvasEventPoint(canvas, e);
+  // Not a drag yet -- just remember what a drag from here WOULD be, and
+  // where it started. Deliberately no setPointerCapture/preventDefault
+  // here: a plain click (down+up with no meaningful movement) must still
+  // read as a normal click for apHandlePointerUp to act on.
+  apPending = { mode: apHitAffordance(canvas, x, y), startX: x, startY: y };
 }
 
 function apHandlePointerMove(e) {
-  if (!apDrag || !apGrid) return;
+  if (!apGrid) return;
   const canvas = e.currentTarget;
   const [x, y] = apertureCanvasEventPoint(canvas, e);
+  if (!apDrag) {
+    if (!apPending) {
+      // Hover, not a press: swap the cursor between "click to open" and
+      // "grab" so the two affordances (handle/circle) still look
+      // draggable before the user commits to either gesture.
+      canvas.style.cursor = apHitAffordance(canvas, x, y) ? "grab" : "pointer";
+      return;
+    }
+    const moved = Math.hypot(x - apPending.startX, y - apPending.startY);
+    if (moved <= AP_CLICK_THRESHOLD_PX || !apPending.mode) return;
+    // Crossed the click-vs-drag threshold on an explicit affordance --
+    // engage the drag now (not at pointerdown), so a plain click that never
+    // crosses this threshold falls through to apHandlePointerUp's "open
+    // the full map" instead.
+    apDrag = { mode: apPending.mode };
+    canvas.setPointerCapture(e.pointerId);
+    canvas.style.cursor = "grabbing";
+  }
   const [uMm, vMm] = apertureCanvasToData(apGrid, canvas, x, y);
   if (apDrag.mode === "move") {
     apCenterUMm = clampToGridAxis(apGrid, uMm, "u");
@@ -187,7 +228,7 @@ function apHandlePointerMove(e) {
 }
 
 function apHandlePointerUp(e) {
-  if (!apDrag) return;
+  const wasDragging = !!apDrag;
   apDrag = null;
   try {
     e.currentTarget.releasePointerCapture(e.pointerId);
@@ -195,12 +236,23 @@ function apHandlePointerUp(e) {
     // Capture may already be gone (pointer left the window, etc.) -- the
     // drag is over either way.
   }
+  if (!wasDragging && apPending && apDockActions) {
+    // Pointer went down and back up without ever crossing the drag
+    // threshold -- a plain click, wherever on the canvas it landed. Same
+    // entry point the plain thumbnail's onClick used to give (see
+    // thumbImg's own listener below) before the aperture replaced it.
+    apDockActions.onOpenFlux();
+  }
+  apPending = null;
 }
 
 function build(container, dockContainer, actions) {
   container.innerHTML = "";
   container.className = "runbar";
   dockContainer.innerHTML = "";
+  // build() only ever runs once (the `built` guard below) -- captured here
+  // so apHandlePointerUp's plain-click case can reach it too.
+  apDockActions = actions;
 
   const seg = document.createElement("div");
   seg.className = "seg";
@@ -316,7 +368,9 @@ function build(container, dockContainer, actions) {
   apWrap.appendChild(apCanvas);
   const apCaption = document.createElement("div");
   apCaption.className = "apcaption";
-  apCaption.appendChild(document.createTextNode("Dashed circle: drag to move · square: drag to resize. "));
+  apCaption.appendChild(
+    document.createTextNode("Click to open the full map · drag the dashed circle to move it, its square to resize. ")
+  );
   // The aperture canvas replaces the plain thumbnail's own click-to-open
   // handler (thumbImg below), so this link keeps that entry point reachable
   // -- the full overlay is still the only place with the Receiver |
@@ -479,6 +533,7 @@ export function render(container, dockContainer, actions, ctx) {
     apCenterVMm = null;
     apRadiusMm = null;
     apDrag = null;
+    apPending = null;
   }
 
   if (data) {
