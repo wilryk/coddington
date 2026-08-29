@@ -1301,6 +1301,14 @@ class _TraceRequestBase(_StrictModel):
 class TraceRequest(_TraceRequestBase):
     heliostat_x_mm: float = 0.0
     heliostat_y_mm: float = -89609.0
+    #: Opt-in higher-resolution ``flux_png`` render (docs/ui-spec-v0.2.md
+    #: §M.2's drill-down "click to expand" -- js/tabs/analysis.js's footprint
+    #: overlay). ``None`` keeps the existing dpi=110 render exactly as
+    #: before, so every other caller of this endpoint (scripts, the flux CSV
+    #: endpoints, the existing test suite) is unaffected. Bounded well above
+    #: the default so a client asking for the expanded view cannot demand an
+    #: arbitrarily large server-side render.
+    flux_png_dpi: int | None = Field(default=None, ge=110, le=320)
 
 
 # ---------------------------------------------------------------------------
@@ -4390,7 +4398,12 @@ def _secondary_sag_fea_csv(
 
 
 def _render_flux_png(
-    flux: np.ndarray, u_edges: np.ndarray, v_edges: np.ndarray, mode: str, elapsed_ms: float
+    flux: np.ndarray,
+    u_edges: np.ndarray,
+    v_edges: np.ndarray,
+    mode: str,
+    elapsed_ms: float,
+    dpi: int = 110,
 ) -> bytes:
     # Lazy import, same reasoning as HeliostatDesign.preview(): matplotlib
     # is a real dependency but no other endpoint in this module needs it.
@@ -4399,6 +4412,14 @@ def _render_flux_png(
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    # `dpi` only scales the OUTPUT raster (the savefig() call below) -- the
+    # figure itself is still built at figsize=(5.6, 4.6) inches with the same
+    # point-sized fonts/line widths, so a higher dpi yields a genuinely
+    # sharper render of the identical layout (more pixels per element, not a
+    # stretched/upscaled one), same idea as a "retina" screenshot. Every
+    # caller except the footprint drill-down's expanded view passes the
+    # default 110, so their PNG dimensions are unchanged (see TraceRequest's
+    # `flux_png_dpi`, None by default).
     fig, ax = plt.subplots(figsize=(5.6, 4.6))
     # Displayed in kW/m2: a tower receiver runs in the hundreds to
     # thousands of kW/m2, and five- and six-digit W/m2 tick labels are
@@ -4420,7 +4441,7 @@ def _render_flux_png(
 
     buf = BytesIO()
     try:
-        fig.savefig(buf, format="png", dpi=110)
+        fig.savefig(buf, format="png", dpi=dpi)
     finally:
         plt.close(fig)
     return buf.getvalue()
@@ -5792,7 +5813,9 @@ def create_app():
             counters = result["counters"]
             rms_mm, centroid = _cone_metrics(flux, u_edges, v_edges)
 
-        png_bytes = _render_flux_png(flux, u_edges, v_edges, body.mode, elapsed_ms)
+        png_bytes = _render_flux_png(
+            flux, u_edges, v_edges, body.mode, elapsed_ms, dpi=body.flux_png_dpi or 110
+        )
 
         # Spec §C: incident flux on the secondary's own surface, alongside
         # the receiver map -- only when requested and only for a secondary

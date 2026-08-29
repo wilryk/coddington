@@ -209,6 +209,22 @@ let heliostatFootprintError = null;
 let heliostatFootprintTimer = null;
 let heliostatFootprintController = null;
 
+// -- footprint "click to enlarge" overlay ------------------------------------
+// The owner's ask (v0.2 followups): the inline drill-down thumbnail above is
+// too small to read a hot spot closely, and CSS-stretching it would only
+// blur the same 5.6x4.6in/dpi=110 PNG _render_flux_png always rendered --
+// so this re-traces the SAME heliostat/step at a higher dpi (more pixels,
+// not stretched ones; see app.py's TraceRequest.flux_png_dpi) instead of
+// just reusing heliostatFootprintPngBase64 bigger. Cached separately from
+// heliostatFootprintCache (same `${id}:${stepIndex}` key) since it is a
+// different, heavier render of the same trace, fetched only on demand.
+const FOOTPRINT_OVERLAY_DPI = 300;
+const footprintOverlayCache = new Map(); // `${id}:${stepIndex}` -> pngBase64
+let footprintOverlayPngBase64 = null;
+let footprintOverlayLoading = false;
+let footprintOverlayError = null;
+let footprintOverlayController = null;
+
 // -- year-estimate run state (module-local -- see header) -------------------
 let yearFastMode = true;
 let yearJobId = null;
@@ -679,6 +695,7 @@ function clearHeliostatFootprint() {
   heliostatFootprintPeakKwM2 = null;
   heliostatFootprintLoading = false;
   heliostatFootprintError = null;
+  closeFootprintOverlay();
 }
 
 // What a finished run measured: the mirror, the optics and where the
@@ -988,6 +1005,7 @@ function currentFieldHeliostats() {
 
 function selectDrillHeliostat(id) {
   if (drillHeliostatId === id) return;
+  closeFootprintOverlay(); // a new heliostat invalidates whatever the overlay was showing
   drillHeliostatId = id;
   scheduleHeliostatFootprintFetch();
   paintIfVisible();
@@ -1070,8 +1088,78 @@ function scheduleHeliostatFootprintFetch() {
   }, 250);
 }
 
+// -- footprint "click to enlarge" overlay ------------------------------------
+// Same overlay chrome as "Manage saved runs" above (app.css's shared
+// .overlay/.overlay-panel/.overlay-close -- the same lightbox the workspace
+// run bar's flux thumbnail opens), built once in build() and toggled here.
+// Opening it kicks off its own higher-dpi trace (see FOOTPRINT_OVERLAY_DPI
+// above) rather than just showing heliostatFootprintPngBase64 bigger --
+// that PNG is still the fixed dpi=110 render the inline thumbnail uses, and
+// stretching it in CSS would only blur it, defeating the point of a closer
+// look.
+function openFootprintOverlay() {
+  if (!heliostatFootprintPngBase64) return; // nothing loaded yet to zoom into
+  const step = currentStepForAperture();
+  const heliostat =
+    drillHeliostatId != null ? currentFieldHeliostats().find((h) => h.id === drillHeliostatId) : null;
+  if (!step || !heliostat) return;
+  els.footprintOverlay.hidden = false;
+  fetchFootprintOverlayImage(step, heliostat, `${drillHeliostatId}:${selectedStepIndex}`);
+  paintIfVisible();
+}
+
+function closeFootprintOverlay() {
+  if (footprintOverlayController) {
+    footprintOverlayController.abort();
+    footprintOverlayController = null;
+  }
+  footprintOverlayPngBase64 = null;
+  footprintOverlayLoading = false;
+  footprintOverlayError = null;
+  if (built) els.footprintOverlay.hidden = true;
+}
+
+function fetchFootprintOverlayImage(step, heliostat, cacheKey) {
+  const cached = footprintOverlayCache.get(cacheKey);
+  if (cached) {
+    footprintOverlayPngBase64 = cached;
+    footprintOverlayLoading = false;
+    footprintOverlayError = null;
+    paintIfVisible();
+    return;
+  }
+  if (footprintOverlayController) footprintOverlayController.abort();
+  footprintOverlayLoading = true;
+  footprintOverlayError = null;
+  footprintOverlayPngBase64 = null;
+  paintIfVisible();
+  const body = Object.assign(heliostatFootprintRequestFor(step, heliostat), {
+    flux_png_dpi: FOOTPRINT_OVERLAY_DPI,
+  });
+  footprintOverlayController = new AbortController();
+  postTrace(body, footprintOverlayController.signal)
+    .then((data) => {
+      footprintOverlayController = null;
+      footprintOverlayLoading = false;
+      footprintOverlayPngBase64 = data.flux_png || null;
+      footprintOverlayError = footprintOverlayPngBase64
+        ? null
+        : "No larger footprint came back for this heliostat.";
+      if (footprintOverlayPngBase64) footprintOverlayCache.set(cacheKey, footprintOverlayPngBase64);
+      paintIfVisible();
+    })
+    .catch((err) => {
+      footprintOverlayController = null;
+      if (err && err.name === "AbortError") return;
+      footprintOverlayLoading = false;
+      footprintOverlayError = (err && err.message) || "Could not load the larger footprint.";
+      paintIfVisible();
+    });
+}
+
 function selectStep(i) {
   if (selectedStepIndex === i) return;
+  closeFootprintOverlay(); // a new timestep invalidates whatever the overlay was showing
   selectedStepIndex = i;
   scheduleFluxFetch();
   scheduleApertureGridFetch();
@@ -2575,6 +2663,14 @@ function build(container) {
   const drillFootImg = document.createElement("img");
   drillFootImg.alt = "Selected heliostat's own flux footprint";
   drillFootImg.hidden = true;
+  // v0.2 followups: "I'd like to see the Heliostat Footprint somewhat
+  // bigger... I can't get a closer look at each spot" -- click-to-expand
+  // into the same overlay chrome the workspace's flux thumbnail already
+  // uses (js/panels/run.js's thumbImg, same idiom below), rather than
+  // enlarging this thumbnail itself and reflowing the drill-down layout.
+  drillFootImg.style.cursor = "pointer";
+  drillFootImg.title = "Click to enlarge";
+  drillFootImg.addEventListener("click", () => openFootprintOverlay());
   const drillFootPlaceholder = document.createElement("p");
   drillFootPlaceholder.className = "placeholder";
   drillFootPlaceholder.textContent = "Pick a heliostat to see its own footprint.";
@@ -2754,10 +2850,61 @@ function build(container) {
   managePanelEl.appendChild(manageBody);
   manageOverlay.appendChild(managePanelEl);
 
+  // -- footprint "click to enlarge" overlay (v0.2 followups) ------------------
+  // Same chrome as manageOverlay just above -- app.css's shared
+  // .overlay/.overlay-panel/.overlay-close, the same lightbox the workspace
+  // run bar's flux thumbnail opens (js/main.js's #flux-overlay) -- but this
+  // one is built here rather than in next/index.html/main.js because
+  // opening it has to kick off ITS OWN higher-dpi trace of the currently
+  // selected heliostat/step, which only this module has the request-shaping
+  // (heliostatFootprintRequestFor) and drill-selection state for.
+  const footprintOverlay = document.createElement("div");
+  footprintOverlay.className = "overlay";
+  footprintOverlay.hidden = true;
+  footprintOverlay.addEventListener("click", (e) => {
+    if (e.target === footprintOverlay) closeFootprintOverlay();
+  });
+  const footprintPanelEl = document.createElement("div");
+  footprintPanelEl.className = "overlay-panel";
+  const footprintClose = document.createElement("button");
+  footprintClose.type = "button";
+  footprintClose.className = "overlay-close";
+  footprintClose.setAttribute("aria-label", "Close");
+  footprintClose.textContent = "×";
+  footprintClose.addEventListener("click", () => closeFootprintOverlay());
+  const footprintOverlayImg = document.createElement("img");
+  footprintOverlayImg.alt = "Selected heliostat's own flux footprint, enlarged";
+  footprintOverlayImg.hidden = true;
+  const footprintOverlayPlaceholder = document.createElement("p");
+  footprintOverlayPlaceholder.className = "placeholder";
+  const footprintOverlayCaption = document.createElement("div");
+  footprintOverlayCaption.className = "caption";
+  footprintPanelEl.appendChild(footprintClose);
+  footprintPanelEl.appendChild(footprintOverlayImg);
+  footprintPanelEl.appendChild(footprintOverlayPlaceholder);
+  footprintPanelEl.appendChild(footprintOverlayCaption);
+  footprintOverlay.appendChild(footprintPanelEl);
+
+  // Esc closes it, same convention as js/main.js's #flux-overlay -- but
+  // handled here, in the capture phase, so it can stop the keypress before
+  // main.js's own document-level Escape handler also runs and backs the
+  // whole Analysis tab out to 3D View in the same keystroke (that handler
+  // has no notion of "a nested overlay already consumed this Escape").
+  document.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.key !== "Escape" || footprintOverlay.hidden) return;
+      closeFootprintOverlay();
+      e.stopPropagation();
+    },
+    true
+  );
+
   container.appendChild(subject);
   container.appendChild(savedRunsBar);
   container.appendChild(content);
   container.appendChild(manageOverlay);
+  container.appendChild(footprintOverlay);
 
   els = {
     staleChip,
@@ -2862,6 +3009,10 @@ function build(container) {
     yearRunErrEl,
     manageOverlay,
     manageBody,
+    footprintOverlay,
+    footprintOverlayImg,
+    footprintOverlayPlaceholder,
+    footprintOverlayCaption,
   };
   built = true;
 }
@@ -3755,6 +3906,45 @@ function paintManageOverlay() {
   for (const entry of manageEntries) els.manageBody.appendChild(manageRow(entry));
 }
 
+// -- footprint "click to enlarge" overlay ------------------------------------
+function paintFootprintOverlay() {
+  if (els.footprintOverlay.hidden) return;
+  const step = currentStepForAperture();
+  const heliostat =
+    drillHeliostatId != null ? currentFieldHeliostats().find((h) => h.id === drillHeliostatId) : null;
+  // Same caption text as the inline drill-down head (paintDrillPanel), plus
+  // the peak flux the small render's own trace already carries -- the big
+  // render is a higher-dpi picture of the identical trace, so it is the
+  // same number, not a second fetch's worth.
+  els.footprintOverlayCaption.textContent =
+    heliostat && step
+      ? `H-${heliostat.id} footprint — ${fmtHHMM(step.hour)}` +
+        (heliostatFootprintPeakKwM2 != null ? ` · peak ${fmtFlux(heliostatFootprintPeakKwM2)}` : "")
+      : "Footprint";
+
+  if (footprintOverlayLoading) {
+    els.footprintOverlayImg.hidden = true;
+    els.footprintOverlayPlaceholder.hidden = false;
+    els.footprintOverlayPlaceholder.textContent = "Rendering a sharper view…";
+    return;
+  }
+  if (footprintOverlayError) {
+    els.footprintOverlayImg.hidden = true;
+    els.footprintOverlayPlaceholder.hidden = false;
+    els.footprintOverlayPlaceholder.textContent = footprintOverlayError;
+    return;
+  }
+  if (footprintOverlayPngBase64) {
+    els.footprintOverlayImg.src = "data:image/png;base64," + footprintOverlayPngBase64;
+    els.footprintOverlayImg.hidden = false;
+    els.footprintOverlayPlaceholder.hidden = true;
+  } else {
+    els.footprintOverlayImg.hidden = true;
+    els.footprintOverlayPlaceholder.hidden = false;
+    els.footprintOverlayPlaceholder.textContent = "Pick a heliostat to see its own footprint.";
+  }
+}
+
 function paint() {
   const doc = store.get("doc");
   syncProjectRuns();
@@ -3770,6 +3960,7 @@ function paint() {
   paintYearControls();
   paintYearResult();
   paintManageOverlay();
+  paintFootprintOverlay();
 
   // Stale results stay readable -- they are still the truth about the setup
   // they were measured on, and a single timestep's map is still worth
