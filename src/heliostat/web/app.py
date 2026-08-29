@@ -1966,7 +1966,17 @@ class SavedRunDocument(_StrictModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["day", "year"]
+    # docs/ui-spec-v0.2.md §R: "instant" persists one traced field/single
+    # instant from the 3D View trace bar (ui.traceResult on the client) --
+    # `request` is the exact FieldTraceRequest/TraceRequest body it was
+    # traced with, `result` is that trace's own response with its `scene`
+    # key dropped (3D View regenerates geometry cheaply from `request`;
+    # Analysis's instruments never read it, and keeping it would roughly
+    # double the saved size for no benefit here -- see js/tabs/analysis.js's
+    # saveInstantRun). `flux_pngs` carries exactly one entry, key `"0"`
+    # (the day/year machinery's own per-step-index convention, reused for
+    # this run's one and only "step").
+    kind: Literal["day", "year", "instant"]
     project_name: str | None = None
     request: dict
     result: dict
@@ -3669,6 +3679,84 @@ def _secondary_flux_grid_for(
     # Spec §M.7 -- see _flux_grid_for's identical comment.
     dni_scale, _dni_w_m2 = _resolve_dni(body.dni, body.solar_el_deg)
     return flux * dni_scale, u_edges, v_edges, secondary_reflectance, secondary
+
+
+def _field_trace_phase(body: "FieldTraceRequest", *, return_secondary_flux: bool = False) -> dict:
+    """Solve, occlude and trace one field instant -- ``/api/field/trace``'s
+    own phases 1-3 (solve, occlusion, sum-onto-the-receiver), shared with the
+    field-level FEA CSV export endpoints below so an export is never a
+    second, possibly-drifted computation of the same field a live trace
+    already summed. Skips phase 4+ (the flux PNG, the 3-D scene) -- callers
+    that need those still go through ``/api/field/trace`` itself.
+
+    docs/ui-spec-v0.2.md §R's own gap: a live field trace has no synchronous
+    CSV export today, only the day-sweep job's internal per-kept-step call
+    to :func:`_flux_fea_csv`/:func:`_secondary_flux_fea_csv`. This is the
+    field-level analogue of :func:`_flux_grid_for`/:func:`_secondary_flux_grid_for`
+    (the single-heliostat versions those two endpoints already share), kept
+    as its own function rather than folded into ``field_trace`` itself so
+    that well-tested, synchronous endpoint stays untouched.
+    """
+    if body.solar_el_deg <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail="solar_el_deg must be > 0 (the sun is below the horizon)",
+        )
+    optics_params = resolve_optics_params(body.optics, body.optics_params)
+    try:
+        xy_mm, ids = _field_positions(body.layout, body.exclude_ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    secondary, receiver = _geometry_for(body.optics, optics_params)
+    mode = body.trace_mode()
+    try:
+        solutions, designs, _slants = _solve_field(
+            body.optics, optics_params, body.design, xy_mm, body.solar_az_deg, body.solar_el_deg
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    eta_shade, eta_block, eta_union, outline = _field_occlusion(
+        xy_mm, ids, solutions, designs[0], body.solar_az_deg, body.solar_el_deg
+    )
+    u_edges, v_edges, bin_area_m2 = _flux_edges(receiver)
+    _dni_scale, dni_w_m2 = _resolve_dni(body.dni, body.solar_el_deg)
+    traced = _trace_field_heliostats(
+        designs,
+        xy_mm,
+        ids,
+        solutions,
+        eta_shade,
+        eta_block,
+        eta_union,
+        secondary,
+        receiver,
+        mode,
+        body.solar_az_deg,
+        body.solar_el_deg,
+        body.design.slope_error_mrad,
+        body.design.specularity_mrad,
+        body.design.reflectance,
+        u_edges,
+        v_edges,
+        bin_area_m2,
+        error_map=_build_error_map(body.design),
+        pointing_error_mrad=body.design.pointing_error_mrad,
+        workers=body.workers or 1,
+        return_secondary_flux=return_secondary_flux,
+        dni_w_m2=dni_w_m2,
+        circumsolar_ratio=body.circumsolar_ratio,
+        **_secondary_perturb_kwargs(optics_params),
+    )
+    return {
+        "optics_params": optics_params,
+        "xy_mm": xy_mm,
+        "ids": ids,
+        "secondary": secondary,
+        "receiver": receiver,
+        "u_edges": u_edges,
+        "v_edges": v_edges,
+        "traced": traced,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -6703,6 +6791,72 @@ def create_app():
         payload["state"] = job.state
         payload["elapsed_s"] = round(job.elapsed_s, 2)
         return JSONResponse(payload)
+
+    @app.post("/api/field/trace/flux_fea.csv")
+    def field_trace_flux_fea_csv(body: FieldTraceRequest) -> Response:
+        """docs/ui-spec-v0.2.md §R: the field-level analogue of
+        ``/api/trace/flux_fea.csv`` -- a live field instant's receiver flux
+        map as a §D FEA CSV grid, so the Analysis tab's Traced instant
+        source has a synchronous export to call (today this grid only ever
+        reaches a CSV inside the day-sweep job's per-kept-step blobs). Same
+        commented-header convention, via the same :func:`_flux_fea_csv`
+        helper, as every other §D export.
+        """
+        phase = _field_trace_phase(body, return_secondary_flux=False)
+        subject = _fea_subject_line(
+            f"field of {len(phase['ids'])} heliostats",
+            body.solar_az_deg,
+            body.solar_el_deg,
+            body.mode,
+        )
+        csv_bytes = _flux_fea_csv(
+            phase["traced"]["flux"], phase["u_edges"], phase["v_edges"], phase["receiver"], subject
+        )
+        return Response(
+            content=csv_bytes,
+            media_type="text/csv",
+            headers={"Content-Disposition": 'attachment; filename="field-flux-fea.csv"'},
+        )
+
+    @app.post("/api/field/trace/secondary_flux_fea.csv")
+    def field_trace_secondary_flux_fea_csv(body: FieldTraceRequest) -> Response:
+        """docs/ui-spec-v0.2.md §R / §C / §D: the field-level analogue of
+        ``/api/trace/secondary_flux_fea.csv`` -- a live field instant's
+        SECONDARY flux map as a §D FEA CSV grid (``x_m, y_m, z_m,
+        flux_w_m2, absorbed_w_m2``). 404s for a layout with no secondary
+        flux map (prime focus; any secondary with no single-valued (u, v)
+        parameterization), same as the single-heliostat endpoint.
+        """
+        phase = _field_trace_phase(body, return_secondary_flux=True)
+        traced = phase["traced"]
+        if "secondary_flux" not in traced:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"optics={body.optics!r} has no secondary irradiance map "
+                    "(prime focus has no secondary; only axicon/Cassegrain do)"
+                ),
+            )
+        secondary_reflectance = getattr(phase["optics_params"], "secondary_reflectance", 0.90)
+        subject = _fea_subject_line(
+            f"field of {len(phase['ids'])} heliostats",
+            body.solar_az_deg,
+            body.solar_el_deg,
+            body.mode,
+        )
+        csv_bytes = _secondary_flux_fea_csv(
+            traced["secondary_flux"],
+            traced["secondary_u_edges"],
+            traced["secondary_v_edges"],
+            phase["secondary"],
+            secondary_reflectance,
+            subject,
+        )
+        return Response(
+            content=csv_bytes,
+            media_type="text/csv",
+            headers={"Content-Disposition": 'attachment; filename="field-secondary-flux-fea.csv"'},
+        )
 
     @app.post("/api/scene/geometry")
     def scene_geometry(body: GeometryRequest) -> JSONResponse:

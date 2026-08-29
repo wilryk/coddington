@@ -59,7 +59,10 @@ import {
   getYearStatus,
   postDayCancel,
   postDayStart,
+  postFieldFluxFeaCsv,
+  postFieldSecondaryFluxFeaCsv,
   postFieldTrace,
+  postFluxFeaCsv,
   postSecondaryFluxFeaCsv,
   postTrace,
   postYearCancel,
@@ -237,6 +240,34 @@ let yearCancelling = false;
 let yearPollTimer = null;
 let yearSweepRequest = null;
 let yearSweepPhysicsKey = null;
+
+// -- §R: traced instant, a third Analysis result source (docs/ui-spec-v0.2.md
+// §R, mockup M22) ------------------------------------------------------------
+// A traced instant needs none of the day/year machinery above (job polling,
+// per-step fetch/cache): a live field/single trace response already carries
+// everything the shared instruments below need in one payload (full
+// per-heliostat rows, flux_grid, secondary -- §R's own point). So this reads
+// straight off ui.traceResult/ui.traceRequest (the same shared state 3D
+// View's own results dock reads -- js/main.js's traceSucceeded) rather than
+// fetching or re-tracing anything, and the shared right-column instruments
+// (paintFluxPanel/paintAperturePanel/paintDrillPanel and their supporting
+// functions) are made source-aware by branching on `activeSource` /
+// `currentStepForAperture()` / `currentAnyApertureGrid()` rather than forked
+// into duplicate day/instant code paths wherever that is practical.
+let activeSource = "day"; // "day" | "year" | "instant" -- which left-column result currently drives the right column.
+// A saved SavedRunDocument(kind="instant"), once reopened -- {request,
+// result, aperture}, the same shape a day/year run's own reopen already
+// builds (aperture is this run's frozen §M.4 snapshot, or null). `null`
+// means "show whatever ui.traceResult currently is" (the live case).
+let reopenedInstant = null;
+let instantSavedName = null;
+let instantSaving = false;
+let instantRunError = null;
+// ui.traceTimestamp last synced -- a change means a FRESH trace just landed
+// (as opposed to, say, the user toggling a checkbox), which supersedes
+// whatever was reopened/saved before it (§R: "transient by default...
+// gone on the next trace or reload").
+let lastSeenInstantTimestamp = undefined;
 
 // -- saved runs (docs/ui-spec.md 4: "runs save with the project") -----------
 // `dayRunSavedName`/`yearRunSavedName` is the library entry name the run
@@ -491,6 +522,10 @@ function resetRunState() {
   dayRunSavedName = null;
   dayRunError = null;
   reopenedDayFluxPngs = null;
+  // §R: starting (or reopening) a day sweep is the day source becoming the
+  // freshest result -- switch the right column to it, same as picking it in
+  // the "Viewing" selector would.
+  activeSource = "day";
 }
 
 // -- top-of-screen trace bar -------------------------------------------------
@@ -718,6 +753,157 @@ function physicsKey(body) {
   });
 }
 
+// -- §R: traced instant -- reading the shared live/reopened state ----------
+
+// The trace this source is currently showing -- the live 3D View result
+// (ui.traceResult, exactly what its own results dock reads) unless a saved
+// kind="instant" run has been reopened, in which case that frozen result
+// wins (same "a reopened saved run supersedes the live job" precedent as
+// the day/year sources' own resultJobId=null branch in openSavedRun).
+function currentInstantResult() {
+  if (reopenedInstant) return reopenedInstant.result;
+  return store.get("ui.traceResult") || null;
+}
+
+// The EXACT request body that produced currentInstantResult() -- needed
+// (not rebuildable from the live doc/ui) for the FEA export and "Save this
+// run" below, both of which must describe the trace actually on screen, not
+// whatever the workspace says right now if it has been edited since.
+function currentInstantRequest() {
+  if (reopenedInstant) return reopenedInstant.request;
+  return store.get("ui.traceRequest") || null;
+}
+
+// A day-sweep-step-shaped view of the current instant, so the shared
+// aperture/drill-down machinery below (written against a day sweep's own
+// `steps[i]` shape) can read one without forking: `has_flux_map` stands in
+// for "is there a grid to build an aperture from", `hour` has no meaning
+// for a bare instant (no day/site to place it in) and is left null.
+function instantStepLike() {
+  const r = currentInstantResult();
+  const req = currentInstantRequest();
+  if (!r) return null;
+  return {
+    has_flux_map: !!r.flux_grid,
+    hour: null,
+    solar_az_deg: req ? req.solar_az_deg : null,
+    solar_el_deg: req ? req.solar_el_deg : null,
+    power_w: r.power_w,
+    peak_flux_kw_m2: r.peak_flux_kw_m2,
+    dni_w_m2: r.dni_w_m2,
+    centroid_mm: r.centroid_mm,
+    rms_radius_mm: r.rms_radius_mm,
+    n_heliostats: r.n_heliostats,
+  };
+}
+
+// A monotonic tag for "which distinct instant is this" -- bumped whenever a
+// fresh trace lands or a different saved run is reopened, so a cache keyed
+// off it (heliostatFootprintCache, footprintOverlayCache -- both shared with
+// the day/year sources via cacheStepKey() below) can never confuse two
+// different instants that happen to share the same heliostat id.
+let instantGeneration = 0;
+
+// Detects a fresh trace landing (or the source switching to instant while
+// one is already on screen) and, when it happens, (a) drops whatever was
+// reopened/saved -- a live trace always supersedes those (§R: "gone on the
+// next trace or reload") -- and (b) bumps instantGeneration so any cached
+// per-heliostat footprint from the PREVIOUS instant is never served for
+// this one. Cheap (one number compare) -- called every paint(), same idiom
+// as syncProjectRuns.
+function syncInstantSourceIfNeeded() {
+  const ts = store.get("ui.traceTimestamp");
+  if (ts === lastSeenInstantTimestamp) return;
+  lastSeenInstantTimestamp = ts;
+  reopenedInstant = null;
+  instantSavedName = null;
+  instantRunError = null;
+  instantGeneration += 1;
+}
+
+// Which "step" a footprint-drill-down/overlay cache entry belongs to --
+// the real selectedStepIndex for day/year (unchanged), or instantGeneration
+// for the instant source (see its own comment above) -- so
+// scheduleHeliostatFootprintFetch/fetchFootprintOverlayImage's shared cache
+// keys stay correct for all three sources without three copies of either
+// function.
+function cacheStepKey() {
+  return activeSource === "instant" ? `instant-${instantGeneration}` : selectedStepIndex;
+}
+
+// docs/ui-spec-v0.2.md §M.4's aperture grid for whichever source is active --
+// apertureGrid itself stays the day source's own fetched-grid variable
+// (scheduleApertureGridFetch's own cache/fetch machinery is day-only and
+// untouched), while the instant source's grid needs no fetch at all: a live
+// trace's flux_grid (opt-in, always requested -- api.js's buildTraceRequest)
+// is already sitting on the response. Every reader of "the current
+// aperture's grid" (paintAperturePanel, the pointer-drag handlers,
+// buildApertureSnapshotForSave) goes through this rather than the bare
+// apertureGrid variable, so instant needs no separate copy of any of them.
+function currentAnyApertureGrid() {
+  if (activeSource === "instant") {
+    const r = currentInstantResult();
+    return (r && r.flux_grid) || null;
+  }
+  return apertureGrid;
+}
+
+function selectSource(source) {
+  if (source === activeSource) return;
+  closeFootprintOverlay(); // switching sources invalidates whatever the overlay was showing
+  activeSource = source;
+  if (source === "instant") syncInstantSourceIfNeeded();
+  paintIfVisible();
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+// §R's own backend gap, closed: a live field trace has no synchronous FEA
+// export today (only inside the day-sweep job's stored per-step blobs), so
+// this always goes through the network (unlike the day source's own
+// dayFluxFeaCsvUrl, a plain link to an already-rendered file) -- same
+// fetch-then-download idiom as exportSecondaryFluxFeaCsvForStep below.
+// `postFn` picks the field- vs single-heliostat endpoint by whether the
+// traced request carried a `layout` (fluxRequestFor's own idiom, mirrored).
+function exportInstantFluxFeaCsv() {
+  const body = currentInstantRequest();
+  if (!body) return;
+  const postFn = body.layout ? postFieldFluxFeaCsv : postFluxFeaCsv;
+  els.fluxFeaCsv.textContent = "Exporting…";
+  postFn(body)
+    .then((blob) => downloadBlob(blob, "heliostat-flux-fea.csv"))
+    .catch((err) => {
+      fluxError = (err && err.message) || "CSV export failed.";
+      paintIfVisible();
+    })
+    .finally(() => {
+      els.fluxFeaCsv.textContent = "Export CSV for FEA";
+    });
+}
+
+function exportInstantSecondaryFluxFeaCsv() {
+  const body = currentInstantRequest();
+  if (!body) return;
+  const postFn = body.layout ? postFieldSecondaryFluxFeaCsv : postSecondaryFluxFeaCsv;
+  els.fluxSecFeaCsv.textContent = "Exporting…";
+  postFn(body)
+    .then((blob) => downloadBlob(blob, "heliostat-secondary-flux-fea.csv"))
+    .catch((err) => {
+      fluxError = (err && err.message) || "CSV export failed.";
+      paintIfVisible();
+    })
+    .finally(() => {
+      els.fluxSecFeaCsv.textContent = "Export CSV for FEA";
+    });
+}
+
 // docs/ui-spec-v0.2.md §C leftover: the secondary's own FEA CSV for
 // whichever timestep is selected -- same single-heliostat request shape as
 // js/main.js's exportSecondaryFluxFeaCsv (buildFluxCsvRequest, no `layout`
@@ -725,6 +911,7 @@ function physicsKey(body) {
 // heliostat_x_mm/y_mm), just at this step's own sun position instead of the
 // live doc.sun one -- mirrors fluxRequestFor's own az/el override above.
 function exportSecondaryFluxFeaCsvForStep() {
+  if (activeSource === "instant") return exportInstantSecondaryFluxFeaCsv();
   const steps = dayResult && dayResult.steps;
   const step = steps && selectedStepIndex != null ? steps[selectedStepIndex] : null;
   if (!step) return;
@@ -752,6 +939,13 @@ function exportSecondaryFluxFeaCsvForStep() {
 }
 
 function resultIsStale() {
+  // §R: a live instant's own staleness is main.js's ui.staleResults (the
+  // SAME rule 3D View's own results dock uses -- an edit made after this
+  // trace landed); a reopened saved instant is a frozen record, never stale,
+  // same as a reopened day/year run.
+  if (activeSource === "instant") {
+    return !reopenedInstant && !!store.get("ui.staleResults") && !!currentInstantResult();
+  }
   if (!dayResult || !sweepPhysicsKey) return false;
   const current = physicsKey(buildTraceRequest(store.get("doc"), store.get("ui")));
   return current !== sweepPhysicsKey;
@@ -940,6 +1134,7 @@ function apertureGridCacheKey(stepIndex) {
 }
 
 function currentStepForAperture() {
+  if (activeSource === "instant") return instantStepLike();
   const steps = dayResult && dayResult.steps;
   return steps && selectedStepIndex != null ? steps[selectedStepIndex] : null;
 }
@@ -1014,10 +1209,17 @@ function selectDrillHeliostat(id) {
 // Same body-shaping idiom as fluxRequestFor above, but for ONE named
 // heliostat rather than the field: drop layout/exclude_ids, set that
 // heliostat's own position, keep the timestep's own stored sun angles.
+// §R: the instant source's own base request (currentInstantRequest, the
+// EXACT body that instant was traced with) takes the day-sweep's sweepRequest's
+// place when active -- same "traced from the body the run itself used, never
+// the live store" reasoning that comment already gives for the day case.
 function heliostatFootprintRequestFor(step, heliostat) {
-  const base = sweepRequest
-    ? Object.assign({}, sweepRequest)
-    : buildTraceRequest(store.get("doc"), store.get("ui"));
+  const base =
+    activeSource === "instant"
+      ? Object.assign({}, currentInstantRequest())
+      : sweepRequest
+        ? Object.assign({}, sweepRequest)
+        : buildTraceRequest(store.get("doc"), store.get("ui"));
   delete base.site;
   delete base.hour_step;
   delete base.layout;
@@ -1044,7 +1246,7 @@ function scheduleHeliostatFootprintFetch() {
     paintIfVisible();
     return;
   }
-  const cacheKey = `${drillHeliostatId}:${selectedStepIndex}`;
+  const cacheKey = `${drillHeliostatId}:${cacheStepKey()}`;
   const cached = heliostatFootprintCache.get(cacheKey);
   if (cached) {
     heliostatFootprintPngBase64 = cached.png;
@@ -1104,7 +1306,7 @@ function openFootprintOverlay() {
     drillHeliostatId != null ? currentFieldHeliostats().find((h) => h.id === drillHeliostatId) : null;
   if (!step || !heliostat) return;
   els.footprintOverlay.hidden = false;
-  fetchFootprintOverlayImage(step, heliostat, `${drillHeliostatId}:${selectedStepIndex}`);
+  fetchFootprintOverlayImage(step, heliostat, `${drillHeliostatId}:${cacheStepKey()}`);
   paintIfVisible();
 }
 
@@ -1191,6 +1393,7 @@ function startYear() {
     yearPollTimer = null;
   }
   resetYearRunState();
+  activeSource = "year"; // §R: same "starting a run switches viewing to it" rule as resetRunState's day case.
   yearStarting = true;
   paintIfVisible();
 
@@ -1505,6 +1708,76 @@ function discardYearRun() {
     });
 }
 
+// §R: "Save this run" -- persists the traced instant currently on screen as
+// a SavedRunDocument(kind="instant"). Unlike a day run's own save (which
+// fetches each kept step's PNG from the server job), the instant's one and
+// only flux_png already sits base64-encoded right on the trace response --
+// nothing to fetch. `scene` is dropped from the stored result (§R: "3D View
+// regenerates geometry cheaply from the same request; Analysis's
+// instruments never read it, and keeping it would roughly double the saved
+// size for no benefit here"). Stays pointed at the LIVE ui.traceResult
+// after saving (reopenedInstant is NOT set here), same as a day/year run's
+// own save leaving its live job in place -- only an explicit reopen later
+// switches to the frozen record.
+function saveInstantRun() {
+  if (activeSource !== "instant") return;
+  const result = currentInstantResult();
+  const request = currentInstantRequest();
+  if (!result || !request || instantSaving || instantSavedName) return;
+  instantSaving = true;
+  instantRunError = null;
+  paintIfVisible();
+
+  const resultForSave = Object.assign({}, result);
+  delete resultForSave.scene;
+  const name = runName("instant", "run");
+  const document = {
+    kind: "instant",
+    project_name: store.get("ui.projectName") || null,
+    request,
+    result: resultForSave,
+    flux_pngs: result.flux_png ? { "0": result.flux_png } : {},
+    aperture: buildApertureSnapshotForSave(0),
+  };
+  saveLibraryEntry("runs", name, document)
+    .then(() => attachRunToProject(name).then(() => name))
+    .then((savedName) => {
+      instantSaving = false;
+      instantSavedName = savedName;
+      noteProjectRunAdded(savedName, "instant");
+      paintIfVisible();
+    })
+    .catch((err) => {
+      instantSaving = false;
+      instantRunError = (err && err.message) || "Could not save this run.";
+      paintIfVisible();
+    });
+}
+
+function discardInstantRun() {
+  if (!instantSavedName || instantSaving) return;
+  const name = instantSavedName;
+  instantSaving = true;
+  paintIfVisible();
+  deleteLibraryEntry("runs", name)
+    .then(() => detachRunFromProject(name))
+    .then(() => {
+      instantSaving = false;
+      instantSavedName = null;
+      // A discarded reopen has nothing left to show frozen -- fall back to
+      // whatever the live trace currently is, same as the day source falling
+      // back to its (still-live) job after a discard.
+      reopenedInstant = null;
+      noteProjectRunRemoved(name);
+      paintIfVisible();
+    })
+    .catch((err) => {
+      instantSaving = false;
+      instantRunError = (err && err.message) || "Could not discard the saved run.";
+      paintIfVisible();
+    });
+}
+
 // Loads a saved run in place of running a new job -- the whole point of
 // docs/ui-spec.md 4's "reopens without re-running". `entry` is {name, kind}.
 function openSavedRun(entry) {
@@ -1541,18 +1814,36 @@ function openSavedRun(entry) {
           scheduleFluxFetch();
           scheduleHeliostatFootprintFetch();
         }
-      } else {
+      } else if (document.kind === "year") {
         if (yearPollTimer) {
           clearTimeout(yearPollTimer);
           yearPollTimer = null;
         }
         resetYearRunState();
+        activeSource = "year";
         yearResult = document.result;
         yearResultJobId = null;
         yearSweepRequest = document.request;
         yearSweepPhysicsKey = physicsKey(document.request);
         yearRunSavedName = entry.name;
         yearFastMode = !document.request || document.request.fast_mode !== false;
+      } else {
+        // §R: kind === "instant" -- reopens as a frozen record, exactly the
+        // same "no live job, shown verbatim" shape a reopened day/year run
+        // already has (reopenedAperture's own comment above). A fresh trace
+        // still supersedes it the moment it lands (syncInstantSourceIfNeeded).
+        closeFootprintOverlay();
+        reopenedInstant = document;
+        instantSavedName = entry.name;
+        instantRunError = null;
+        instantGeneration += 1;
+        drillHeliostatId = null;
+        clearHeliostatFootprint();
+        apertureCenterUMm = null;
+        apertureCenterVMm = null;
+        apertureRadiusMm = null;
+        apertureDrag = null;
+        activeSource = "instant";
       }
       paintIfVisible();
     })
@@ -1713,22 +2004,28 @@ function currentApertureRadiusMm(grid, step) {
 
 // clampToGridAxis/apertureMetrics/apertureCurve now live in ../aperture.js.
 
-function buildApertureSnapshotForSave() {
+// `stepIndexForSave` is what the saved snapshot's own `step_index` reads
+// back as (day: the real selectedStepIndex, for the aperture's "land on the
+// saved circle's own timestep" reopen logic; instant: always 0, since §R's
+// SavedRunDocument(kind="instant") carries exactly one timestep -- see
+// saveInstantRun).
+function buildApertureSnapshotForSave(stepIndexForSave) {
   // Resaving an already-reopened (frozen) run keeps its own annotation
   // rather than trying to recompute one from a grid that, for a reopened
   // run, does not exist (see openSavedRun/scheduleApertureGridFetch).
-  if (reopenedAperture) return reopenedAperture;
-  if (!apertureGrid || selectedStepIndex == null) return null;
+  if (activeSource !== "instant" && reopenedAperture) return reopenedAperture;
+  const grid = currentAnyApertureGrid();
+  if (!grid) return null;
+  if (activeSource !== "instant" && selectedStepIndex == null) return null;
   const step = currentStepForAperture();
   if (!step) return null;
-  const grid = apertureGrid;
   const center = currentApertureCenterMm(grid, step);
   const radius = currentApertureRadiusMm(grid, step);
   const { powerW, avgFluxWM2 } = apertureMetrics(grid, center.u, center.v, radius);
   const collectedW = step.power_w;
   const dni = step.dni_w_m2;
   return {
-    step_index: selectedStepIndex,
+    step_index: stepIndexForSave != null ? stepIndexForSave : selectedStepIndex,
     center_u_mm: center.u,
     center_v_mm: center.v,
     radius_mm: radius,
@@ -1757,10 +2054,10 @@ function buildApertureSnapshotForSave() {
 // move it, click outside it to do nothing (no "click to place" -- the
 // circle always has a defined default position).
 function apertureHandlePointerDown(e) {
-  if (!apertureGrid) return;
+  const grid = currentAnyApertureGrid();
+  if (!grid) return;
   const canvas = e.currentTarget;
   const step = currentStepForAperture();
-  const grid = apertureGrid;
   const center = currentApertureCenterMm(grid, step);
   const radius = currentApertureRadiusMm(grid, step);
   const [x, y] = apertureCanvasEventPoint(canvas, e);
@@ -1781,9 +2078,9 @@ function apertureHandlePointerDown(e) {
 }
 
 function apertureHandlePointerMove(e) {
-  if (!apertureDrag || !apertureGrid) return;
+  const grid = currentAnyApertureGrid();
+  if (!apertureDrag || !grid) return;
   const canvas = e.currentTarget;
-  const grid = apertureGrid;
   const step = currentStepForAperture();
   const [x, y] = apertureCanvasEventPoint(canvas, e);
   const [uMm, vMm] = apertureCanvasToData(grid, canvas, x, y);
@@ -1812,30 +2109,33 @@ function apertureHandlePointerMove(e) {
 // to the default center on every keystroke -- both handlers seed the
 // OTHER axis from the current effective center first so a lone edit holds.
 function apertureHandleCenterUInput(e) {
-  if (!apertureGrid) return;
+  const grid = currentAnyApertureGrid();
+  if (!grid) return;
   const v = parseFloat(e.target.value);
   if (!Number.isFinite(v)) return;
-  const center = currentApertureCenterMm(apertureGrid, currentStepForAperture());
-  apertureCenterUMm = clampToGridAxis(apertureGrid, v, "u");
+  const center = currentApertureCenterMm(grid, currentStepForAperture());
+  apertureCenterUMm = clampToGridAxis(grid, v, "u");
   apertureCenterVMm = center.v;
   paintIfVisible();
 }
 
 function apertureHandleCenterVInput(e) {
-  if (!apertureGrid) return;
+  const grid = currentAnyApertureGrid();
+  if (!grid) return;
   const v = parseFloat(e.target.value);
   if (!Number.isFinite(v)) return;
-  const center = currentApertureCenterMm(apertureGrid, currentStepForAperture());
-  apertureCenterVMm = clampToGridAxis(apertureGrid, v, "v");
+  const center = currentApertureCenterMm(grid, currentStepForAperture());
+  apertureCenterVMm = clampToGridAxis(grid, v, "v");
   apertureCenterUMm = center.u;
   paintIfVisible();
 }
 
 function apertureHandleRadiusInput(e) {
-  if (!apertureGrid) return;
+  const grid = currentAnyApertureGrid();
+  if (!grid) return;
   const v = parseFloat(e.target.value);
   if (!Number.isFinite(v) || v <= 0) return;
-  apertureRadiusMm = apertureClampRadius(apertureGrid, v);
+  apertureRadiusMm = apertureClampRadius(grid, v);
   paintIfVisible();
 }
 
@@ -2375,6 +2675,71 @@ function build(container) {
 
   left.appendChild(yearPanel);
 
+  // -- §R: traced instant, a third result source (docs/ui-spec-v0.2.md §R,
+  // mockup M22) -- peer to Day sweep and Year estimate above, never a
+  // Timesteps-table row. Shows whatever the 3D View trace bar's shared live
+  // result currently is (or a reopened saved one), with a link to 3D View's
+  // Run control when nothing has been traced yet -- clicking the summary
+  // when a result exists selects it as the right column's source, exactly
+  // like the "Viewing" selector below.
+  const instantPanel = document.createElement("div");
+  instantPanel.className = "panel an-instantpanel";
+  const instantH2 = document.createElement("h2");
+  instantH2.textContent = "Traced instant";
+  instantPanel.appendChild(instantH2);
+
+  const instantSummary = document.createElement("a");
+  instantSummary.href = "#";
+  instantSummary.className = "an-instantsummary";
+  instantSummary.addEventListener("click", (e) => {
+    e.preventDefault();
+    if (instantSummary.classList.contains("disabled-link")) {
+      store.set("ui.tab", "3dview");
+      return;
+    }
+    selectSource("instant");
+  });
+  instantPanel.appendChild(instantSummary);
+
+  const instantRunRow = document.createElement("div");
+  instantRunRow.className = "an-runrow";
+  const instantRunSaveBtn = document.createElement("div");
+  instantRunSaveBtn.className = "btn small";
+  instantRunSaveBtn.textContent = "Save this run";
+  instantRunSaveBtn.addEventListener("click", () => saveInstantRun());
+  const instantRunDiscardBtn = document.createElement("div");
+  instantRunDiscardBtn.className = "btn small";
+  instantRunDiscardBtn.textContent = "Discard this run";
+  instantRunDiscardBtn.hidden = true;
+  instantRunDiscardBtn.addEventListener("click", () => discardInstantRun());
+  const instantRunStatus = document.createElement("span");
+  instantRunStatus.className = "an-runstatus";
+  instantRunRow.appendChild(instantRunSaveBtn);
+  instantRunRow.appendChild(instantRunDiscardBtn);
+  instantRunRow.appendChild(instantRunStatus);
+  instantPanel.appendChild(instantRunRow);
+  const instantRunErrEl = document.createElement("div");
+  instantRunErrEl.className = "fielderr";
+  instantRunErrEl.hidden = true;
+  instantPanel.appendChild(instantRunErrEl);
+
+  left.appendChild(instantPanel);
+
+  // -- §R: "Viewing" -- which of the three sources drives the right column.
+  const sourceRow = document.createElement("div");
+  sourceRow.className = "an-sourcerow";
+  const sourceLabel = document.createElement("span");
+  sourceLabel.className = "an-sourcelabel";
+  sourceLabel.textContent = "Viewing:";
+  sourceRow.appendChild(sourceLabel);
+  const sourceSeg = document.createElement("div");
+  sourceSeg.className = "seg an-sourceseg";
+  const sourceDayBtn = segButton(sourceSeg, "Day sweep", true, () => selectSource("day"));
+  const sourceYearBtn = segButton(sourceSeg, "Year estimate", false, () => selectSource("year"));
+  const sourceInstantBtn = segButton(sourceSeg, "Traced instant", false, () => selectSource("instant"));
+  sourceRow.appendChild(sourceSeg);
+  right.appendChild(sourceRow);
+
   // -- timesteps table -----------------------------------------------------
   const tsPanel = document.createElement("div");
   tsPanel.className = "panel an-tspanel";
@@ -2436,6 +2801,20 @@ function build(container) {
     store.set("ui.fluxSurface", "field");
   });
   fluxHead.appendChild(fluxSurfaceSeg);
+  // docs/ui-spec-v0.2.md §C2, mockup M23: Plan (default) / Unrolled
+  // (technical) -- a display transform only, shown beside the Receiver |
+  // Secondary | Field selector, only meaningful (and only shown) while
+  // Secondary is selected. Same (u, v) bins and same colormap/values either
+  // way -- see paintSecondaryFluxPlan/paintSecondaryFluxCanvas below.
+  const fluxSecondaryViewSeg = document.createElement("div");
+  fluxSecondaryViewSeg.className = "seg an-surfaceseg an-secviewseg";
+  const fluxSecondaryViewPlanBtn = segButton(fluxSecondaryViewSeg, "Plan", true, () =>
+    store.set("ui.secondaryFluxView", "plan")
+  );
+  const fluxSecondaryViewUnrolledBtn = segButton(fluxSecondaryViewSeg, "Unrolled (technical)", false, () =>
+    store.set("ui.secondaryFluxView", "unrolled")
+  );
+  fluxHead.appendChild(fluxSecondaryViewSeg);
   // docs/ui-spec-v0.2.md §N, mockup M18c: this inline map stays here for
   // fast scrubbing (decided, not moved) -- this link is the one-click-deeper
   // path to the richer 3D View viewers (drape, aperture, FEA export) mockup
@@ -2569,6 +2948,17 @@ function build(container) {
 
   fluxPanel.appendChild(fluxMapBody);
 
+  // docs/ui-spec-v0.2.md §C2: "a fixed on-screen note under the map, visible
+  // by default (no badge, no hover-only wording)" -- verbatim wording,
+  // shown only while the plan projection is on screen (surface==="secondary"
+  // && view==="plan").
+  const fluxSecondaryPlanNote = document.createElement("div");
+  fluxSecondaryPlanNote.className = "caption an-secplannote";
+  fluxSecondaryPlanNote.textContent =
+    "Plan projection — not equal-area. Flux values are true W/m² on the tilted surface; screen area is not proportional to surface area.";
+  fluxSecondaryPlanNote.hidden = true;
+  fluxPanel.appendChild(fluxSecondaryPlanNote);
+
   const fluxCaption = document.createElement("div");
   fluxCaption.className = "caption";
   fluxPanel.appendChild(fluxCaption);
@@ -2588,6 +2978,17 @@ function build(container) {
   fluxFeaCsv.textContent = "Export CSV for FEA";
   fluxFeaCsv.className = "an-fea-export";
   fluxFeaCsv.hidden = true;
+  // §R: the instant source has no stored-blob URL to link to (see
+  // exportInstantFluxFeaCsv's own comment on the backend gap it closes) --
+  // for that source only, this intercepts the click and fetches instead of
+  // following the href. The day source's own href (a real download URL,
+  // set in paintFluxPanel below) is untouched, so its native navigation
+  // still just works.
+  fluxFeaCsv.addEventListener("click", (e) => {
+    if (activeSource !== "instant") return;
+    e.preventDefault();
+    exportInstantFluxFeaCsv();
+  });
   fluxPanel.appendChild(fluxFeaCsv);
   // docs/ui-spec-v0.2.md §C leftover: the secondary's own FEA CSV for this
   // timestep, same idiom as fluxFeaCsv above -- but the secondary map has no
@@ -2912,6 +3313,15 @@ function build(container) {
     energyPanel,
     tsPanel,
     fluxPanel,
+    instantPanel,
+    instantSummary,
+    instantRunSaveBtn,
+    instantRunDiscardBtn,
+    instantRunStatus,
+    instantRunErrEl,
+    sourceDayBtn,
+    sourceYearBtn,
+    sourceInstantBtn,
     subjOptics,
     subjField,
     subjDesign,
@@ -2937,6 +3347,10 @@ function build(container) {
     fluxSurfaceReceiverBtn,
     fluxSurfaceSecondaryBtn,
     fluxSurfaceFieldBtn,
+    fluxSecondaryViewSeg,
+    fluxSecondaryViewPlanBtn,
+    fluxSecondaryViewUnrolledBtn,
+    fluxSecondaryPlanNote,
     fluxSecondaryCanvas,
     fluxSecondaryReadout,
     fluxFieldCanvas,
@@ -3083,6 +3497,11 @@ function paintSweepControls() {
 }
 
 function paintEnergyPanel() {
+  // §R: nothing here applies to a single instant -- no time axis to
+  // integrate over, so the whole card (plot, day/year totals, CSV export)
+  // stays hidden while Traced instant is the active source.
+  els.energyPanel.hidden = activeSource === "instant";
+  if (els.energyPanel.hidden) return;
   if (dayResult && dayResult.plot_png) {
     els.energyImg.src = "data:image/png;base64," + dayResult.plot_png;
     els.energyImg.hidden = false;
@@ -3148,6 +3567,11 @@ function renderTimestepsRows(steps) {
 }
 
 function paintTimestepsTable() {
+  // §R: a traced instant is never a Timesteps-table row -- the whole table
+  // stays hidden while it is the active source (there is no time axis for
+  // one instant to sit on).
+  els.tsPanel.hidden = activeSource === "instant";
+  if (els.tsPanel.hidden) return;
   const steps = (dayResult && dayResult.steps) || [];
   els.tsWrap.hidden = steps.length === 0;
   els.tsEmpty.hidden = steps.length !== 0;
@@ -3199,7 +3623,14 @@ function secondaryFluxMagmaColor(t) {
 // convention _render_flux_png uses) -- canvas row 0 is its TOP, so row 0 of
 // `values` is drawn into the canvas's LAST row (same flip as scene3d.js's
 // fluxGridTexture).
-function paintSecondaryFluxCanvas(canvas, grid) {
+//
+// docs/ui-spec-v0.2.md §C2, mockup M23: this is now the "Unrolled
+// (technical)" view, RETAINED as a one-click secondary toggle rather than
+// dropped -- the default presentation is paintSecondaryFluxCanvasPlan below.
+// Same grid, same colormap, drawn exactly the way this function always has
+// ("it costs nothing to keep -- no new data, just a second draw of the
+// identical grid", the rider's own words).
+function paintSecondaryFluxCanvasUnrolled(canvas, grid) {
   const { n_u, n_v, values } = grid;
   let max = 0;
   for (const v of values) if (v != null && v > max) max = v;
@@ -3220,6 +3651,111 @@ function paintSecondaryFluxCanvas(canvas, grid) {
     }
   }
   ctx2d.putImageData(img, 0, 0);
+}
+
+// docs/ui-spec-v0.2.md §C2, mockup M23: the DEFAULT secondary presentation
+// -- looking down the optical axis, so an axicon cone or Cassegrain surface
+// reads as a disk/annulus. Display transform only; the underlying (u, v)
+// bins and every flux value are exactly what the unrolled view above draws
+// -- only the screen POSITION of each bin changes:
+//
+//   theta = u_mm / aperture_radius_mm     (secondary_uv's own az, radians)
+//   x = v_mm * sin(theta), y = -v_mm * cos(theta)
+//
+// -- the identical atan2(x, -y)/south-at-0/seam-at-north convention every
+// other compass-marked map in this app uses (receiver.py's module
+// docstring, this file's own compassCaptionFor, main.js's
+// CYLINDER_AXIS_COMPASS): south at theta=0 sits at the BOTTOM of the plan
+// circle (canvas y grows down, so -y_world is drawn downward), and
+// increasing theta (positive u, toward the aperture's own +x/east side)
+// sweeps clockwise through east on the RIGHT -- matching §C2's own "angle
+// increasing clockwise through East" wording exactly, not a fresh
+// derivation. `aperture_radius_mm` is never a new payload field: v spans
+// 0..aperture_radius_mm by construction (secondary_uv_extent), so v_max_mm
+// on the grid itself already IS that radius.
+function paintSecondaryFluxCanvasPlan(canvas, grid) {
+  const { n_u, n_v, u_min_mm, u_max_mm, v_min_mm, v_max_mm, values } = grid;
+  const apertureRadiusMm = Math.max(v_max_mm, 1e-6);
+  const size = 380;
+  canvas.width = size;
+  canvas.height = size;
+  const ctx2d = canvas.getContext("2d");
+  ctx2d.clearRect(0, 0, size, size);
+  const cx = size / 2;
+  const cy = size / 2;
+  const margin = 22; // room for the N/S/E/W labels outside the circle
+  const scale = (size / 2 - margin) / apertureRadiusMm;
+
+  let max = 0;
+  for (const v of values) if (v != null && v > max) max = v;
+  const duMm = (u_max_mm - u_min_mm) / n_u;
+  const dvMm = (v_max_mm - v_min_mm) / n_v;
+
+  const toXY = (vMm, thetaRad) => {
+    const x = vMm * Math.sin(thetaRad);
+    const y = -vMm * Math.cos(thetaRad);
+    return [cx + x * scale, cy - y * scale];
+  };
+
+  for (let row = 0; row < n_v; row++) {
+    const vLo = v_min_mm + row * dvMm;
+    const vHi = vLo + dvMm;
+    for (let col = 0; col < n_u; col++) {
+      const val = values[row * n_u + col];
+      const t = max > 0 && val != null ? val / max : 0;
+      const uLo = u_min_mm + col * duMm;
+      const uHi = uLo + duMm;
+      const thLo = uLo / apertureRadiusMm;
+      const thHi = uHi / apertureRadiusMm;
+      // A coarse grid's outer bins span a wide angle at a large radius --
+      // subdivide the arc so it still reads as a curve, not a chord.
+      const steps = Math.max(1, Math.ceil(Math.abs(thHi - thLo) / 0.15));
+      ctx2d.beginPath();
+      for (let s = 0; s <= steps; s++) {
+        const th = thLo + ((thHi - thLo) * s) / steps;
+        const [px, py] = toXY(vHi, th);
+        if (s === 0) ctx2d.moveTo(px, py);
+        else ctx2d.lineTo(px, py);
+      }
+      for (let s = steps; s >= 0; s--) {
+        const th = thLo + ((thHi - thLo) * s) / steps;
+        const [px, py] = toXY(vLo, th);
+        ctx2d.lineTo(px, py);
+      }
+      ctx2d.closePath();
+      const [r, g, b] = secondaryFluxMagmaColor(t);
+      ctx2d.fillStyle = `rgb(${r},${g},${b})`;
+      ctx2d.fill();
+    }
+  }
+
+  // Compass markers (§C2/§M rider) -- at the circle's OWN compass
+  // positions, not fixed screen corners (the way the flat receiver's square
+  // map places them) -- N/E/S/W sit just outside the rim, at their own
+  // theta (0=S bottom, pi/2=E right, pi=N top, -pi/2=W left).
+  ctx2d.fillStyle = "#334155";
+  ctx2d.font = "11px sans-serif";
+  ctx2d.textAlign = "center";
+  ctx2d.textBaseline = "alphabetic";
+  const rEdge = apertureRadiusMm * scale;
+  ctx2d.fillText("N", cx, cy - rEdge - 8);
+  ctx2d.fillText("S", cx, cy + rEdge + 15);
+  ctx2d.textAlign = "left";
+  ctx2d.fillText("E", cx + rEdge + 5, cy + 4);
+  ctx2d.textAlign = "right";
+  ctx2d.fillText("W", cx - rEdge - 5, cy + 4);
+}
+
+// Dispatches to the Plan (default) or Unrolled painter per the §C2 toggle
+// (ui.secondaryFluxView, "plan"|"unrolled") -- the one place both call sites
+// (the day/year source's paintFluxPanel and the instant source's
+// paintInstantFluxPanel) need to touch to honor it.
+function paintSecondaryFlux(canvas, grid) {
+  if (store.get("ui.secondaryFluxView") === "unrolled") {
+    paintSecondaryFluxCanvasUnrolled(canvas, grid);
+  } else {
+    paintSecondaryFluxCanvasPlan(canvas, grid);
+  }
 }
 
 // v0.2 followups item 1, mockup M15: plan-view power coloring -- one dot per
@@ -3336,10 +3872,61 @@ function paintFluxSurfaceSelector() {
   return "receiver";
 }
 
-function paintFluxPanel() {
-  const steps = dayResult && dayResult.steps;
-  const step = steps && selectedStepIndex != null ? steps[selectedStepIndex] : null;
-  const surface = paintFluxSurfaceSelector();
+// §R: the Traced instant source's own selector/map painters -- reuse the
+// same low-level canvas painters (paintSecondaryFluxCanvas/
+// paintFieldMapCanvas) and DOM elements as the day source below, but read
+// straight off the live/reopened trace response (currentInstantResult())
+// rather than any fetch/cache machinery -- there is nothing to fetch or
+// re-trace, the response already carries it all (§R's own point).
+function paintInstantFluxSurfaceSelector(result) {
+  const doc = store.get("doc");
+  const hasSecondaryOptics = doc.optics === "axicon" || doc.optics === "cassegrain";
+  const secAvailable = !!(result && result.secondary && result.secondary.flux_grid);
+  els.fluxSurfaceSecondaryBtn.classList.toggle("disabled", !secAvailable);
+  els.fluxSurfaceSecondaryBtn.title = secAvailable
+    ? ""
+    : hasSecondaryOptics
+      ? "This trace carried no secondary flux map."
+      : "Only axicon and Cassegrain layouts have a secondary flux map.";
+
+  const fieldAvailable = !!(result && Array.isArray(result.heliostats) && result.heliostats.length);
+  els.fluxSurfaceFieldBtn.classList.toggle("disabled", !fieldAvailable);
+  els.fluxSurfaceFieldBtn.title = fieldAvailable ? "" : "Field coloring needs a field, not a single heliostat.";
+
+  const requested = store.get("ui.fluxSurface");
+  const showSecondary = requested === "secondary" && secAvailable;
+  const showField = requested === "field" && fieldAvailable;
+  const showReceiver = !showSecondary && !showField;
+  els.fluxSurfaceReceiverBtn.classList.toggle("active", showReceiver);
+  els.fluxSurfaceSecondaryBtn.classList.toggle("active", showSecondary);
+  els.fluxSurfaceFieldBtn.classList.toggle("active", showField);
+  if (showSecondary) return "secondary";
+  if (showField) return "field";
+  return "receiver";
+}
+
+// docs/ui-spec-v0.2.md §C2, mockup M23: the Plan/Unrolled toggle and the
+// fixed not-equal-area note are only meaningful while the secondary map is
+// actually on screen -- shared by both paintFluxPanel (day/year source) and
+// paintInstantFluxPanel (§R's instant source), so the two can never disagree
+// about when to show them.
+function paintSecondaryViewControls(showSecondary) {
+  els.fluxSecondaryViewSeg.hidden = !showSecondary;
+  if (!showSecondary) {
+    els.fluxSecondaryPlanNote.hidden = true;
+    return;
+  }
+  const view = store.get("ui.secondaryFluxView") === "unrolled" ? "unrolled" : "plan";
+  els.fluxSecondaryViewPlanBtn.classList.toggle("active", view === "plan");
+  els.fluxSecondaryViewUnrolledBtn.classList.toggle("active", view === "unrolled");
+  els.fluxSecondaryPlanNote.hidden = view !== "plan";
+}
+
+function paintInstantFluxPanel() {
+  const result = currentInstantResult();
+  const request = currentInstantRequest();
+  const surface = paintInstantFluxSurfaceSelector(result);
+  paintSecondaryViewControls(surface === "secondary");
 
   function showPlaceholder(text) {
     els.fluxImg.hidden = true;
@@ -3354,6 +3941,101 @@ function paintFluxPanel() {
     els.openIn3DLink.hidden = true;
     els.fluxFeaCsv.hidden = true;
     els.fluxSecFeaCsv.hidden = true;
+    paintSecondaryViewControls(false);
+  }
+
+  if (!result) {
+    return showPlaceholder("Nothing traced yet — trace an instant in 3D View to see it here.");
+  }
+
+  els.fluxPlaceholder.hidden = true;
+  els.openIn3DLink.hidden = false;
+
+  const azEl =
+    request && request.solar_az_deg != null && request.solar_el_deg != null
+      ? `Az ${request.solar_az_deg.toFixed(1)}° El ${request.solar_el_deg.toFixed(1)}°`
+      : "";
+
+  if (surface === "secondary") {
+    els.fluxImg.hidden = true;
+    els.fluxFieldCanvas.hidden = true;
+    els.fluxFieldReadout.hidden = true;
+    els.fluxSecondaryCanvas.hidden = false;
+    paintSecondaryFlux(els.fluxSecondaryCanvas, result.secondary.flux_grid);
+    els.fluxCaption.textContent = `incident flux on secondary, kW/m² · same colormap & units as the receiver map · peak ${fmtFlux(result.secondary.peak_flux_kw_m2)}`;
+    els.fluxCompass.textContent =
+      store.get("ui.secondaryFluxView") === "unrolled"
+        ? ""
+        : "Compass: N top · S bottom · E right · W left (plan projection, looking down the optical axis)";
+    els.fluxSecondaryReadout.hidden = false;
+    els.secIncidentRow.num.textContent = fmtPower(result.secondary.power_w);
+    const rPct = (result.secondary.secondary_reflectance * 100).toFixed(1);
+    els.secAbsorbedRow.lbl.textContent = `absorbed (R = ${rPct} %)`;
+    els.secAbsorbedRow.num.textContent = fmtPower(result.secondary.absorbed_power_w);
+    els.secPeakAbsorbedRow.num.textContent = fmtFlux(result.secondary.peak_absorbed_kw_m2);
+    els.fluxSecFidelity.textContent = secondaryFidelityNote(result.secondary.fidelity);
+    // §R: same reasoning as the day source's identically-placed comment --
+    // the export's job is a full-fidelity ANSYS-ready grid, always a fresh
+    // network call, never a cached blob.
+    els.fluxFeaCsv.hidden = true;
+    els.fluxSecFeaCsv.hidden = false;
+  } else if (surface === "field") {
+    els.fluxImg.hidden = true;
+    els.fluxSecondaryCanvas.hidden = true;
+    els.fluxSecondaryReadout.hidden = true;
+    els.fluxFieldCanvas.hidden = false;
+    const { minKw, maxKw } = paintFieldMapCanvas(els.fluxFieldCanvas, result.heliostats);
+    els.fluxCaption.textContent = `${azEl} · ${result.heliostats.length} heliostats`;
+    els.fluxCompass.textContent = "";
+    els.fluxFieldReadout.hidden = false;
+    els.fluxFieldCount.textContent = result.heliostats.length.toLocaleString();
+    const totalW = result.heliostats.reduce((sum, h) => sum + (h.failed ? 0 : h.power_w || 0), 0);
+    els.fluxFieldTotal.textContent = fmtPower(totalW);
+    els.fluxFieldLegendMin.textContent = minKw.toFixed(1);
+    els.fluxFieldLegendMax.textContent = maxKw.toFixed(1);
+    els.fluxFeaCsv.hidden = true;
+    els.fluxSecFeaCsv.hidden = true;
+  } else {
+    if (!result.flux_png) return showPlaceholder("This trace carried no flux map.");
+    els.fluxImg.src = "data:image/png;base64," + result.flux_png;
+    els.fluxImg.hidden = false;
+    els.fluxSecondaryCanvas.hidden = true;
+    els.fluxSecondaryReadout.hidden = true;
+    els.fluxFieldCanvas.hidden = true;
+    els.fluxFieldReadout.hidden = true;
+    const nH = result.n_heliostats != null ? result.n_heliostats : (result.heliostats || []).length || 1;
+    els.fluxCaption.textContent = `${azEl} · ${request && request.mode ? request.mode : ""} · ${nH} heliostat${nH === 1 ? "" : "s"} · peak ${fmtFlux(result.peak_flux_kw_m2)}`;
+    // Compass rider (§M) -- see compassCaptionFor.
+    els.fluxCompass.textContent = compassCaptionFor(store.get("doc"));
+    els.fluxSecFeaCsv.hidden = true;
+    // §R's own new endpoints (postFieldFluxFeaCsv/postFluxFeaCsv, via
+    // exportInstantFluxFeaCsv) make this always available once there is a
+    // request to replay -- no stored-blob gate like the day source's own.
+    els.fluxFeaCsv.hidden = !request;
+  }
+}
+
+function paintFluxPanel() {
+  if (activeSource === "instant") return paintInstantFluxPanel();
+  const steps = dayResult && dayResult.steps;
+  const step = steps && selectedStepIndex != null ? steps[selectedStepIndex] : null;
+  const surface = paintFluxSurfaceSelector();
+  paintSecondaryViewControls(surface === "secondary");
+
+  function showPlaceholder(text) {
+    els.fluxImg.hidden = true;
+    els.fluxSecondaryCanvas.hidden = true;
+    els.fluxSecondaryReadout.hidden = true;
+    els.fluxFieldCanvas.hidden = true;
+    els.fluxFieldReadout.hidden = true;
+    els.fluxPlaceholder.hidden = false;
+    els.fluxPlaceholder.textContent = text;
+    els.fluxCaption.textContent = "";
+    els.fluxCompass.textContent = "";
+    els.openIn3DLink.hidden = true;
+    els.fluxFeaCsv.hidden = true;
+    els.fluxSecFeaCsv.hidden = true;
+    paintSecondaryViewControls(false);
   }
 
   if (!step) return showPlaceholder("Click a timestep to render its irradiance map.");
@@ -3369,11 +4051,16 @@ function paintFluxPanel() {
     els.fluxFieldCanvas.hidden = true;
     els.fluxFieldReadout.hidden = true;
     els.fluxSecondaryCanvas.hidden = false;
-    paintSecondaryFluxCanvas(els.fluxSecondaryCanvas, fluxSecondary.flux_grid);
+    paintSecondaryFlux(els.fluxSecondaryCanvas, fluxSecondary.flux_grid);
     els.fluxCaption.textContent = `incident flux on secondary, kW/m² · same colormap & units as the receiver map · peak ${fmtFlux(fluxSecondary.peak_flux_kw_m2)}`;
-    // No compass convention for the secondary (§C's u/v is arc length/
-    // radius, not north-seam azimuth) -- receiver-only, see compassCaptionFor.
-    els.fluxCompass.textContent = "";
+    // §C2/§M rider: the plan view carries the same compass convention as
+    // every other map in the app; the unrolled (technical) view keeps no
+    // compass caption of its own (its u/v is arc length/radius, not a
+    // north-seam azimuth reading the way a flat square map's edges are).
+    els.fluxCompass.textContent =
+      store.get("ui.secondaryFluxView") === "unrolled"
+        ? ""
+        : "Compass: N top · S bottom · E right · W left (plan projection, looking down the optical axis)";
     els.fluxSecondaryReadout.hidden = false;
     els.secIncidentRow.num.textContent = fmtPower(fluxSecondary.power_w);
     const rPct = (fluxSecondary.secondary_reflectance * 100).toFixed(1);
@@ -3432,10 +4119,18 @@ function paintFluxPanel() {
 
 function paintDrillPanel() {
   const doc = store.get("doc");
-  const steps = dayResult && dayResult.steps;
-  const haveSteps = !!(steps && steps.length);
-  const isField = doc.field.mode === "field";
-  els.drillPanel.hidden = !isField || !haveSteps;
+  let haveStep;
+  let isField;
+  if (activeSource === "instant") {
+    haveStep = !!currentInstantResult();
+    const req = currentInstantRequest();
+    isField = !!(req && req.layout);
+  } else {
+    const steps = dayResult && dayResult.steps;
+    haveStep = !!(steps && steps.length);
+    isField = doc.field.mode === "field";
+  }
+  els.drillPanel.hidden = !isField || !haveStep;
   if (els.drillPanel.hidden) return;
 
   paintDrillMiniPlan(els.drillPlanSvg);
@@ -3444,8 +4139,9 @@ function paintDrillPanel() {
   const heliostat =
     drillHeliostatId != null ? currentFieldHeliostats().find((h) => h.id === drillHeliostatId) : null;
   els.drillIdInput.value = drillHeliostatId != null ? String(drillHeliostatId) : "";
-  els.drillFootHead.textContent =
-    heliostat && step ? `H-${heliostat.id} footprint — ${fmtHHMM(step.hour)}` : "Footprint";
+  els.drillFootHead.textContent = heliostat && step
+    ? `H-${heliostat.id} footprint — ${activeSource === "instant" ? "traced instant" : fmtHHMM(step.hour)}`
+    : "Footprint";
 
   if (!heliostat) {
     els.drillFootImg.hidden = true;
@@ -3511,20 +4207,30 @@ function paintAperturePanel() {
   }
 
   const step = currentStepForAperture();
+  const grid = currentAnyApertureGrid();
 
-  // A reopened run's frozen annotation, on its own timestep -- shown
-  // verbatim, never recomputed (mockup M17's own checknote).
-  if (reopenedAperture && selectedStepIndex === reopenedAperture.step_index) {
+  // A reopened run's frozen annotation -- shown verbatim, never recomputed
+  // (mockup M17's own checknote). Day/year: reopenedAperture belongs to a
+  // specific stored timestep (selectedStepIndex must still match it). §R: a
+  // reopened instant has exactly one "timestep", so reopenedInstant.aperture
+  // always applies whenever there is one -- no index to compare.
+  const frozen =
+    activeSource === "instant"
+      ? reopenedInstant && reopenedInstant.aperture
+      : reopenedAperture && selectedStepIndex === reopenedAperture.step_index
+        ? reopenedAperture
+        : null;
+  if (frozen) {
     els.aperturePanel.hidden = false;
     els.apertureMsg.hidden = true;
     els.apertureBody.hidden = false;
     els.apertureCanvasWrap.hidden = true; // no live grid to draw the circle against
     els.apertureReadout.hidden = false;
     els.apertureCurveFrame.hidden = true;
-    renderApertureReadout(reopenedAperture, true);
+    renderApertureReadout(frozen, true);
     return;
   }
-  if (reopenedAperture) {
+  if (activeSource !== "instant" && reopenedAperture) {
     els.aperturePanel.hidden = false;
     els.apertureMsg.hidden = false;
     els.apertureMsg.textContent =
@@ -3540,13 +4246,21 @@ function paintAperturePanel() {
   // the first time paint() runs right after a step becomes selected (it
   // sets apertureGridLoading and repaints before the network call lands),
   // so step.has_flux_map/resultJobId being fine is not enough to know
-  // apertureGrid itself is populated yet.
-  if (!step || !step.has_flux_map || resultJobId == null || !apertureGrid) {
+  // apertureGrid itself is populated yet. §R's own instant grid needs no
+  // fetch at all (currentAnyApertureGrid reads it straight off the trace
+  // response), so its only gate is "is there a step, and does it have one".
+  const jobNotReady = activeSource === "day" && resultJobId == null;
+  if (!step || !step.has_flux_map || jobNotReady || !grid) {
     els.aperturePanel.hidden = false;
     els.apertureMsg.hidden = false;
-    els.apertureMsg.textContent = apertureGridLoading
-      ? "Loading aperture grid…"
-      : apertureGridError || "Select a timestep with a stored irradiance map to use the aperture.";
+    els.apertureMsg.textContent =
+      activeSource === "instant"
+        ? step
+          ? "This trace carried no flux grid to build an aperture from."
+          : "Trace an instant in 3D View to use the aperture here."
+        : apertureGridLoading
+          ? "Loading aperture grid…"
+          : apertureGridError || "Select a timestep with a stored irradiance map to use the aperture.";
     els.apertureBody.hidden = true;
     els.apertureCurveFrame.hidden = true;
     els.apertureReadout.hidden = true;
@@ -3560,7 +4274,6 @@ function paintAperturePanel() {
   els.apertureReadout.hidden = false;
   els.apertureCurveFrame.hidden = false;
 
-  const grid = apertureGrid;
   const center = currentApertureCenterMm(grid, step);
   const radius = currentApertureRadiusMm(grid, step);
   paintApertureCanvas(els.apertureCanvas, grid, center.u, center.v, radius);
@@ -3591,7 +4304,7 @@ function paintAperturePanel() {
 // -- saved runs (docs/ui-spec.md 4) -------------------------------------------
 
 function runRowLabel(entry) {
-  const kind = entry.kind === "year" ? "Year estimate" : "Day sweep";
+  const kind = entry.kind === "year" ? "Year estimate" : entry.kind === "instant" ? "Traced instant" : "Day sweep";
   const when = entry.saved_at ? entry.saved_at.slice(0, 16).replace("T", " ") : "";
   return `${kind} · ${when}`;
 }
@@ -3847,7 +4560,14 @@ function manageRow(entry) {
   row.className = "an-managerow";
   const label = document.createElement("div");
   label.className = "an-managerowlabel";
-  const kind = entry.kind === "year" ? "Year estimate" : entry.kind === "day" ? "Day sweep" : "Run";
+  const kind =
+    entry.kind === "year"
+      ? "Year estimate"
+      : entry.kind === "day"
+        ? "Day sweep"
+        : entry.kind === "instant"
+          ? "Traced instant"
+          : "Run";
   const when = entry.saved_at ? entry.saved_at.slice(0, 16).replace("T", " ") : "";
   label.textContent = `${kind} — ${entry.name}`;
   const meta = document.createElement("div");
@@ -3918,7 +4638,7 @@ function paintFootprintOverlay() {
   // same number, not a second fetch's worth.
   els.footprintOverlayCaption.textContent =
     heliostat && step
-      ? `H-${heliostat.id} footprint — ${fmtHHMM(step.hour)}` +
+      ? `H-${heliostat.id} footprint — ${activeSource === "instant" ? "traced instant" : fmtHHMM(step.hour)}` +
         (heliostatFootprintPeakKwM2 != null ? ` · peak ${fmtFlux(heliostatFootprintPeakKwM2)}` : "")
       : "Footprint";
 
@@ -3945,13 +4665,65 @@ function paintFootprintOverlay() {
   }
 }
 
+// §R: the "Traced instant" left-column card -- a one-line summary of
+// whatever ui.traceResult (or a reopened saved run) currently is, or a
+// "Trace this instant →" link to 3D View's Run control when nothing has
+// been traced yet.
+function paintInstantCard() {
+  const result = currentInstantResult();
+  if (!result) {
+    els.instantSummary.textContent = "Trace this instant in 3D View →";
+    els.instantSummary.classList.add("disabled-link");
+    els.instantRunSaveBtn.hidden = true;
+    els.instantRunDiscardBtn.hidden = true;
+    els.instantRunStatus.textContent = "";
+    els.instantRunErrEl.hidden = true;
+    return;
+  }
+  els.instantSummary.classList.remove("disabled-link");
+  const req = currentInstantRequest();
+  const azEl =
+    req && req.solar_az_deg != null && req.solar_el_deg != null
+      ? `Az ${req.solar_az_deg.toFixed(1)}° El ${req.solar_el_deg.toFixed(1)}°`
+      : "";
+  const fidelityEntry = FIDELITY.find(([key]) => key === (req && req.mode));
+  const modeLabel = fidelityEntry ? fidelityEntry[1] : req && req.mode;
+  const nH = result.n_heliostats != null ? result.n_heliostats : (result.heliostats || []).length || 1;
+  const parts = [azEl, modeLabel, `${nH} heliostat${nH === 1 ? "" : "s"}`].filter(Boolean);
+  const prefix = activeSource === "instant" ? "● Viewing: " : "";
+  const suffix = activeSource === "instant" ? "" : " — click to view";
+  els.instantSummary.textContent = prefix + parts.join(" · ") + suffix;
+
+  const busy = instantSaving;
+  els.instantRunSaveBtn.hidden = !!instantSavedName;
+  els.instantRunSaveBtn.classList.toggle("disabled-link", busy);
+  els.instantRunSaveBtn.textContent = busy && !instantSavedName ? "Saving…" : "Save this run";
+  els.instantRunDiscardBtn.hidden = !instantSavedName;
+  els.instantRunDiscardBtn.classList.toggle("disabled-link", busy);
+  els.instantRunDiscardBtn.textContent = busy && instantSavedName ? "Discarding…" : "Discard this run";
+  els.instantRunStatus.textContent = instantSavedName && !busy ? `Saved as "${instantSavedName}"` : "";
+  els.instantRunErrEl.hidden = !instantRunError;
+  if (instantRunError) els.instantRunErrEl.textContent = instantRunError;
+}
+
+// §R: the "Viewing" selector -- which of the three peer sources drives the
+// right column's shared instruments right now.
+function paintSourceSelector() {
+  els.sourceDayBtn.classList.toggle("active", activeSource === "day");
+  els.sourceYearBtn.classList.toggle("active", activeSource === "year");
+  els.sourceInstantBtn.classList.toggle("active", activeSource === "instant");
+}
+
 function paint() {
   const doc = store.get("doc");
+  syncInstantSourceIfNeeded();
   syncProjectRuns();
   paintSubject(doc, lastCtx);
   paintSavedRunsBar();
   paintSweepControls();
   paintDayRunControls();
+  paintInstantCard();
+  paintSourceSelector();
   paintEnergyPanel();
   paintTimestepsTable();
   paintFluxPanel();
@@ -3973,6 +4745,7 @@ function paint() {
   els.fluxPanel.classList.toggle("an-stale", stale);
   els.drillPanel.classList.toggle("an-stale", stale);
   els.aperturePanel.classList.toggle("an-stale", stale);
+  els.instantPanel.classList.toggle("an-stale", stale && activeSource === "instant");
 }
 
 let lastCtx = null;

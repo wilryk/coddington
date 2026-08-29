@@ -194,6 +194,14 @@
                single-heliostat trace, main.js's paintFluxOverlay(). -->
           <button type="button" id="flux-surface-field">Field</button>
         </div>
+        <!-- docs/ui-spec-v0.2.md §C2, mockup M23: Plan (default) / Unrolled
+             (technical) -- a display transform on the secondary map only,
+             shown beside the Receiver | Secondary | Field selector while
+             Secondary is selected (main.js's paintFluxOverlay()). -->
+        <div class="seg" id="flux-secview-seg" hidden>
+          <button type="button" id="flux-secview-plan">Plan</button>
+          <button type="button" id="flux-secview-unrolled">Unrolled (technical)</button>
+        </div>
         <!-- v0.2 followups item 2 (owner-approved): the frustum's TRUE
              developed ("fan") view, an alternative to the default
              parameter-space rectangle -- see app.py's
@@ -236,6 +244,12 @@
                E . N -- see its own comment for the az convention that order
                comes from). -->
           <div class="compass-axis" id="flux-compass-axis" hidden></div>
+          <!-- docs/ui-spec-v0.2.md §C2: "a fixed on-screen note under the
+               map, visible by default (no badge, no hover-only wording)" --
+               shown only while the plan projection is on screen. -->
+          <div class="caption" id="flux-secondary-plannote" hidden>
+            Plan projection — not equal-area. Flux values are true W/m² on the tilted surface; screen area is not proportional to surface area.
+          </div>
           <div class="caption" id="flux-secondary-caption" hidden></div>
         </div>
         <!-- Spec §C: absorbed-heat readout, shown beside the secondary map

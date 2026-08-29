@@ -595,6 +595,34 @@ def test_run_kind_year_round_trips(client, library_dir):
     assert loaded["document"]["kind"] == "year"
 
 
+def test_run_kind_instant_round_trips(client, library_dir):
+    """docs/ui-spec-v0.2.md §R: a traced instant persists as kind="instant",
+    a new SavedRunDocument literal alongside "day"/"year" -- request is the
+    exact FieldTraceRequest body it was traced with, result is that
+    response with `scene` dropped, and aperture may carry a frozen §M.4
+    snapshot just like a day/year run's own."""
+    doc = _run_document(
+        kind="instant",
+        request={
+            "design": RECT_DOC,
+            "mode": "fast_accurate",
+            "optics": "prime_focus",
+            "solar_az_deg": 165.2,
+            "solar_el_deg": 61.4,
+            "layout": {"type": "fermat", "n": 4},
+        },
+        result={"power_w": 1234.5, "n_heliostats": 4, "flux_png": "abc"},
+        flux_pngs={"0": "abc"},
+        aperture={"step_index": 0, "center_u_mm": 0.0, "center_v_mm": 0.0, "radius_mm": 500.0},
+    )
+    saved = client.post("/api/library/runs", json={"name": "instant-1", "document": doc})
+    assert saved.status_code == 200
+    loaded = client.get("/api/library/runs/instant-1").json()
+    assert loaded["document"]["kind"] == "instant"
+    assert loaded["document"]["result"]["power_w"] == 1234.5
+    assert "scene" not in loaded["document"]["result"]
+
+
 def test_run_unknown_kind_is_422(client, library_dir):
     doc = _run_document(kind="month")
     resp = client.post("/api/library/runs", json={"name": "bad", "document": doc})

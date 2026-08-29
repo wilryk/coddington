@@ -189,6 +189,12 @@ const fluxSurfaceSeg = document.getElementById("flux-surfaceseg");
 const fluxSurfaceReceiverBtn = document.getElementById("flux-surface-receiver");
 const fluxSurfaceSecondaryBtn = document.getElementById("flux-surface-secondary");
 const fluxSecondaryCanvas = document.getElementById("flux-secondary-canvas");
+// docs/ui-spec-v0.2.md §C2, mockup M23: Plan (default) / Unrolled toggle and
+// the fixed not-equal-area note, shown only while Secondary is selected.
+const fluxSecviewSeg = document.getElementById("flux-secview-seg");
+const fluxSecviewPlanBtn = document.getElementById("flux-secview-plan");
+const fluxSecviewUnrolledBtn = document.getElementById("flux-secview-unrolled");
+const fluxSecondaryPlanNote = document.getElementById("flux-secondary-plannote");
 const fluxSecondaryCaption = document.getElementById("flux-secondary-caption");
 const fluxSecondaryReadout = document.getElementById("flux-secondary-readout");
 const fluxSecIncident = document.getElementById("flux-sec-incident");
@@ -572,11 +578,23 @@ let tracePollTimer = null;
 // them, not with whatever the run bar happens to show when they arrive.
 let editedDuringTrace = false;
 let tracedFidelity = null;
+// docs/ui-spec-v0.2.md §R: the exact request body the trace CURRENTLY in
+// flight (or most recently landed) went out with -- traceSucceeded copies
+// it onto ui.traceRequest alongside ui.traceResult, so a reader (Analysis's
+// Traced instant source) can rebuild the identical FEA-export/save request
+// without guessing at whatever the live doc/ui says NOW.
+let lastTraceRequestBody = null;
 
 function traceSucceeded(data) {
   store.set("ui.traceBusy", false);
   store.set("ui.traceProgress", null);
   store.set("ui.traceResult", data);
+  // docs/ui-spec-v0.2.md §R: the Analysis tab's Traced instant source reads
+  // this trace's own result straight off ui.traceResult (see below), but
+  // its FEA export and "Save this run" both need the exact REQUEST body
+  // that produced it, not a rebuild from the (possibly since-edited) live
+  // doc/ui -- so it rides along here, next to the result it belongs to.
+  store.set("ui.traceRequest", lastTraceRequestBody);
   store.set("ui.traceTimestamp", Date.now());
   // Stale means "the project moved on since this run started", so an edit
   // made WHILE a trace was running leaves its results stale the moment they
@@ -603,13 +621,29 @@ function traceSucceeded(data) {
 // Reads straight from ui.traceResult rather than taking a `data` argument,
 // so toggling the checkbox (no new trace) can call this the same way a
 // fresh trace landing does.
+//
+// v0.2 followups item 3: the SECONDARY gets the identical treatment, gated
+// on the same "Flux overlay" toggle rather than a second checkbox -- the
+// toggle's own on-screen label already reads "Flux overlay" (not "Receiver
+// flux overlay"), so a second control would just be a second name for the
+// same idea the owner already approved one checkbox for. data.secondary is
+// only ever present for axicon/Cassegrain (app.py's _secondary_payload),
+// and only carries its own flux_grid when the request asked for one
+// (buildTraceRequest always does) -- both silently absent for prime_focus,
+// which is exactly when there is no secondary mesh to drape either.
 function applyFluxOverlayVisibility() {
   const ui = store.get("ui");
   const data = ui.traceResult;
-  if (ui.receiverFluxOverlay !== false && !ui.staleResults && data && data.flux_grid) {
+  const showing = ui.receiverFluxOverlay !== false && !ui.staleResults && data;
+  if (showing && data.flux_grid) {
     scene.showFluxDrape(data.flux_grid);
   } else {
     scene.clearFluxDrape();
+  }
+  if (showing && data.secondary && data.secondary.flux_grid) {
+    scene.showSecondaryFluxDrape(data.secondary.flux_grid);
+  } else {
+    scene.clearSecondaryFluxDrape();
   }
 }
 
@@ -629,6 +663,7 @@ function runTrace() {
   const doc = store.get("doc");
   const ui = store.get("ui");
   const body = buildTraceRequest(doc, ui);
+  lastTraceRequestBody = body;
   if (doc.field.mode === "field") {
     runFieldTraceJob(body);
     return;
@@ -857,7 +892,11 @@ function secondaryMagmaColor(t) {
 // convention _render_flux_png uses for the receiver PNG) -- canvas row 0 is
 // its TOP, so row 0 of `values` is drawn into the canvas's LAST row,
 // exactly mirroring scene3d.js's fluxGridTexture flip.
-function paintSecondaryCanvas(canvas, grid) {
+//
+// docs/ui-spec-v0.2.md §C2, mockup M23: this is now the "Unrolled
+// (technical)" view, retained as a one-click toggle -- paintSecondaryCanvasPlan
+// below is the default. Same grid, same colormap, unchanged.
+function paintSecondaryCanvasUnrolled(canvas, grid) {
   const { n_u, n_v, values } = grid;
   let max = 0;
   for (const v of values) if (v != null && v > max) max = v;
@@ -878,6 +917,96 @@ function paintSecondaryCanvas(canvas, grid) {
     }
   }
   ctx2d.putImageData(img, 0, 0);
+}
+
+// docs/ui-spec-v0.2.md §C2, mockup M23: the DEFAULT secondary presentation
+// -- looking down the optical axis, so an axicon cone or Cassegrain surface
+// reads as a disk/annulus. Display transform only -- same (u, v) bins and
+// flux values as the unrolled view above; only the screen POSITION of each
+// bin changes. See js/tabs/analysis.js's paintSecondaryFluxCanvasPlan for
+// the full derivation (this is the identical transform, this file's own
+// copy per its established per-file-duplication idiom for small painters):
+//   theta = u_mm / aperture_radius_mm; x = v_mm*sin(theta), y = -v_mm*cos(theta)
+// -- the same atan2(x, -y)/south-at-0/seam-at-north convention every other
+// compass-marked map in this app uses. aperture_radius_mm is v_max_mm on
+// the grid itself (secondary_uv_extent: v spans 0..aperture_radius_mm).
+function paintSecondaryCanvasPlan(canvas, grid) {
+  const { n_u, n_v, u_min_mm, u_max_mm, v_min_mm, v_max_mm, values } = grid;
+  const apertureRadiusMm = Math.max(v_max_mm, 1e-6);
+  const size = 380;
+  canvas.width = size;
+  canvas.height = size;
+  const ctx2d = canvas.getContext("2d");
+  ctx2d.clearRect(0, 0, size, size);
+  const cx = size / 2;
+  const cy = size / 2;
+  const margin = 22;
+  const scale = (size / 2 - margin) / apertureRadiusMm;
+
+  let max = 0;
+  for (const v of values) if (v != null && v > max) max = v;
+  const duMm = (u_max_mm - u_min_mm) / n_u;
+  const dvMm = (v_max_mm - v_min_mm) / n_v;
+
+  const toXY = (vMm, thetaRad) => {
+    const x = vMm * Math.sin(thetaRad);
+    const y = -vMm * Math.cos(thetaRad);
+    return [cx + x * scale, cy - y * scale];
+  };
+
+  for (let row = 0; row < n_v; row++) {
+    const vLo = v_min_mm + row * dvMm;
+    const vHi = vLo + dvMm;
+    for (let col = 0; col < n_u; col++) {
+      const val = values[row * n_u + col];
+      const t = max > 0 && val != null ? val / max : 0;
+      const uLo = u_min_mm + col * duMm;
+      const uHi = uLo + duMm;
+      const thLo = uLo / apertureRadiusMm;
+      const thHi = uHi / apertureRadiusMm;
+      const steps = Math.max(1, Math.ceil(Math.abs(thHi - thLo) / 0.15));
+      ctx2d.beginPath();
+      for (let s = 0; s <= steps; s++) {
+        const th = thLo + ((thHi - thLo) * s) / steps;
+        const [px, py] = toXY(vHi, th);
+        if (s === 0) ctx2d.moveTo(px, py);
+        else ctx2d.lineTo(px, py);
+      }
+      for (let s = steps; s >= 0; s--) {
+        const th = thLo + ((thHi - thLo) * s) / steps;
+        const [px, py] = toXY(vLo, th);
+        ctx2d.lineTo(px, py);
+      }
+      ctx2d.closePath();
+      const [r, g, b] = secondaryMagmaColor(t);
+      ctx2d.fillStyle = `rgb(${r},${g},${b})`;
+      ctx2d.fill();
+    }
+  }
+
+  ctx2d.fillStyle = "#334155";
+  ctx2d.font = "11px sans-serif";
+  ctx2d.textAlign = "center";
+  ctx2d.textBaseline = "alphabetic";
+  const rEdge = apertureRadiusMm * scale;
+  ctx2d.fillText("N", cx, cy - rEdge - 8);
+  ctx2d.fillText("S", cx, cy + rEdge + 15);
+  ctx2d.textAlign = "left";
+  ctx2d.fillText("E", cx + rEdge + 5, cy + 4);
+  ctx2d.textAlign = "right";
+  ctx2d.fillText("W", cx - rEdge - 5, cy + 4);
+}
+
+// Dispatches to the Plan (default) or Unrolled painter per the §C2 toggle
+// (ui.secondaryFluxView) -- shared with js/tabs/analysis.js's own dispatcher
+// only in spirit (this module has no import of that one, same per-file
+// duplication idiom every other small painter here already follows).
+function paintSecondaryCanvasView(canvas, grid) {
+  if (store.get("ui.secondaryFluxView") === "unrolled") {
+    paintSecondaryCanvasUnrolled(canvas, grid);
+  } else {
+    paintSecondaryCanvasPlan(canvas, grid);
+  }
 }
 
 // v0.2 followups item 1, mockup M15: plan-view power coloring -- one dot per
@@ -1001,10 +1130,18 @@ function paintFluxOverlay() {
   fluxCompassW.hidden = true;
   fluxCompassAxis.hidden = true;
   fluxFanSeg.hidden = true;
+  fluxSecviewSeg.hidden = true;
+  fluxSecondaryPlanNote.hidden = true;
 
   if (showSecondary) {
+    const secView = store.get("ui.secondaryFluxView") === "unrolled" ? "unrolled" : "plan";
+    fluxSecviewSeg.hidden = false;
+    fluxSecviewPlanBtn.classList.toggle("active", secView === "plan");
+    fluxSecviewUnrolledBtn.classList.toggle("active", secView === "unrolled");
+    fluxSecondaryPlanNote.hidden = secView !== "plan";
+
     fluxSecondaryCanvas.hidden = false;
-    paintSecondaryCanvas(fluxSecondaryCanvas, secondary.flux_grid);
+    paintSecondaryCanvasView(fluxSecondaryCanvas, secondary.flux_grid);
     fluxSecondaryCaption.hidden = false;
     fluxSecondaryCaption.textContent = `incident flux on secondary, kW/m² · same colormap & units as the receiver map · peak ${fmtFlux(secondary.peak_flux_kw_m2)}`;
 
@@ -1076,6 +1213,8 @@ fluxSecFeaExport.addEventListener("click", (e) => {
   e.preventDefault();
   exportSecondaryFluxFeaCsv();
 });
+fluxSecviewPlanBtn.addEventListener("click", () => store.set("ui.secondaryFluxView", "plan"));
+fluxSecviewUnrolledBtn.addEventListener("click", () => store.set("ui.secondaryFluxView", "unrolled"));
 // v0.2 followups item 2: the fan view is a genuinely different server
 // render (app.py's TraceRequest.flux_view), not client-side data already
 // on hand -- so toggling it re-runs the SAME trace (runTrace() rebuilds
@@ -1166,6 +1305,7 @@ store.subscribe((path, value) => {
       store.set("ui.staleResults", true);
       scene.clearTraceRays();
       scene.clearFluxDrape();
+      scene.clearSecondaryFluxDrape();
     }
   }
 
@@ -1183,6 +1323,7 @@ store.subscribe((path, value) => {
       store.set("ui.staleResults", true);
       scene.clearTraceRays();
       scene.clearFluxDrape();
+      scene.clearSecondaryFluxDrape();
     }
     // Phase 3b save state (docs/ui-spec.md 5): any edit dirties the
     // project -- guarded so a doc.* change doesn't re-set (and re-notify

@@ -129,6 +129,20 @@ export function postSecondaryFluxFeaCsv(body, signal) {
   return postForBlob("/trace/secondary_flux_fea.csv", body, signal).then((resp) => resp.blob());
 }
 
+// docs/ui-spec-v0.2.md §R: the field-level analogues of postFluxFeaCsv/
+// postSecondaryFluxFeaCsv above -- a live FieldTraceRequest body (the exact
+// one a field trace ran with, `layout` included) in, the same §D-convention
+// CSV out. Closes §R's own gap: today a field-summed FEA export only exists
+// inside the day-sweep job's stored per-step blobs, with no synchronous
+// endpoint a live 3D View/Analysis trace can call directly.
+export function postFieldFluxFeaCsv(body, signal) {
+  return postForBlob("/field/trace/flux_fea.csv", body, signal).then((resp) => resp.blob());
+}
+
+export function postFieldSecondaryFluxFeaCsv(body, signal) {
+  return postForBlob("/field/trace/secondary_flux_fea.csv", body, signal).then((resp) => resp.blob());
+}
+
 // ---------------------------------------------------------------------------
 // library: named designs, receiver configs and projects (docs/ui-spec.md 5)
 // -- plus the read-only legacy `/api/setups` used for the Projects tab's

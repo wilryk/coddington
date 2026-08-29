@@ -421,9 +421,15 @@ function build(container, dockContainer, actions) {
   // ui.receiverFluxOverlay; main.js's applyFluxOverlayVisibility reads it).
   // Default ON, so a fresh page load matches the drape's old always-on
   // behavior until someone actually turns it off.
+  //
+  // v0.2 followups item 3: the SAME checkbox now also gates the secondary
+  // mirror's own drape (main.js's applyFluxOverlayVisibility) rather than
+  // getting a second toggle -- one "Flux overlay" idea, on-screen label
+  // already generic, applying to whichever draped surfaces the current
+  // optics actually has.
   const fluxOverlayToggleRow = document.createElement("label");
   fluxOverlayToggleRow.className = "fluxoverlaytoggle";
-  fluxOverlayToggleRow.title = "Paint the traced flux map onto the receiver surface in the 3D scene.";
+  fluxOverlayToggleRow.title = "Paint the traced flux map onto the receiver (and secondary, if any) surface in the 3D scene.";
   const fluxOverlayToggleInput = document.createElement("input");
   fluxOverlayToggleInput.type = "checkbox";
   fluxOverlayToggleInput.checked = true;

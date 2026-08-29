@@ -241,6 +241,61 @@ function bakeCylindricalUV(geometry, vMinM, vMaxM) {
   geometry.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
 }
 
+// v0.2 followups item 3: the SECONDARY's own irradiance drape, same idea as
+// bakeCylindricalUV above but against heliostat.geometry.secondary's own
+// (u, v) -- u = aperture_radius_mm * atan2(x_local, -y_local), v =
+// hypot(x_local, y_local), both local to the secondary's NOMINAL frame
+// (docs/secondary-irradiance-plan.md, secondary_uv's own formula).
+//
+// rebuildSecondary below builds this LatheGeometry (revolved about its own
+// local Y axis: profile point (r, z) at revolution angle phi sits at
+// (r*cos(phi), z, r*sin(phi))) and poses it with an Object3D-level
+// `mesh.rotation.x = Math.PI/2` rather than baking that turn into the
+// geometry itself (unlike the receiver's cylinder/frustum above, which bake
+// their equivalent rotateX FIRST, so bakeCylindricalUV can read x/y off the
+// already-posed attribute directly) -- so this geometry's OWN position
+// attribute is still in the LATHE's un-posed local frame, and the
+// secondary's local x/y are not simply position.x/position.y. Working out
+// the same +90 deg turn by hand (rotateX(+90 deg): (x,y,z) -> (x,-z,y))
+// gives secondary-local x = position.x, secondary-local y = -position.z;
+// substituting into secondary_uv's own formula, atan2(x_local, -y_local)
+// becomes atan2(position.x, position.z), and hypot(x_local, y_local)
+// becomes hypot(position.x, position.z) -- verified against a live axicon/
+// Cassegrain trace (see VERIFY notes), not just derived on paper.
+//
+// LatheGeometry closes a full revolution the same way CylinderGeometry does
+// -- a duplicated seam vertex column at phi=0 and phi=2*pi -- so this reuses
+// bakeCylindricalUV's own anchor-and-step fix rather than a naive per-vertex
+// atan2 (see that function's comment for why). The anchor/step vertices are
+// picked at the RIM (largest r, index nProfilePoints-1 within each phi
+// column) rather than searched for by native-u, since the apex/vertex
+// (r~0, index 0) is exactly where az is ill-conditioned -- rebuildSecondary
+// constructs this geometry with `new THREE.LatheGeometry(points, segments)`,
+// whose own vertex order is phi-major/profile-minor (index = phi*nProfilePoints
+// + profileIndex), so those two rim vertices sit at fixed, known indices.
+function bakeSecondaryUV(geometry, nProfilePoints, vMaxM) {
+  const pos = geometry.attributes.position;
+  const uv = new Float32Array(pos.count * 2);
+  const azOf = (i) => Math.atan2(pos.getX(i), pos.getZ(i));
+  const vOf = (i) => Math.hypot(pos.getX(i), pos.getZ(i));
+  const anchor = nProfilePoints - 1; // phi column 0, rim point
+  const step = 2 * nProfilePoints - 1; // phi column 1, rim point
+  const azAnchor = azOf(anchor);
+  let delta = azOf(step) - azAnchor;
+  if (delta > Math.PI) delta -= 2 * Math.PI;
+  if (delta < -Math.PI) delta += 2 * Math.PI;
+  const dir = delta >= 0 ? 1 : -1;
+  const nativeUv = geometry.attributes.uv;
+  const vMax = vMaxM || 1;
+  for (let i = 0; i < pos.count; i++) {
+    const az = azAnchor + dir * 2 * Math.PI * nativeUv.getX(i);
+    const wrapped = (((az + Math.PI) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+    uv[i * 2] = wrapped / (2 * Math.PI);
+    uv[i * 2 + 1] = Math.min(1, vOf(i) / vMax);
+  }
+  geometry.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+}
+
 // Compact approximation of matplotlib's "magma" colormap (the same one
 // _render_flux_png uses for the 2D map) -- a handful of anchor stops, linearly
 // interpolated, rather than the full 256-entry LUT: close enough that the 3D
@@ -426,6 +481,8 @@ export function createScene(container, callbacks) {
     secondaryMesh: null,
     secondaryFillMat: null,
     secondaryEdgeMat: null,
+    secondaryDraped: false, // true while a flux texture replaces the plain material (v0.2 followups item 3)
+    secondaryDrapeTexture: null,
     receiverMesh: null,
     receiverMat: null,
     receiverEdgeLines: null,
@@ -548,10 +605,27 @@ export function createScene(container, callbacks) {
     state.secondaryMesh = null;
     state.secondaryFillMat = null;
     state.secondaryEdgeMat = null;
+    // A geometry rebuild always means a fresh, plain material -- same
+    // "the drape belonged to the material instance just disposed above"
+    // reasoning as rebuildReceiver's identical reset (see that function's
+    // own comment).
+    state.secondaryDraped = false;
+    if (state.secondaryDrapeTexture) {
+      state.secondaryDrapeTexture.dispose();
+      state.secondaryDrapeTexture = null;
+    }
     if (!secondary || !secondary.profile || !secondary.profile.length) return;
     const points = secondary.profile.map(([r, z]) => new THREE.Vector2(Math.max(r, 0) * MM, z * MM));
     if (points.length < 2) return;
     const lathe = new THREE.LatheGeometry(points, 48);
+    // v0.2 followups item 3: bake the secondary's own (u, v) UV before this
+    // geometry is posed/perturbed below -- _secondary_profile (scene.py)
+    // always draws r from 0 to secondary.aperture_radius_mm, so the
+    // profile's own max r (already MM-scaled in `points`) IS that same
+    // aperture radius, the exact v_max secondary_uv_extent uses -- no new
+    // payload field needed, this can never disagree with the backend.
+    const apertureRadiusM = Math.max(...points.map((p) => p.x));
+    bakeSecondaryUV(lathe, points.length, apertureRadiusM);
     // LatheGeometry revolves about its local Y axis; rotating +90 deg about
     // X puts that axis along world Z (a body of revolution has no
     // handedness to get backwards by the accompanying angular mirroring).
@@ -809,7 +883,9 @@ export function createScene(container, callbacks) {
 
     if (state.secondaryFillMat && state.secondaryEdgeMat) {
       const isSel = !!sel && sel.kind === "secondary";
-      state.secondaryFillMat.opacity = isSel ? 0.5 : 0.3;
+      // Draped (v0.2 followups item 3): same "the texture needs to read
+      // clearly" opacity bump as the receiver's own draped case above.
+      state.secondaryFillMat.opacity = state.secondaryDraped ? (isSel ? 0.95 : 0.85) : isSel ? 0.5 : 0.3;
       state.secondaryEdgeMat.color.set(isSel ? SELECT_COLOR : SECONDARY_EDGE);
       state.secondaryEdgeMat.opacity = isSel ? 0.9 : 0.55;
     }
@@ -996,6 +1072,50 @@ export function createScene(container, callbacks) {
       applySelectionVisuals();
     },
 
+    // v0.2 followups item 3: the SECONDARY's own drape, same recipe as
+    // showFluxDrape above -- `fluxGrid` is data.secondary.flux_grid (§C's
+    // secondary payload, already the same app.py _flux_grid_payload shape
+    // the receiver uses), painted onto secondaryFillMat via bakeSecondaryUV's
+    // UV (baked once, in rebuildSecondary, from the nominal geometry --
+    // unaffected by a live §E2 decenter/tilt, which only moves the mesh's
+    // pivot transform, not its own vertex UVs). Always wraps (RepeatWrapping)
+    // -- unlike the receiver, which only wraps for the curved kinds, a
+    // secondary with a flux map is ALWAYS a body of revolution, so its u is
+    // always periodic.
+    showSecondaryFluxDrape(fluxGrid) {
+      const mat = state.secondaryFillMat;
+      if (!mat || !fluxGrid || !fluxGrid.values || !fluxGrid.values.length) return;
+      if (state.secondaryDrapeTexture) state.secondaryDrapeTexture.dispose();
+      const texture = fluxGridTexture(fluxGrid);
+      texture.wrapS = THREE.RepeatWrapping;
+      texture.needsUpdate = true;
+      state.secondaryDrapeTexture = texture;
+      mat.map = texture;
+      mat.color.set(0xffffff);
+      mat.needsUpdate = true;
+      state.secondaryDraped = true;
+      applySelectionVisuals(); // sets the draped opacity
+    },
+
+    // Reverts the secondary to its plain material -- same lifecycle as
+    // clearFluxDrape (called wherever that is: doc edits, fidelity changes,
+    // a fresh trace superseding a stale one), plus implicitly on the next
+    // rebuildSecondary (a new mesh/material always starts plain).
+    clearSecondaryFluxDrape() {
+      const mat = state.secondaryFillMat;
+      if (state.secondaryDrapeTexture) {
+        state.secondaryDrapeTexture.dispose();
+        state.secondaryDrapeTexture = null;
+      }
+      state.secondaryDraped = false;
+      if (mat) {
+        mat.map = null;
+        mat.color.set(SECONDARY_FILL);
+        mat.needsUpdate = true;
+      }
+      applySelectionVisuals();
+    },
+
     // Sun below the horizon: rays disappear, everything else holds its
     // last pose (docs/ui-spec.md 2.1).
     clearAllRays() {
@@ -1029,6 +1149,7 @@ export function createScene(container, callbacks) {
       disposeObject(missRaysGroup);
       disposeObject(sunGroup);
       if (state.receiverDrapeTexture) state.receiverDrapeTexture.dispose();
+      if (state.secondaryDrapeTexture) state.secondaryDrapeTexture.dispose();
       renderer.dispose();
       if (renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement);
     },

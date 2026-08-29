@@ -2703,6 +2703,95 @@ def test_secondary_flux_fea_csv_404s_when_there_is_no_secondary(client):
     assert resp.status_code == 404
 
 
+# ---------------------------------------------------------------------------
+# field-level FEA CSV exports (docs/ui-spec-v0.2.md §R: /api/field/trace/
+# flux_fea.csv, /api/field/trace/secondary_flux_fea.csv) -- the same §D
+# convention as the single-heliostat exports above, closing §R's own
+# "no synchronous field-level export exists" gap.
+
+
+def test_field_flux_fea_csv_matches_field_trace_own_peak(client):
+    """Cross-checked against a plain /api/field/trace call for the identical
+    body: the two must never silently drift (_field_trace_phase shares its
+    solve/occlusion/trace phases with field_trace itself)."""
+    payload = _field_payload(RECT_DESIGN, layout={"type": "fermat", "n": 5})
+    trace_resp = client.post("/api/field/trace", json=payload)
+    assert trace_resp.status_code == 200
+    expected_peak_w_m2 = trace_resp.json()["peak_flux_kw_m2"] * 1000.0
+
+    resp = client.post("/api/field/trace/flux_fea.csv", json=payload)
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/csv")
+    comments, rows = _parse_fea_csv(resp.text)
+    assert rows
+    assert all(len(r) == 4 for r in rows)  # x, y, z, flux
+    units_line = next(c for c in comments if c.startswith("# units:"))
+    assert "meters" in units_line and "flux_w_m2" in units_line
+    subject_line = next(c for c in comments if c.startswith("# heliostat:"))
+    assert "field of 5 heliostats" in subject_line
+
+    peak_w_m2 = max(r[3] for r in rows)
+    assert peak_w_m2 == pytest.approx(expected_peak_w_m2, rel=1e-3)
+    assert all(r[3] >= 0 for r in rows)
+
+
+def test_field_flux_fea_csv_points_lie_on_the_true_receiver_surface(client):
+    """Same independent geometric proof as the single-heliostat export's own
+    test, run against a small field instead of one mirror."""
+    payload = _field_payload(RECT_DESIGN, layout={"type": "fermat", "n": 5})
+    payload["optics_params"] = {"receiver_type": "cylinder"}
+    resp = client.post("/api/field/trace/flux_fea.csv", json=payload)
+    assert resp.status_code == 200
+    _comments, rows = _parse_fea_csv(resp.text)
+    assert rows
+    radius_m = PRIME_FOCUS_CYLINDER_RADIUS_MM / 1000.0
+    for x_m, y_m, _z_m, _flux in rows:
+        assert math.hypot(x_m, y_m) == pytest.approx(radius_m, abs=2e-4)
+
+
+def test_field_flux_fea_csv_422s_when_sun_is_below_horizon(client):
+    payload = _field_payload(RECT_DESIGN, layout={"type": "fermat", "n": 4}, solar_el_deg=0.0)
+    resp = client.post("/api/field/trace/flux_fea.csv", json=payload)
+    assert resp.status_code == 422
+
+
+@pytest.mark.parametrize("optics", ["axicon", "cassegrain"])
+def test_field_secondary_flux_fea_csv_matches_field_trace_own_absorbed(client, optics):
+    payload = _field_payload(RECT_DESIGN, layout={"type": "fermat", "n": 5}, optics=optics)
+    resp = client.post("/api/field/trace/secondary_flux_fea.csv", json=payload)
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/csv")
+    comments, rows = _parse_fea_csv(resp.text)
+    assert rows
+    assert all(len(r) == 5 for r in rows)  # x, y, z, flux, absorbed
+    units_line = next(c for c in comments if c.startswith("# units:"))
+    assert "secondary_reflectance=0.9" in units_line
+    assert any("tower axis" in c for c in comments)
+
+    assert all(r[3] >= 0 for r in rows)
+    for _x, _y, _z, flux_w_m2, absorbed_w_m2 in rows:
+        assert absorbed_w_m2 == pytest.approx(flux_w_m2 * 0.1, rel=1e-9, abs=1e-9)
+
+
+def test_field_secondary_flux_fea_csv_points_lie_on_the_true_secondary_surface(client):
+    payload = _field_payload(RECT_DESIGN, layout={"type": "fermat", "n": 5}, optics="axicon")
+    resp = client.post("/api/field/trace/secondary_flux_fea.csv", json=payload)
+    assert resp.status_code == 200
+    _comments, rows = _parse_fea_csv(resp.text)
+    assert rows
+    k = math.tan(math.radians(AXICON_HALF_ANGLE_DEG))
+    for x_m, y_m, z_m, _flux, _absorbed in rows:
+        h_mm = math.hypot(x_m, y_m) * 1000.0
+        expected_z_m = (AXICON_APEX_HEIGHT_MM + k * h_mm) / 1000.0
+        assert z_m == pytest.approx(expected_z_m, abs=2e-4)
+
+
+def test_field_secondary_flux_fea_csv_404s_when_there_is_no_secondary(client):
+    payload = _field_payload(RECT_DESIGN, layout={"type": "fermat", "n": 4}, optics="prime_focus")
+    resp = client.post("/api/field/trace/secondary_flux_fea.csv", json=payload)
+    assert resp.status_code == 404
+
+
 def test_day_flux_fea_csv_matches_the_stored_pngs_peak(client):
     """The day-sweep timestep export is built once, alongside the PNG,
     during the sweep -- never a re-trace -- so its peak must agree with the
