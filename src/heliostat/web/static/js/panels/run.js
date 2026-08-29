@@ -30,14 +30,14 @@ const FIDELITY = [
 // trades away, verbatim from the signed-off table.
 const FIDELITY_TOOLTIPS = {
   ultra_fast:
-    "Field design optimization — explore layouts and geometry quickly. Trades away exact shadowing/blocking during sweeps (interpolated between anchors) and a small map-detail residual.",
+    "Field design optimization — explore layouts and geometry quickly. Trades shadowing/blocking accuracy and flux-map detail for speed.",
   // v0.2 followups item 2: Fast accurate stays the slower reference-cone
   // mode by owner decision -- its wording now says so, pointing individual-
   // heliostat work here and full-field work at Ultra fast instead.
   fast_accurate:
     "Analyze a single heliostat with the highest peak-flux fidelity of any mode — deterministic and noise-free, but for full-field work, reach for Ultra fast instead.",
   monte_carlo:
-    "Model the final design with precision, including all error sources. Noise falls as 1/√rays; the only mode that applies measured error maps and pointing error per ray.",
+    "Model the final design with precision, including all error sources — the only mode that applies measured error maps and pointing error per ray. More rays reduce noise, at the cost of speed.",
 };
 
 let built = false;
@@ -280,7 +280,7 @@ function build(container, dockContainer, actions) {
   raysInput.style.width = "84px";
   raysInput.placeholder = "120000";
   raysInput.min = "100";
-  raysRow.title = "Number of Monte Carlo rays traced -- more rays reduce noise (falls as 1/√rays) at the cost of trace time.";
+  raysRow.title = "Number of Monte Carlo rays traced -- more rays reduce noise, at the cost of trace time.";
   raysInput.addEventListener("input", () => {
     const v = parseInt(raysInput.value, 10);
     store.set("ui.mcRays", Number.isFinite(v) && v > 0 ? v : null);

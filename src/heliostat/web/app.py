@@ -3834,9 +3834,7 @@ def _fea_csv_bytes(header: str, rows) -> bytes:
 #: Replaces the old per-shape "unrolled (u, v)" note this constant used to
 #: carry (see git history), since neither export unrolls anything any more.
 _FEA_WORLD_FRAME_NOTE = (
-    "3-D convention: x east, y north, z up (meters) -- the same field-frame "
-    "heliostat.geometry.receiver's module docstring defines for every ray "
-    "in this project; the tower axis sits at x = y = 0"
+    "3-D convention: x east, y north, z up (meters); the tower axis sits at x = y = 0"
 )
 
 

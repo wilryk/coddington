@@ -56,7 +56,7 @@ const ERROR_FIELDS = [
     min: 0,
     step: 0.1,
     tooltip:
-      "Large-scale waviness of the mirror surface: the local surface normal deviates from the design surface by this RMS angle. Broadens the beam (doubled on reflection). Not pointing error (that's the tracker, §F) and not canting error (that's facet aiming). At oblique incidence the broadening is elliptical: full in the tangential direction, compressed by cos(incidence angle) in the sagittal direction.",
+      "Large-scale waviness of the mirror surface: the local surface normal deviates from the design surface by this RMS angle. Broadens the beam (doubled on reflection). Not pointing error (that's the tracker) and not canting error (that's facet aiming). At oblique incidence the broadening is elliptical: full in the tangential direction, compressed by cos(incidence angle) in the sagittal direction.",
   },
   {
     key: "specularity_mrad",

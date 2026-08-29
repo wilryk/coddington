@@ -403,18 +403,16 @@ BUILTIN_PROJECT_PROVENANCE: dict[str, dict] = {
             "dispute is not resolved here. Not the operator's as-built layout."
         ),
         "caveats": [
-            "This app's receiver model has no tilted/oriented window (docs/ui-spec-v0.2.md "
-            "§I, signed off but not yet built). PS10's real cavity aperture faces the north "
-            "field at roughly 12.5 degrees from vertical (as-built); this field ships with a "
-            "flat, HORIZONTAL window instead, sized to the real cavity's approximate 22 x "
-            "12 m aperture -- the best available approximation today, not the true tilted "
-            "cavity face.",
+            "This app's receiver model has no tilted/oriented window yet. PS10's real cavity "
+            "aperture faces the north field at roughly 12.5 degrees from vertical (as-built); "
+            "this field ships with a flat, HORIZONTAL window instead, sized to the real "
+            "cavity's approximate 22 x 12 m aperture -- the best available approximation "
+            "today, not the true tilted cavity face.",
             "Mirror dimensions are not published (only the ~120 m^2 unit area); "
             "approximated here as a 10.98 m square single flat facet -- PS10's real facet "
             "subdivision is not modeled.",
             "North-sector angular span (+-60 degrees) is not a published PS10 number -- it "
-            "reuses this app's own (unbuilt) §I default half-span for consistency, not a "
-            "sourced figure.",
+            "reuses this app's own default half-span for consistency, not a sourced figure.",
             "Mirror reflectance (0.90) is this app's standard convention, not a "
             "PS10-specific published value.",
         ],
@@ -468,8 +466,8 @@ BUILTIN_PROJECT_PROVENANCE: dict[str, dict] = {
             "it. Not a geometric reconstruction of the real facet layout.",
             "Tracking kinematics are not reproduced. Stellio uses 'two inclined axes' "
             "(documented), driven by two linear actuators; whether that is equivalent to "
-            "target-aligned tracking is NOT confirmed by any source this rider's research "
-            "reached (Stellio's astigmatism benefit is attributed to the pentagon's shape, "
+            "target-aligned tracking is NOT confirmed by any available source "
+            "(Stellio's astigmatism benefit is attributed to the pentagon's shape, "
             "not the tracking, in the manufacturer's own material). This app's aiming model "
             "computes every facet's normal from the reflection law and does not model "
             "physical drive axes at all -- this field reproduces the field geometry and "

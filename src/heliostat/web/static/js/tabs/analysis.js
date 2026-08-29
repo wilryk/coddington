@@ -82,7 +82,7 @@ const FIDELITY = [
 // tab are the same fidelity setting seen from two screens).
 const FIDELITY_TOOLTIPS = {
   ultra_fast:
-    "Field design optimization — explore layouts and geometry quickly. Trades away exact shadowing/blocking during sweeps (interpolated between anchors) and a small map-detail residual.",
+    "Field design optimization — explore layouts and geometry quickly. Trades shadowing/blocking accuracy and flux-map detail for speed.",
   // v0.2 followups item 2: Fast accurate stays the slower reference-cone
   // mode by owner decision -- its wording now says so, pointing individual-
   // heliostat work here and full-field work at Ultra fast instead. Kept
@@ -91,7 +91,7 @@ const FIDELITY_TOOLTIPS = {
   fast_accurate:
     "Analyze a single heliostat with the highest peak-flux fidelity of any mode — deterministic and noise-free, but for full-field work, reach for Ultra fast instead.",
   monte_carlo:
-    "Model the final design with precision, including all error sources. Noise falls as 1/√rays; the only mode that applies measured error maps and pointing error per ray.",
+    "Model the final design with precision, including all error sources — the only mode that applies measured error maps and pointing error per ray. More rays reduce noise, at the cost of speed.",
 };
 
 const DEFAULT_DATE = "2026-03-21"; // the server's own DaySite default
@@ -3576,9 +3576,9 @@ function paintTimestepsTable() {
 // bar's flux overlay (mockup M9 draws this disclosure in both places).
 function secondaryFidelityNote(fidelity) {
   if (fidelity === "exact") {
-    return "Exact fidelity — Monte Carlo histograms every ray that actually struck the secondary.";
+    return "Exact — Monte Carlo traces the full flux map on the secondary.";
   }
-  return "Coarse fidelity — this cone mode deposits each mirror's flux at its own chief ray's secondary hit, not a full footprint. Switch to Monte Carlo for an exact per-ray map.";
+  return "Approximate in this mode — switch to Monte Carlo for an exact map.";
 }
 
 // Same compact magma approximation js/scene3d.js's fluxGridTexture and
@@ -3782,10 +3782,10 @@ function paintFluxSurfaceSelector() {
     if (doc.field.mode !== "field") fieldTip = "Field coloring needs a field, not a single heliostat.";
     else if (fluxLoading) fieldTip = "Tracing…";
     else if (fluxSrcUrl) {
-      fieldTip = "This stored sweep step keeps no per-heliostat breakdown — only a step traced live in this browser session carries one.";
+      fieldTip = "Re-trace this step to color heliostats by power.";
     } else if (reopenedDayFluxPngs) {
-      fieldTip = "This saved run kept no per-heliostat breakdown for its timesteps.";
-    } else fieldTip = "This step carries no per-heliostat breakdown.";
+      fieldTip = "Re-trace this run to color heliostats by power.";
+    } else fieldTip = "Re-trace this step to color heliostats by power.";
   }
   els.fluxSurfaceFieldBtn.title = fieldTip;
 

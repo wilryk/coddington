@@ -253,7 +253,7 @@ function build(container) {
   // Ground offset: same visual language, not editable yet (SCOPE above).
   const groundWrap = document.createElement("div");
   groundWrap.className = "callout";
-  groundWrap.title = "ground offset — editable when the datum work lands";
+  groundWrap.title = "ground offset — coming in a later phase";
   const groundVal = document.createElement("div");
   groundVal.className = "val noneditable";
   groundVal.textContent = GROUND_OFFSET_MM.toLocaleString();

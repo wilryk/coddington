@@ -849,9 +849,9 @@ function fmtFlux(kwM2) {
 // plain text next to the readout, not tucked into a tooltip.
 function secondaryFidelityNote(fidelity) {
   if (fidelity === "exact") {
-    return "Exact fidelity — Monte Carlo histograms every ray that actually struck the secondary.";
+    return "Exact — Monte Carlo traces the full flux map on the secondary.";
   }
-  return "Coarse fidelity — this cone mode deposits each mirror's flux at its own chief ray's secondary hit, not a full footprint. Switch to Monte Carlo for an exact per-ray map.";
+  return "Approximate in this mode — switch to Monte Carlo for an exact map.";
 }
 
 // Same compact magma approximation as scene3d.js's fluxGridTexture (kept as
@@ -1056,7 +1056,7 @@ function paintFluxOverlay() {
   fluxSurfaceFieldBtn.classList.toggle("disabled", !fieldAvailable);
   fluxSurfaceFieldBtn.title = fieldAvailable
     ? ""
-    : "Field coloring needs a per-heliostat breakdown, which only a field trace carries — this trace was a single heliostat.";
+    : "Run a field trace to color heliostats by power.";
 
   const requested = store.get("ui.fluxSurface");
   const showSecondary = requested === "secondary" && secAvailable;
