@@ -641,6 +641,22 @@ export const SUN_FIELDS = [
   },
 ];
 
+// docs/ui-spec-v0.2.md §O: circumsolar ratio -- a Sunshape-stage field, kept
+// out of SUN_FIELDS above deliberately (inspector.js renders every
+// SUN_FIELDS entry in the 3D View's compact sun chip too; §O/mockup M19
+// place CSR only in the Design tab's full Sun stage, not that chip), so
+// panels/sun.js renders this one directly instead of through SUN_FIELDS.
+export const SUN_CSR_FIELD = {
+  key: "csr",
+  label: "CSR",
+  path: "doc.sun.csr",
+  min: 0,
+  max: 1,
+  step: 0.01,
+  tooltip:
+    "Circumsolar ratio: the fraction of the sun's radiance in the hazy aureole around the disk versus the disk itself. 0 is a clean cutoff disk (today's default); typical clear-sky sites read under 0.1, hazy skies higher.",
+};
+
 // Where and when, which the server turns into an azimuth and an elevation.
 export const SUN_SITE_FIELDS = [
   {

@@ -105,6 +105,7 @@ const libraryDrawer = document.getElementById("library-drawer");
 const libraryBackdrop = document.getElementById("library-backdrop");
 const savestateEl = document.getElementById("savestate");
 const opticsTagEl = document.getElementById("optics-tag");
+const projectProvenanceEl = document.getElementById("project-provenance");
 
 libraryBtn.addEventListener("click", () => {
   store.set("ui.libraryOpen", !store.get("ui.libraryOpen"));
@@ -158,6 +159,12 @@ function renderTopbar() {
   } else {
     savestateEl.textContent = ui.dirty ? `${ui.projectName} — unsaved changes` : `${ui.projectName} — saved`;
   }
+  // docs/ui-spec-v0.2.md §P: the loaded reconstruction's citation, stamped
+  // here for as long as it's open (mockup M20's ".provtag") -- library.js's
+  // loadProject() is the only place that sets ui.projectProvenance.
+  const prov = ui.projectProvenance;
+  projectProvenanceEl.hidden = !prov;
+  if (prov) projectProvenanceEl.textContent = `⚠ Reconstruction — ${prov.citation}`;
 }
 
 const fluxOverlay = document.getElementById("flux-overlay");
@@ -200,6 +207,13 @@ const fluxFieldCount = document.getElementById("flux-field-count");
 const fluxFieldTotal = document.getElementById("flux-field-total");
 const fluxFieldLegendMin = document.getElementById("flux-field-legend-min");
 const fluxFieldLegendMax = document.getElementById("flux-field-legend-max");
+// v0.2 followups item 2: the frustum fan-view toggle -- see
+// paintFluxOverlay's own show/hide-against-receiver-kind logic and its
+// click handler below (re-runs the trace with ui.fluxView flipped, since
+// the fan is a genuinely different server render, not a client-side
+// re-paint of data already on hand).
+const fluxFanSeg = document.getElementById("flux-fan-seg");
+const fluxFanToggle = document.getElementById("flux-fan-toggle");
 
 // Field-trace progress and its cancel control, deliberately NOT gated by
 // ui.tab (unlike #runbar's contents -- see renderTabs) -- a field trace is a
@@ -986,6 +1000,7 @@ function paintFluxOverlay() {
   fluxCompassE.hidden = true;
   fluxCompassW.hidden = true;
   fluxCompassAxis.hidden = true;
+  fluxFanSeg.hidden = true;
 
   if (showSecondary) {
     fluxSecondaryCanvas.hidden = false;
@@ -1014,6 +1029,14 @@ function paintFluxOverlay() {
     fluxFieldLegendMax.textContent = maxKw.toFixed(1);
   } else {
     fluxOverlayImg.hidden = false;
+    // v0.2 followups item 2: openFluxOverlay() sets this once on open, but
+    // this function is also the repaint path for "a fresh trace landing
+    // while the overlay happens to be open" (this function's own header
+    // comment) -- without refreshing .src here too, a retrace (the fan-view
+    // toggle's own click handler, or simply re-running with the overlay
+    // open) would leave the PREVIOUS render on screen while everything
+    // else around it updates. Harmless no-op when the bytes are unchanged.
+    if (data.flux_png) fluxOverlayImg.src = "data:image/png;base64," + data.flux_png;
 
     const kind = data.scene && data.scene.receiver ? data.scene.receiver.kind : null;
     const isFlat = kind === "flat";
@@ -1030,6 +1053,13 @@ function paintFluxOverlay() {
         fluxCompassAxis.appendChild(span);
       }
     }
+
+    // v0.2 followups item 2: the fan-view toggle only ever means something
+    // for a frustum -- a cylinder's own u-axis is already exact arc length
+    // everywhere, so there is nothing for a "true developed view" to fix.
+    const isFrustum = kind === "frustum";
+    fluxFanSeg.hidden = !isFrustum;
+    fluxFanToggle.classList.toggle("active", isFrustum && store.get("ui.fluxView") === "fan");
   }
 }
 
@@ -1045,6 +1075,19 @@ fluxSurfaceFieldBtn.addEventListener("click", () => {
 fluxSecFeaExport.addEventListener("click", (e) => {
   e.preventDefault();
   exportSecondaryFluxFeaCsv();
+});
+// v0.2 followups item 2: the fan view is a genuinely different server
+// render (app.py's TraceRequest.flux_view), not client-side data already
+// on hand -- so toggling it re-runs the SAME trace (runTrace() rebuilds
+// its request from the current doc/ui, buildTraceRequest reading the new
+// ui.fluxView) rather than trying to repaint in place. A single-heliostat
+// retrace is fast enough for a view toggle; a field trace already shows its
+// own progress bar like any other run.
+fluxFanToggle.addEventListener("click", () => {
+  if (store.get("ui.traceBusy")) return;
+  const next = store.get("ui.fluxView") === "fan" ? "rect" : "fan";
+  store.set("ui.fluxView", next);
+  runTrace();
 });
 
 function openFluxOverlay() {

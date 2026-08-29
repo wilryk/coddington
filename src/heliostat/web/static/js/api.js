@@ -476,17 +476,24 @@ export function radialStaggerPayload(doc) {
 
 // Exported so js/project.js's serializeProject() builds the exact same
 // layout shape a geometry/trace request sends -- one function, not two
-// copies that could drift. doc.field.layout picks which of three shapes:
+// copies that could drift. doc.field.layout picks which of four shapes:
 // "radial_stagger" sends the parametric staggered-ring layout above (the
 // default), "manuscript" sends the paper's own positions verbatim (the
-// cache fetchManuscriptField() filled at startup -- see main.js), "fermat"
-// sends the parametric `{type: "fermat", n, r_min_m?, r_max_m?}` spiral. A
-// manuscript request with an empty cache (the startup fetch failed) falls
-// back to the fermat payload so the app still has something to draw rather
-// than sending an empty positions list.
+// cache fetchManuscriptField() filled at startup -- see main.js),
+// "positions" sends whatever OTHER frozen positions blob a loaded project
+// carried (docs/ui-spec-v0.2.md §P's built-in reference projects --
+// doc.field.positions.xy_mm, populated only by project.js's applyProject()
+// and otherwise empty), "fermat" sends the parametric `{type: "fermat", n,
+// r_min_m?, r_max_m?}` spiral. A manuscript request with an empty cache
+// (the startup fetch failed) falls back to the fermat payload so the app
+// still has something to draw rather than sending an empty positions list.
 export function currentLayoutPayload(doc) {
   if (doc.field.layout === "manuscript") {
     const xy = getManuscriptField();
+    if (xy && xy.length) return { type: "positions", xy_mm: xy };
+  }
+  if (doc.field.layout === "positions") {
+    const xy = doc.field.positions && doc.field.positions.xy_mm;
     if (xy && xy.length) return { type: "positions", xy_mm: xy };
   }
   if (doc.field.layout === "radial_stagger") {
@@ -526,6 +533,11 @@ export function buildTraceRequest(doc, ui) {
     optics: doc.optics,
     solar_az_deg: doc.sun.az,
     solar_el_deg: doc.sun.el,
+    // Spec §O: the Buie sunshape's circumsolar ratio, sibling of
+    // solar_az_deg/solar_el_deg above on the wire (heliostat.web.app's
+    // _TraceRequestBase) -- carries through buildDayRequest/buildYearRequest
+    // too, since both build on this function.
+    circumsolar_ratio: doc.sun.csr || 0,
     optics_params: currentOpticsParams(doc),
     // §M.3: the 3D receiver drape's raw texture data (see app.py's
     // _flux_grid_payload) -- opt-in on the request so callers that only
@@ -547,6 +559,13 @@ export function buildTraceRequest(doc, ui) {
     // build on this function) day sweep and year estimate alike.
     dni: doc.sun.dni,
   };
+  // v0.2 followups item 2: the frustum fan-view toggle (app.py's
+  // TraceRequest.flux_view, TraceRequest-only -- not on _TraceRequestBase,
+  // so left off entirely at the default "rect", same idiom as flux_png_dpi
+  // not being sent when null). buildDayRequest/buildYearRequest build on
+  // this same function but their own request models have no such field to
+  // read, so this is harmless there either way.
+  if (ui.fluxView === "fan") body.flux_view = "fan";
   if (ui.fidelity === "monte_carlo" && ui.mcRays) body.n_rays = ui.mcRays;
   if (doc.field.mode === "field") {
     body.layout = currentLayoutPayload(doc);
@@ -571,6 +590,9 @@ export function buildFluxCsvRequest(doc, ui) {
     optics: doc.optics,
     solar_az_deg: doc.sun.az,
     solar_el_deg: doc.sun.el,
+    // Spec §O: keeps the exported grid consistent with the on-screen one --
+    // see buildTraceRequest's identical field.
+    circumsolar_ratio: doc.sun.csr || 0,
     optics_params: currentOpticsParams(doc),
     heliostat_x_mm: doc.field.single.x_mm,
     heliostat_y_mm: doc.field.single.y_mm,

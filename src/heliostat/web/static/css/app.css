@@ -181,6 +181,27 @@ a:hover {
   color: var(--muted);
   font-size: 12px;
 }
+/* docs/ui-spec-v0.2.md §P, binding: while a built-in reconstruction project
+   is loaded, its citation stamps into the top bar (main.js's
+   renderTopbar(), from ui.projectProvenance) so a result screenshot
+   carries the provenance, not just the plant name -- mockup M20's
+   ".provtag". Hidden (index.html) whenever no reconstruction is loaded. */
+.provtag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--warn-text);
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  border-radius: 5px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 360px;
+}
 
 /* -- shell: sidebar + viewport ------------------------------------------ */
 
@@ -513,11 +534,12 @@ input.val::-webkit-inner-spin-button {
   border: 1px solid var(--border);
   border-radius: 6px;
   background: #000;
-  cursor: grab;
+  /* v0.2 followups item 4: a plain click opens the full map now (that's
+     the common case), so "pointer" is the resting cursor; run.js's own
+     hover handler (apHandlePointerMove) swaps to grab/grabbing over the
+     circle body/handle, the two spots that actually drag. */
+  cursor: pointer;
   touch-action: none;
-}
-.dock .apcanvas:active {
-  cursor: grabbing;
 }
 .dock .apreadout {
   width: 100%;
@@ -1185,11 +1207,45 @@ input.val::-webkit-inner-spin-button {
   border: 1px solid var(--warn-border);
   color: var(--warn-text);
 }
+/* docs/ui-spec-v0.2.md §P / mockup M20: the RECONSTRUCTION badge and its
+   citation/caveats block, on the four built-in reference-field cards. Same
+   amber palette as .badge.import (--warn-*) -- both mean "read this before
+   you trust the number". */
+.badge.recon {
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  color: var(--warn-text);
+}
 .cardsub {
   color: var(--muted);
   font-size: 12px;
   margin-top: 4px;
   font-variant-numeric: tabular-nums;
+}
+.idealnote {
+  color: var(--accent-dark);
+  font-size: 11px;
+  margin-top: 5px;
+}
+.citation {
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 5px;
+  line-height: 1.4;
+  border-top: 1px dashed var(--border);
+  padding-top: 5px;
+}
+.citation strong {
+  color: var(--text);
+  font-weight: 600;
+}
+ul.citation.caveats {
+  margin: 4px 0 0 0;
+  padding: 0 0 0 16px;
+  border-top: none;
+}
+ul.citation.caveats li {
+  margin-top: 3px;
 }
 .cardactions {
   display: flex;

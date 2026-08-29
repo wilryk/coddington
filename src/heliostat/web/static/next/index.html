@@ -33,6 +33,13 @@
         <div class="tab" id="apptab-analysis">Analysis</div>
       </div>
       <div class="right">
+        <!-- docs/ui-spec-v0.2.md §P, binding provenance requirement: while a
+             built-in reconstruction project (Gemasolar, PS10, Crescent
+             Dunes, the Stellio-based field) is loaded, its citation stamps
+             here -- main.js's renderTopbar(), from ui.projectProvenance --
+             so a screenshot of any result carries the provenance, not just
+             the plant name. Hidden otherwise. -->
+        <span class="provtag" id="project-provenance" hidden></span>
         <div class="btn" id="library-btn">Library</div>
         <span class="savestate" id="savestate">New project</span>
       </div>
@@ -186,6 +193,18 @@
                `heliostats` rows) -- disabled with an honest tooltip for a
                single-heliostat trace, main.js's paintFluxOverlay(). -->
           <button type="button" id="flux-surface-field">Field</button>
+        </div>
+        <!-- v0.2 followups item 2 (owner-approved): the frustum's TRUE
+             developed ("fan") view, an alternative to the default
+             parameter-space rectangle -- see app.py's
+             TraceRequest.flux_view / _render_flux_fan_png. Shown only when
+             the traced receiver is a frustum (main.js's paintFluxOverlay()),
+             hidden otherwise -- a cylinder's own u-axis is already exact, a
+             flat window has no unrolling to correct. One-button .seg
+             (existing idiom, e.g. runbar's own toggles) so it inherits the
+             app's segmented-control look; "active" means "fan" is selected. -->
+        <div class="seg" id="flux-fan-seg" hidden>
+          <button type="button" id="flux-fan-toggle">Fan view</button>
         </div>
       </div>
       <div class="overlay-body">

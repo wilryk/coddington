@@ -6,7 +6,15 @@
 // the floating inspector can render the identical rows when the sun is
 // selected in the scene.
 import { store } from "../store.js";
-import { numberRow, setVal, segButton, SUN_FIELDS, SUN_SITE_FIELDS } from "../fields.js";
+import {
+  numberRow,
+  setVal,
+  segButton,
+  sectionHeaderRow,
+  SUN_FIELDS,
+  SUN_SITE_FIELDS,
+  SUN_CSR_FIELD,
+} from "../fields.js";
 
 let built = false;
 let els = {};
@@ -146,18 +154,28 @@ function build(container) {
   const el = numberRow(directFields, SUN_FIELDS[1]);
   body.appendChild(directFields);
 
-  // §G-style disclosure: the sun's ANGULAR shape (as opposed to its
-  // intensity, the DNI control below) is not user-configurable -- every
-  // trace, at every fidelity, draws from the Buie limb-darkened solar disk
+  // docs/ui-spec-v0.2.md §O: the Buie sunshape's circumsolar ratio -- the
+  // one user-adjustable knob on the sun's ANGULAR shape (as opposed to its
+  // intensity, the DNI control below). Every trace, at every fidelity,
+  // draws from the same Buie limb-darkened solar disk
   // (heliostat.trace.samplers.BuieSampler / heliostat.trace.cone's
-  // sunshape_kernel default). Stated here so a spot's width is never read
-  // as "whatever the app happens to assume" -- the super-Gaussian sampler
+  // sunshape_kernel), CSR-broadened identically; the super-Gaussian sampler
   // this app shipped with initially is still in the codebase (kernel-level
   // tests exercise it) but nothing user-facing selects it any more.
+  sectionHeaderRow(body, "Sunshape");
+  const csr = numberRow(body, SUN_CSR_FIELD);
+
+  const csrHint = document.createElement("div");
+  csrHint.className = "hint";
+  csrHint.textContent =
+    "Clear-sky conditions typically read CSR ≈ 0.0–0.1; hazy/high-aerosol skies read higher, commonly 0.1–0.3 and up. Site/instrument dependent, not a hard limit.";
+  body.appendChild(csrHint);
+
+  // §G-style disclosure -- states the CSR in effect, not just the profile
+  // name (spec: "must name the CSR in effect"); its exact text is computed
+  // in render() below since it depends on doc.sun.csr.
   const sunshapeNote = document.createElement("div");
   sunshapeNote.className = "summary";
-  sunshapeNote.textContent =
-    "Sunshape: Buie limb-darkened solar disk (4.65 mrad limb angle, ratio-of-cosines profile, no circumsolar aureole term). Applied identically at every fidelity and is not user-adjustable.";
   body.appendChild(sunshapeNote);
 
   // -- spec §M.7: site DNI -- independent of how az/el were arrived at
@@ -221,6 +239,8 @@ function build(container) {
     el,
     solvedLine,
     siteErr,
+    csr,
+    sunshapeNote,
     dniBtns,
     dniConstant,
     dniNote,
@@ -273,6 +293,17 @@ export function render(container) {
 
   setVal(els.az, doc.sun.az);
   setVal(els.el, doc.sun.el);
+
+  // docs/ui-spec-v0.2.md §O: disclosure line names the CSR in effect --
+  // "+ aureole" only appears once CSR > 0, and the number always shows
+  // (mirrors heliostat.web.app's own wording, e.g. sun.js's earlier
+  // fixed-text version this replaces).
+  const csrVal = doc.sun.csr || 0;
+  setVal(els.csr, csrVal);
+  els.sunshapeNote.innerHTML =
+    csrVal > 0
+      ? `<strong>Sunshape:</strong> Buie limb-darkened solar disk + aureole (CSR ${csrVal}). Applied identically at every fidelity.`
+      : "<strong>Sunshape:</strong> Buie limb-darkened solar disk (CSR 0, today's default -- no aureole). Applied identically at every fidelity.";
 
   els.siteErr.hidden = !solveError;
   if (solveError) els.siteErr.textContent = solveError;

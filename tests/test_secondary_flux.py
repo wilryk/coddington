@@ -39,6 +39,7 @@ from heliostat.geometry.secondary import (
     secondary_has_flux_map,
     secondary_uv,
     secondary_uv_extent,
+    secondary_uv_to_world,
 )
 from heliostat.trace.cone import sunshape_kernel, trace_heliostat_cone
 from heliostat.trace.mc import trace_heliostat
@@ -153,6 +154,43 @@ def test_uv_seam_and_axis_are_well_defined():
     uv0 = secondary_uv(AXICON, origin)
     assert uv0[1, 0] == 0.0
     assert np.isfinite(uv0[0, 0])
+
+
+# ---------------------------------------------------------------------------
+# uv_to_world -- exact inverse of secondary_uv (v0.2 followups item 3, the
+# FEA export's new x/y/z-in-world-frame columns)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("secondary,row", [(AXICON, AXICON_ROW), (CASSEGRAIN, CASSEGRAIN_ROW)])
+def test_uv_to_world_is_the_exact_inverse_of_secondary_uv(secondary, row):
+    """Round-trip against the forward map -- mirrors
+    tests/test_receiver_shapes.py::test_uv_to_world_is_the_exact_inverse_of_intersect
+    exactly, with :meth:`Secondary.redirect` (via
+    ``trace_heliostat``'s ``return_secondary_hits``) standing in for
+    ``Receiver.intersect``: real rays, reflected off the real primary mirror
+    and this real secondary, produce independently-computed 3-D hit points
+    that ``secondary_uv_to_world(secondary_uv(hit))`` must reproduce
+    exactly -- not a tautology, since ``uv_to_world`` never sees ``hit``
+    itself, only the ``(u, v)`` derived from it."""
+    rng = np.random.default_rng(3)
+    out = trace_heliostat(
+        row["x_mm"], row["y_mm"], row["rot_az_deg"], row["rot_el_deg"],
+        row["c3"], row["c4"], row["c5"], row["solar_az_deg"], row["solar_el_deg"],
+        secondary, RECEIVER, 20000, rng, return_secondary_hits=True,
+    )
+    hit_xyz = out["secondary_xy"]  # (3, K) world points despite the name -- see mc.py's own comment
+    assert hit_xyz.shape[1] > 100  # sanity: a real, sizeable bundle of hits
+
+    uv = secondary_uv(secondary, hit_xyz)
+    world = secondary_uv_to_world(secondary, uv)
+    np.testing.assert_allclose(world, hit_xyz, atol=1e-6)
+
+
+@pytest.mark.parametrize("secondary", [NoSecondary(), PyramidSecondary(apex_height_mm=1.0, angle_deg=10.0, half_side_mm=100.0)])
+def test_uv_to_world_rejects_shapes_with_no_flux_map(secondary):
+    with pytest.raises(ValueError):
+        secondary_uv_to_world(secondary, np.zeros((2, 1)))
 
 
 # ---------------------------------------------------------------------------

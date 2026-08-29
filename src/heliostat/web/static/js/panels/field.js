@@ -16,9 +16,12 @@ import {
   FIELD_FERMAT_FIELDS,
   FIELD_RADIAL_STAGGER_FIELDS,
 } from "../fields.js";
-import { radialStaggerBands } from "../api.js";
+import { radialStaggerBands, getManuscriptField } from "../api.js";
 
-const MAX_GEOMETRY_HELIOSTATS = 10000;
+// Matches app.py's MAX_GEOMETRY_HELIOSTATS -- raised from 10,000 to 15,000
+// for docs/ui-spec-v0.2.md §P's built-in reference projects (the
+// Stellio-based Hami field ships 14,500 heliostats).
+const MAX_GEOMETRY_HELIOSTATS = 15000;
 const MAX_TRACE_HELIOSTATS = 1000;
 
 let built = false;
@@ -163,7 +166,23 @@ export function render(container) {
   els.radialInputs.forEach((input, i) => setVal(input, radialValues[i]));
   const radialN = bands.reduce((sum, b) => sum + b.rings * b.count, 0);
 
-  const nHeliostats = layout === "radial_stagger" ? radialN : f.n;
+  // "manuscript"/"positions" fall into the "radial_stagger" bucket above
+  // for the picker's own highlight (neither has a matching button -- see
+  // the `layout` fallback above), but the heliostat count shown here
+  // should still be the field that's actually loaded, not the sidebar's
+  // (possibly stale/default) radial-stagger numbers -- docs/ui-spec-v0.2.md
+  // §P's built-in reference projects made this matter: without this, a
+  // loaded 2,650-heliostat Gemasolar project would show "643" here.
+  let nHeliostats = radialN;
+  if (doc.field.layout === "fermat") {
+    nHeliostats = f.n;
+  } else if (doc.field.layout === "manuscript") {
+    const xy = getManuscriptField();
+    if (xy) nHeliostats = xy.length;
+  } else if (doc.field.layout === "positions") {
+    const xy = doc.field.positions && doc.field.positions.xy_mm;
+    if (xy) nHeliostats = xy.length;
+  }
   els.hint.textContent =
     `Viewing up to ${MAX_GEOMETRY_HELIOSTATS.toLocaleString()} · tracing up to ${MAX_TRACE_HELIOSTATS.toLocaleString()}` +
     (nHeliostats > MAX_TRACE_HELIOSTATS ? " (this field is too large to trace -- geometry only)" : "");

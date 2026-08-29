@@ -786,6 +786,67 @@ def secondary_uv(secondary: Secondary, p: np.ndarray) -> np.ndarray:
     return np.vstack([u, v])
 
 
+def secondary_uv_to_world(secondary: Secondary, uv: np.ndarray) -> np.ndarray:
+    """Exact inverse of :func:`secondary_uv`: world-frame ``(3, K)`` points
+    (mm) for ``(u, v)`` surface coordinates (mm) -- the secondary-map
+    analogue of :meth:`~heliostat.geometry.receiver.Receiver.uv_to_world`,
+    backing the §D FEA export's new true-3-D columns (v0.2 followups item 3:
+    "I don't think we need u/v at all... it would just make it harder for
+    someone using Ansys to import").
+
+    ``az = u / aperture_radius_mm`` recovers the azimuth :func:`secondary_uv`
+    built ``u`` from, and ``v`` is horizontal radius directly, so the point
+    sits at local ``(v*sin(az), -v*cos(az))`` -- the same seam convention
+    :func:`secondary_uv` reads (``x = h*sin(phi), y = -h*cos(phi)``, pinned
+    by ``test_uv_round_trip`` in tests/test_secondary_flux.py). Its local
+    height comes from :func:`secondary_nominal_sag_mm`, the SAME closed-form
+    ``z(h)`` :meth:`AxiconSecondary.redirect`/:meth:`CassegrainSecondary.redirect`
+    solve for internally (that function's own docstring: "in the SAME local
+    frame ... redirect trace in") -- so this is provably the same surface,
+    not a second, possibly-drifted description of it.
+
+    Finally transformed OUT of the nominal-local frame :func:`secondary_uv`
+    read ``p`` in (via ``to_local_point``) back to world, the exact inverse
+    of that transform -- the same position-only rotate+decenter
+    :func:`_to_secondary_world` applies to a real hit point, so a §E2
+    rigid-body misalignment relocates this export's points exactly as it
+    would relocate the physical part. Identity when the secondary carries no
+    perturbation (:func:`_secondary_is_unperturbed`).
+
+    Pinned in tests/test_secondary_flux.py by round-tripping against the
+    forward map (``Secondary.redirect``, via
+    ``heliostat.trace.mc.trace_heliostat``'s ``return_secondary_hits``) --
+    mirroring tests/test_receiver_shapes.py's identical receiver pin.
+    """
+    if not secondary_has_flux_map(secondary):
+        raise ValueError(
+            f"{type(secondary).__name__} has no single-valued (u, v) flux-map "
+            "parameterization -- secondary_has_flux_map() is False for it"
+        )
+    uv = np.asarray(uv, dtype=float)
+    r_ap = secondary.aperture_radius_mm
+    az = uv[0] / r_ap
+    v = uv[1]
+    x_local = v * np.sin(az)
+    y_local = -v * np.cos(az)
+    z_rel = secondary_nominal_sag_mm(secondary, x_local, y_local)
+
+    if isinstance(secondary, AxiconSecondary):
+        base_z = secondary.apex_height_mm
+    else:  # CassegrainSecondary -- the only other secondary_has_flux_map() case
+        base_z = secondary.vertex_z_mm
+    p_local = np.vstack([x_local, y_local, base_z + z_rel])
+
+    dx, dy, dz = secondary.dx_mm, secondary.dy_mm, secondary.dz_mm
+    tip, tilt = secondary.tip_mrad, secondary.tilt_mrad
+    if _secondary_is_unperturbed(dx, dy, dz, tip, tilt):
+        return p_local
+    r_mat = _secondary_rotation_matrix(tip, tilt)
+    vertex = np.array([0.0, 0.0, base_z])
+    decenter = np.array([dx, dy, dz])
+    return r_mat @ (p_local - vertex[:, None]) + (vertex + decenter)[:, None]
+
+
 def secondary_uv_extent(secondary: Secondary) -> tuple[tuple[float, float], tuple[float, float]]:
     """``((u_min, u_max), (v_min, v_max))`` of ``secondary``'s ``(u, v)``
     parameterization, mm -- mirrors :meth:`Receiver.uv_extent`.
