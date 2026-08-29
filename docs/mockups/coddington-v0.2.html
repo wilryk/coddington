@@ -121,11 +121,12 @@
   <header class="intro">
     <div class="eyebrow">For sign-off · v0.2 additions · Aug 26, 2026</div>
     <h1>Coddington v0.2 Mockups</h1>
-    <p class="lede"><strong>v0.2 additions</strong> — companion to the Coddington Workspace mockups (M1–M7) and <code>ui-spec-v0.2.md</code>. <strong>Sections A–L and mockups M8–M13 are SIGNED OFF</strong> (2026-08-26); <strong>§M and §N, and mockups M14–M18, are draft, awaiting their own approval.</strong> Eleven mockups in all: the trace status bar moving to the top of the screen (M8), secondary-mirror irradiance with FEA-oriented CSV exports (M9), the optical-error glossary tooltips plus pointing error and measured error-map import (M10), a fidelity picker that explains itself in plain language (M11), the polar (sector) field with a tilted vertical receiver window (M12), rigid-body/deformation perturbations on the secondary mirror (M13), the native desktop window shell (M14), plan-view power coloring with a per-heliostat sweep drill-down (M15), irradiance draped on the 3D receiver (M16), a draggable analysis aperture with an encircled-power curve (M17), and — drawn as three screens — the FINAL Design/3D View/Heliostat Shape/Analysis tab restructure, opening on 3D View (M18).</p>
+    <p class="lede"><strong>v0.2 additions</strong> — companion to the Coddington Workspace mockups (M1–M7) and <code>ui-spec-v0.2.md</code>. <strong>Sections A–L and mockups M8–M13 are SIGNED OFF</strong> (2026-08-26); <strong>§M, §N, §O, §P, and mockups M14–M20, are draft, awaiting their own approval.</strong> Thirteen mockups in all: the trace status bar moving to the top of the screen (M8), secondary-mirror irradiance with FEA-oriented CSV exports (M9), the optical-error glossary tooltips plus pointing error and measured error-map import (M10), a fidelity picker that explains itself in plain language (M11), the polar (sector) field with a tilted vertical receiver window (M12), rigid-body/deformation perturbations on the secondary mirror (M13), the native desktop window shell (M14), plan-view power coloring with a per-heliostat sweep drill-down (M15), irradiance draped on the 3D receiver (M16), a draggable analysis aperture with an encircled-power curve (M17), and — drawn as three screens — the FINAL Design/3D View/Heliostat Shape/Analysis tab restructure, opening on 3D View (M18), a numeric circumsolar-ratio sunshape control (M19), and four built-in reconstructed reference fields with binding provenance labeling (M20).</p>
     <p class="lede">M12's polar-field research (spec §I) finished on 2026-08-25 — the screen below reflects the final control names and defaults (Field span, Center azimuth, Half-span, Window facing, Tilt from vertical), not a preliminary sketch.</p>
     <p class="lede">M14 mockups §L (desktop shell) already carries Ryker's own sign-off on the spec section — the screen is here for a final look at the drawing itself. M15–M17 illustrate §M, which arrived after the main sign-off and has not been reviewed yet — nothing in that group is approved.</p>
     <p class="lede">M18 illustrates §N's tab restructure, evolved through a second round today: <strong>FINAL — decided 2026-08-26.</strong> The morning's Ray Trace tab is superseded — the top bar becomes <strong>Design · 3D View · Heliostat Shape · Analysis</strong>, the app <strong>opens on 3D View</strong>, and every instrument's home (Design's sidebar + 2D canvas, 3D View's scene + trace bar + results dock, Analysis unchanged) is decided, not proposed. The three screens (18a/18b/18c) are drawn for a final look before build, and the old "Workspace declutter" question is dissolved — the Workspace name itself ceases to exist.</p>
-    <p class="lede">The companion spec is <code>docs/ui-spec-v0.2.md</code> in the repo. Nothing gets built from the §M/§N screens until you approve both this document's M14–M18 and that spec's §M/§N.</p>
+    <p class="lede">M19 and M20 are new riders (2026-08-29), <code>ui-spec-v0.2.md</code> §O and §P: a circumsolar ratio (CSR) control replacing the earlier Aureole/Buie toggle idea, and four built-in reconstructed reference fields (Gemasolar, PS10, Crescent Dunes, Stellio-based). Both are draft — neither is approved, and §P's reference-field parameters are placeholders pending a separate research pass.</p>
+    <p class="lede">The companion spec is <code>docs/ui-spec-v0.2.md</code> in the repo. Nothing gets built from the §M/§N/§O/§P screens until you approve both this document's M14–M20 and that spec's §M/§N/§O/§P.</p>
   </header>
 
   <h2><span class="num">8</span>Trace status bar, top of screen</h2>
@@ -1942,6 +1943,205 @@
 
 </div></template></div></div>
   <div class="checknote"><strong>Decided (§N):</strong> the timestep irradiance map stays inline beside the table for fast scrubbing — it does not move to 3D View. It gains the compass edges (§M rider) and an "Open in 3D View →" link for the richer viewers (drape, aperture, FEA export) one click deeper.</div>
+
+  <h2><span class="num">19</span>Sunshape circumsolar ratio (CSR) <span class="tagpill draft">DRAFT §O — awaiting approval</span></h2>
+  <p class="screennote">The Design tab's Sun stage gains a numeric <strong>CSR</strong> field in place of a two-way Aureole/Buie toggle (§O) — CSR is a parameter the Buie profile already has, not a second sunshape. Shown here in Azimuth &amp; elevation mode with the stage expanded; the disclosure line beneath the sun fields now states the CSR in effect instead of a fixed sentence.</p>
+  <div class="stage"><div class="mock"><template shadowrootmode="open"><style>
+    :host { display: block; margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 14px; color: #1f2933; background: #f7f8fa; }
+    a { color: #45739e; }
+    .topbar { display: flex; align-items: center; gap: 10px; padding: 0 20px; height: 52px; background: #ffffff; border-bottom: 1px solid #d8dee5; }
+    .topbar h1 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: 0.02em; }
+    .tag { color: #64748b; font-size: 12px; }
+    .apptabs { display: flex; gap: 6px; margin-left: 28px; }
+    .apptabs .tab { padding: 7px 14px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; }
+    .apptabs .tab.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .topbar .right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+    .btn { padding: 7px 12px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; }
+    .shell { flex: 1 1 auto; min-height: 0; display: flex; }
+    .sidebar { flex: 0 0 320px; background: #ffffff; border-right: 1px solid #d8dee5; overflow: hidden; display: flex; flex-direction: column; }
+    .stage2 { border-bottom: 1px solid #d8dee5; padding: 10px 16px; }
+    .stage2.sel { background: #f2f7fd; box-shadow: inset 3px 0 0 #0b5fd0; }
+    .stagehead { display: flex; align-items: center; gap: 8px; }
+    .stagehead h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: #64748b; margin: 0; font-weight: 600; flex: 1 1 auto; }
+    .summary { color: #64748b; font-size: 12.5px; margin-top: 4px; }
+    .summary strong { color: #1f2933; font-weight: 600; }
+    .subhead { color: #64748b; font-size: 11px; margin: 10px 0 6px 0; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+    .seg { display: flex; gap: 6px; margin-bottom: 10px; }
+    .seg button { flex: 1 1 auto; padding: 6px 8px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 11.5px; }
+    .seg button.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .frow { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .frow label { flex: 0 0 128px; color: #64748b; font-size: 12.5px; }
+    .frow .val { flex: 1 1 auto; padding: 5px 8px; border: 1px solid #d8dee5; border-radius: 5px; background: #ffffff; font-size: 13px; font-variant-numeric: tabular-nums; }
+    .frow.csr .val { border-color: #45739e; box-shadow: 0 0 0 2px rgba(69,115,158,0.12); }
+    .newtag { font-size: 9px; text-transform: uppercase; letter-spacing: 0.04em; color: #0b5fd0; font-weight: 700; margin-left: 6px; }
+    .hint { color: #64748b; font-size: 11px; margin: 2px 0 10px 0; line-height: 1.45; }
+    .disclose { color: #64748b; font-size: 11.5px; margin-top: 10px; line-height: 1.5; padding: 9px 10px; border: 1px solid #d8dee5; border-radius: 7px; background: #fbfcfd; }
+    .disclose strong { color: #1f2933; font-weight: 600; }
+    .tip { position: absolute; width: 250px; background: #1f2933; color: #f2f4f7; font-size: 11px; line-height: 1.45; border-radius: 8px; padding: 9px 11px; box-shadow: 0 8px 20px rgba(15,23,42,0.22); }
+    .tip::before { content: ""; position: absolute; left: -6px; top: 14px; border: 6px solid transparent; border-right-color: #1f2933; }
+    .qmark { display: inline-flex; align-items: center; justify-content: center; width: 13px; height: 13px; border-radius: 50%; border: 1px solid #9db3c4; color: #64748b; font-size: 9.5px; margin-left: 5px; }
+    .viewport { flex: 1 1 auto; position: relative; overflow: hidden; background: #fdfdfe; }
+  </style><div style="width: 1440px; height: 900px; display: flex; flex-direction: column; background: #f7f8fa; overflow: hidden">
+
+  <div class="topbar">
+    <div style="width: 26px; height: 26px; border: 1.5px dashed #45739e; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: #45739e; font-size: 11px; font-weight: 700">C</div>
+    <h1>Coddington</h1>
+    <span class="tag">Manuscript baseline — axicon</span>
+    <div class="apptabs"><div class="tab active">Design</div><div class="tab">3D View</div><div class="tab">Heliostat Shape</div><div class="tab">Analysis</div></div>
+    <div class="right"><div class="btn">Library</div><span class="tag">Unsaved changes</span></div>
+  </div>
+
+  <div class="shell">
+    <div class="sidebar">
+      <div class="stage2">
+        <div class="stagehead"><h2>Heliostat</h2></div>
+        <div class="summary"><strong>Manuscript 5 × 3 m</strong> — rectangle, twisting figure</div>
+      </div>
+      <div class="stage2">
+        <div class="stagehead"><h2>Field</h2></div>
+        <div class="summary"><strong>Radial staggered · 643</strong> — 30 m to 90 m</div>
+      </div>
+      <div class="stage2">
+        <div class="stagehead"><h2>Receiver &amp; Tower</h2></div>
+        <div class="summary"><strong>Axicon 27 m / 20° / 14 m</strong> — receiver at 7 m</div>
+      </div>
+
+      <div class="stage2 sel">
+        <div class="stagehead"><h2>Sun</h2></div>
+        <div class="seg"><button>Site &amp; time</button><button class="active">Azimuth &amp; elevation</button></div>
+        <div class="frow"><label>Azimuth (°)</label><div class="val">165.20</div></div>
+        <div class="frow"><label>Elevation (°)</label><div class="val">61.40</div></div>
+
+        <div class="subhead">Sunshape</div>
+        <div class="frow csr"><label>CSR<span class="qmark">?</span></label><div class="val">0.15</div></div>
+        <div class="hint">Circumsolar ratio — fraction of the sun's radiance in the hazy aureole vs. the disk. Clear sky ≈ 0.0–0.1, hazy skies higher. <strong>0</strong> is today's clean cutoff disk, bit-identical to the current default. Applies at every fidelity; not fidelity-dependent.</div>
+
+        <div class="disclose"><strong>Sunshape:</strong> Buie limb-darkened solar disk + aureole (CSR 0.15). Applied identically at every fidelity.</div>
+
+        <div class="subhead">Sun intensity (DNI)</div>
+        <div class="frow"><label>Model</label><div class="val">Clear-sky model ▾</div></div>
+      </div>
+    </div>
+
+    <div class="viewport">
+      <div class="tip" style="left: 372px; top: 268px">Circumsolar ratio: the fraction of the sun's radiance in the hazy aureole around the disk versus the disk itself. 0 is a clean cutoff disk (today's default); typical clear-sky sites read under 0.1, hazy skies higher.</div>
+    </div>
+  </div>
+
+</div></template></div></div>
+  <div class="checknote"><strong>Binding (§O):</strong> CSR = 0 must reproduce today's shipped hard-cutoff Buie disk bit-identically — same sampler/kernel output, same golden fixtures pinned in 7c4fd08. A project saved before this rider loads at CSR 0 with unchanged physics.</div>
+  <div class="checknote">Both backends, one model: <code>BuieSampler</code> (Monte Carlo) and <code>sunshape_kernel</code>'s <code>"buie"</code> branch (cone) take the same CSR and add the same aureole term, so Ultra fast, Fast accurate, and Monte Carlo move together — no fidelity trades away circumsolar light the others keep.</div>
+  <div class="checknote">CSR is exactly how SolTrace and SolarPILOT already parameterize a Buie sunshape (rev 5 §5 interchange plans) — a future export can carry this number directly.</div>
+
+  <h2><span class="num">20</span>Pre-built reference fields <span class="tagpill draft">DRAFT §P — awaiting approval</span></h2>
+  <p class="screennote">Four built-in <strong>Projects</strong> (§P) — Gemasolar, PS10, Crescent Dunes, and a Stellio-based field — in the Library's Projects tab, alongside the manuscript's existing built-in designs and receivers. Each card carries a <strong>RECONSTRUCTION</strong> badge and citation beside BUILT-IN — proprietary as-built layouts are not published, so what ships is generated from public parameters and must never read as an operator's real data. Shown mid-load: Gemasolar's card expanded, its provenance stamped into the top bar the way it would stay once loaded.</p>
+  <div class="stage"><div class="mock"><template shadowrootmode="open"><style>
+    :host { display: block; margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 14px; color: #1f2933; background: #f7f8fa; }
+    a { color: #45739e; }
+    .topbar { display: flex; align-items: center; gap: 10px; padding: 0 20px; height: 52px; background: #ffffff; border-bottom: 1px solid #d8dee5; }
+    .topbar h1 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: 0.02em; }
+    .tag { color: #64748b; font-size: 12px; }
+    .provtag { display: inline-flex; align-items: center; gap: 5px; color: #6b5310; background: #fdf6e7; border: 1px solid #e4c96b; border-radius: 5px; padding: 3px 8px; font-size: 10.5px; font-weight: 600; }
+    .apptabs { display: flex; gap: 6px; margin-left: 20px; }
+    .apptabs .tab { padding: 7px 14px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; }
+    .apptabs .tab.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .topbar .right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+    .btn { padding: 7px 12px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; }
+    .scrim { position: absolute; inset: 0; top: 52px; background: rgba(31,41,51,0.32); display: flex; align-items: flex-start; justify-content: center; padding-top: 46px; }
+    .modal { width: 900px; max-height: 780px; background: #ffffff; border: 1px solid #d8dee5; border-radius: 12px; box-shadow: 0 18px 44px rgba(15,23,42,0.28); overflow: hidden; display: flex; flex-direction: column; }
+    .modalhead { display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-bottom: 1px solid #d8dee5; }
+    .modalhead h2 { font-size: 15px; margin: 0; font-weight: 650; flex: 1 1 auto; }
+    .close { color: #64748b; font-size: 16px; }
+    .libtabs { display: flex; gap: 6px; padding: 10px 18px 0 18px; }
+    .libtabs .tab { padding: 7px 13px; border: 1px solid #d8dee5; border-bottom: none; background: #f7f8fa; color: #64748b; border-radius: 6px 6px 0 0; font-size: 12px; }
+    .libtabs .tab.active { background: #ffffff; color: #1f2933; font-weight: 600; border-color: #d8dee5; }
+    .libbody { padding: 14px 18px 18px 18px; overflow-y: auto; }
+    .sectionlabel { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; font-weight: 600; margin: 4px 0 8px 0; }
+    .cardgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
+    .card { border: 1px solid #d8dee5; border-radius: 8px; padding: 11px 13px; }
+    .card.open { border-color: #45739e; box-shadow: 0 0 0 2px rgba(69,115,158,0.12); }
+    .cardhead { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .cardhead .name { font-weight: 650; font-size: 13px; }
+    .badge { font-size: 9px; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 700; border-radius: 4px; padding: 2px 6px; }
+    .badge.builtin { color: #64748b; border: 1px solid #d8dee5; }
+    .badge.recon { color: #6b5310; background: #fdf6e7; border: 1px solid #e4c96b; }
+    .badge.needsI { color: #a8551a; background: #fdf0e4; border: 1px solid #eab68a; }
+    .lock { flex: 0 0 auto; }
+    .cardsub { color: #64748b; font-size: 11.5px; margin-top: 5px; }
+    .citation { color: #64748b; font-size: 10.5px; margin-top: 6px; line-height: 1.4; border-top: 1px dashed #e2e8f0; padding-top: 6px; }
+    .citation strong { color: #1f2933; font-weight: 600; }
+    .idealnote { color: #345a80; font-size: 10px; margin-top: 5px; }
+    .cardactions { display: flex; gap: 6px; margin-top: 9px; }
+    .cardactions .btn { padding: 5px 9px; font-size: 11px; }
+    .cardactions .btn.primary { background: #45739e; border-color: #345a80; color: #ffffff; }
+  </style><div style="width: 1440px; height: 900px; display: flex; flex-direction: column; background: #f7f8fa; overflow: hidden; position: relative">
+
+  <div class="topbar">
+    <div style="width: 26px; height: 26px; border: 1.5px dashed #45739e; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: #45739e; font-size: 11px; font-weight: 700">C</div>
+    <h1>Coddington</h1>
+    <span class="tag">Gemasolar (reconstruction)</span>
+    <span class="provtag">⚠ Reconstruction — Relloso &amp; Delgado 2009 (SolarPACES)</span>
+    <div class="apptabs"><div class="tab active">Design</div><div class="tab">3D View</div><div class="tab">Heliostat Shape</div><div class="tab">Analysis</div></div>
+    <div class="right"><div class="btn">Library</div><span class="tag">Loaded from Library</span></div>
+  </div>
+
+  <div class="scrim">
+    <div class="modal">
+      <div class="modalhead"><h2>Library</h2><span class="close">✕</span></div>
+      <div class="libtabs">
+        <div class="tab">Heliostat designs</div>
+        <div class="tab">Receiver configs</div>
+        <div class="tab active">Projects</div>
+      </div>
+      <div class="libbody">
+        <div class="sectionlabel">Built-in — manuscript &amp; reference fields</div>
+        <div class="cardgrid">
+
+          <div class="card open">
+            <div class="cardhead"><span class="name">Gemasolar (reconstruction)</span><span class="badge builtin">BUILT-IN</span><span class="badge recon">RECONSTRUCTION</span></div>
+            <div class="cardsub">Surround field · [N heliostats — placeholder] · central tower, [receiver type — placeholder]</div>
+            <div class="idealnote">Ideal build: slope error, specularity, pointing error all 0</div>
+            <div class="citation"><strong>Source:</strong> published plant parameters — [full citation — placeholder]. Not the operator's as-built layout.</div>
+            <div class="cardactions"><div class="btn small primary">Use</div><div class="btn small">Duplicate</div></div>
+          </div>
+
+          <div class="card">
+            <div class="cardhead"><span class="name">PS10 (reconstruction)</span><span class="badge builtin">BUILT-IN</span><span class="badge recon">RECONSTRUCTION</span><span class="badge needsI">NEEDS §I</span></div>
+            <div class="cardsub">North (polar) field · [N heliostats — placeholder] · [receiver type — placeholder]</div>
+            <div class="idealnote">Ideal build: slope error, specularity, pointing error all 0</div>
+            <div class="citation"><strong>Source:</strong> published plant parameters — [full citation — placeholder]. Depends on §I (sector field + oriented window), designed but not yet built.</div>
+            <div class="cardactions"><div class="btn small primary">Use</div><div class="btn small">Duplicate</div></div>
+          </div>
+
+          <div class="card">
+            <div class="cardhead"><span class="name">Crescent Dunes (reconstruction)</span><span class="badge builtin">BUILT-IN</span><span class="badge recon">RECONSTRUCTION</span></div>
+            <div class="cardsub">Surround field · [N heliostats — placeholder] · [receiver type — placeholder]</div>
+            <div class="idealnote">Ideal build: slope error, specularity, pointing error all 0</div>
+            <div class="citation"><strong>Source:</strong> published plant parameters — [full citation — placeholder]. Not the operator's as-built layout.</div>
+            <div class="cardactions"><div class="btn small primary">Use</div><div class="btn small">Duplicate</div></div>
+          </div>
+
+          <div class="card">
+            <div class="cardhead"><span class="name">Stellio-based field (reconstruction)</span><span class="badge builtin">BUILT-IN</span><span class="badge recon">RECONSTRUCTION</span></div>
+            <div class="cardsub">Outline approximation · [N heliostats — placeholder] · [receiver type — placeholder]</div>
+            <div class="idealnote">Ideal build: slope error, specularity, pointing error all 0</div>
+            <div class="citation"><strong>Source:</strong> published Stellio outline — [full citation — placeholder]. Footprint only — <strong>tracking kinematics not reproduced</strong> [conditional on research — placeholder], az-el model traces every field.</div>
+            <div class="cardactions"><div class="btn small primary">Use</div><div class="btn small">Duplicate</div></div>
+          </div>
+
+        </div>
+        <div class="sectionlabel">Yours</div>
+        <div style="color: #94a3b8; font-size: 12px">No saved projects yet.</div>
+      </div>
+    </div>
+  </div>
+
+</div></template></div></div>
+  <div class="checknote"><strong>Binding (§P, most important clause):</strong> Gemasolar, PS10, and Crescent Dunes as-built layouts are proprietary and unpublished. Every card shows a <strong>RECONSTRUCTION</strong> badge plus a citation, and the citation stays visible in the top bar while the project is loaded — never presented as an operator's actual layout.</div>
+  <div class="checknote">Placement is a new use of an existing, empty extension point: <code>library.py</code>'s <code>_BUILTIN_NAMES["projects"]</code> is <code>{}</code> today — only <code>designs</code> and <code>receivers</code> carry manuscript built-ins. These four are the first built-in Projects, same badge/lock/Duplicate pattern.</div>
+  <div class="checknote">Each ships ideal: slope error, specularity, and pointing error all zero — the layout's own optics, not a guess at real-plant error budgets.</div>
+  <div class="checknote">PS10 is a published north field and needs §I (sector field + oriented window) — designed, not yet built — flagged on its card so it isn't approved as independently shippable.</div>
+  <div class="checknote">Stellio's tracking caveat is conditional pending the research agent's findings (scratchpad/reference_fields_research.md) — drop it at sign-off if Stellio turns out to use az-el tracking after all.</div>
   <div class="checknote">The M15 drill-down (mini plan → field map → one heliostat's footprint) stays in Analysis too — same on-demand single-heliostat trace, same "nothing new stored" mechanism as M15.</div>
   <div class="checknote">Day sweep, year estimate, the energy plot, and saved runs are unchanged from earlier Analysis mockups — only the timestep map gains compass labels and the deep link, and the drill-down row is added beneath. The tab bar is the only other change: Design · 3D View · Heliostat Shape · Analysis, Analysis active.</div>
 
@@ -1966,6 +2166,8 @@
       <li><strong>Irradiance draped on the 3D receiver</strong> (M16, §M.3, draft) — after a trace, the flux map drapes onto the receiver's real surface (flat, cylinder, or frustum), replacing the plain material until stale; the 2D map panel remains the quantitative view.</li>
       <li><strong>Analysis aperture</strong> (M17, §M.4, draft) — a draggable, resizable circle on any irradiance map reads power within, % of collected, avg flux, and avg concentration straight from the stored map, plus an encircled-power curve; pure post-processing, saved with the run as an annotation, and the trace/intercept/collected totals never change.</li>
       <li><strong>Tab restructure — FINAL</strong> (M18a/18b/18c, §N) — the top bar splits into <strong>Design · 3D View · Heliostat Shape · Analysis</strong>, and the app <strong>opens on 3D View</strong>. Design is the authoring tab: the full four-stage sidebar beside a 2D canvas with an explicit Plan view/Elevation toggle. 3D View is the new "what does the light do right now" home, live from the first frame: the dominant 3D scene, a condensed trace bar (fidelity + Run + stamp), and a results dock (irradiance maps with the §M-rider compass edges, the drape toggle, plan-view power coloring, footprint viewing, the analysis aperture, FEA exports) — plus click-to-edit and a sun chip, with full controls staying in Design. Analysis keeps its inline timestep map for fast scrubbing plus an "Open in 3D View" link, and the M15 drill-down stays there too. The old Workspace declutter question is dissolved — the Workspace name ceases to exist.</li>
+      <li><strong>Sunshape circumsolar ratio</strong> (M19, §O, draft) — a numeric CSR field (0–1, default 0) on the Sun stage replaces the Aureole/Buie toggle idea; CSR 0 is bit-identical to today's hard-cutoff Buie disk, both backends (MC sampler, cone kernel) take the same CSR and move together at every fidelity, and the Sun panel's disclosure line now states the CSR in effect.</li>
+      <li><strong>Pre-built reference fields</strong> (M20, §P, draft) — Gemasolar, PS10, Crescent Dunes, and a Stellio-based field ship as built-in Projects (Library, first use of that collection's built-in slot), each an ideal build (zero slope error, specularity, pointing error) and each labeled RECONSTRUCTION with a citation wherever it's named or loaded — never presented as an operator's real layout. PS10 needs §I (not yet built); the Stellio tracking caveat is conditional pending research.</li>
     </ul>
     <h2>Open questions — all resolved 2026-08-25</h2>
     <ul class="qs">
@@ -1992,7 +2194,9 @@
       <li>3D View opening on app launch, its condensed trace bar, and the results dock's assembly of the map with compass edges and aperture, the drape toggle (shown ON with the receiver's hot spot), plan-view power coloring, footprint viewing, and FEA export (18b) are right</li>
       <li>The floating click-to-edit inspector and sun chip in 3D View (18b), with full controls staying in Design, is the split you want</li>
       <li>The Analysis tab's inline timestep map with compass edges and its "Open in 3D View" link, and the M15 drill-down staying put (18c), are right</li>
-      <li>Spec <code>docs/ui-spec-v0.2.md</code> read and approved, including §M and §N</li>
+      <li>The CSR control's range/step/default, the bit-identical-at-0 requirement, the guidance text, and the tooltip/disclosure wording (M19) are right</li>
+      <li>Reference-field placement (built-in Projects), the RECONSTRUCTION badge and citation wording, the ideal-build note, the §I flag on PS10, and the conditional Stellio tracking caveat (M20) are right</li>
+      <li>Spec <code>docs/ui-spec-v0.2.md</code> read and approved, including §M, §N, §O, and §P</li>
     </ul>
   </section>
 

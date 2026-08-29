@@ -140,6 +140,33 @@ Evolved through two rounds on 2026-08-26. The morning's Ray Trace tab is **super
 
 Mockup M18 is redrawn to this structure (M18a Design, M18b 3D View, M18c Analysis). The M18b "Workspace declutter" question is dissolved rather than answered: the old Workspace ceases to exist.
 
+## O. Sunshape circumsolar ratio (CSR) — draft, awaiting sign-off (added 2026-08-29)
+
+Rider on §G's sunshape wording and on commit 7c4fd08 ("Only Buie is"). The owner's question — "Perhaps we could add the aureole term? Or let the user choose on the design tab under Sun between Aureole and regular Buie?" — is resolved as a single numeric control, not a two-way toggle: a **circumsolar ratio (CSR)**, since CSR is a parameter the Buie (2003) profile already has rather than a second sunshape to pick between.
+
+- **Design tab, Sun stage:** a **CSR** number field, range **0.000–1.000**, step **0.01**, default **0**. **Binding requirement:** CSR = 0 must reproduce today's shipped hard-cutoff, no-aureole Buie disk **bit-identically** — the same `BuieSampler` / `sunshape_kernel("buie")` output, against the same golden fixtures 7c4fd08 pinned. A project saved before this rider ships loads at CSR = 0 with unchanged physics, the same guarantee §H gives positions.
+- **Units/convention:** the standard Buie definition — fraction of circumsolar (aureole) irradiance to total direct-plus-circumsolar irradiance, unitless, 0–1. State this in the field's tooltip so a CSR value carried over from SolTrace, SolarPILOT, or measured aerosol data reads the same way here.
+- **Guidance text beside the field** (orientation, not a validation bound): clear-sky conditions typically read **CSR ≈ 0.0–0.1**; hazy/high-aerosol skies read higher, commonly **0.1–0.3** and up. Site/instrument dependent — not a hard limit.
+- **One model, every fidelity:** `BuieSampler` (Monte Carlo) and `sunshape_kernel`'s `"buie"` branch (cone backends) take the same CSR input and add the same aureole term, so a CSR change moves Ultra fast, Fast accurate, and Monte Carlo identically — no fidelity keeps circumsolar light another one trades away.
+- **Persistence:** CSR saves with the project like the rest of the Sun stage.
+- **Tooltip (§G-style):** "Circumsolar ratio: the fraction of the sun's radiance in the hazy aureole around the disk versus the disk itself. 0 is a clean cutoff disk (today's default); typical clear-sky sites read under 0.1, hazy skies higher."
+- **Sun panel disclosure line** (sun.js) must name the CSR in effect, not just the profile: e.g. "Sunshape: Buie limb-darkened solar disk + aureole (CSR 0.15). Applied identically at every fidelity." At CSR = 0 the line still names Buie; "+ aureole" drops since there is none.
+- **Interchange note:** CSR is exactly how SolTrace and SolarPILOT already parameterize a Buie sunshape, so this brings Coddington's sunshape spec in line with the interchange plans already on the books (rev 5 §5) — a future export can carry CSR directly, no translation needed.
+
+## P. Pre-built reference heliostat fields — draft, awaiting sign-off (added 2026-08-29)
+
+Four fields ship with the app as examples: **Gemasolar**, **PS10**, **Crescent Dunes**, and a **Stellio-based field** (Stellio: a commercial pentagonal/petal-shaped heliostat; the shipped field approximates its footprint outline, not the product). Parameters are supplied separately; this rider is written parameter-agnostic and marks where numbers land.
+
+- **Where they live:** each ships as a **built-in Project** (Library → Projects tab) — one document bundling field layout + matching heliostat design + receiver/tower config, the shape the Projects collection already stores for user-saved setups. This is a new use of that collection, not an extension of an existing one: `library.py`'s `_BUILTIN_NAMES["projects"]` is empty today (only `designs` and `receivers` carry manuscript built-ins, via `builtin_library.py`'s `BUILTIN_DESIGNS`/`BUILTIN_RECEIVERS`). These four follow the identical pattern — a `BUILTIN_PROJECTS` entry, the same BUILT-IN badge, lock icon, and Duplicate-to-edit affordance `library.js` already renders. Loading one populates Heliostat, Field, Receiver & Tower, and Sun exactly as opening any saved project does.
+- **Binding provenance requirement — the most important clause in this rider:** exact as-built layouts of Gemasolar, PS10, and Crescent Dunes are proprietary and unpublished. What ships must be labeled, everywhere it appears, as a **RECONSTRUCTION generated from published parameters** — never presented as an operator's actual layout:
+  - Each Library card carries a **RECONSTRUCTION** badge beside BUILT-IN, plus a one-line citation/provenance note (the source paper(s)/report the parameters came from) in the card body.
+  - Loading one stamps the same citation somewhere visibly persistent while that project is open (top-bar project tag or equivalent), so a result screenshot carries the provenance, not just the plant name.
+  - Labels read "Gemasolar (reconstruction)" style throughout — never a bare plant name standing in for vendor data.
+  - Applies to all four, Stellio included: a real product, but the shipped field is Coddington's own approximation of its published outline, still a reconstruction.
+- **Ideal build:** each ships with every optical-error input zeroed — **slope error, specularity, and pointing error all 0** (§F/§G glossary fields) — so what's shown is the layout/geometry's own performance, not a guess at a real plant's error budget. Reflectance uses the built-in heliostat design's own stated value, per `builtin_library.py`'s existing practice of spelling defaults out rather than leaving them implicit.
+- **Stellio tracking caveat (conditional — confirm against research before build):** if the research finds, as expected, that real Stellio heliostats use target-aligned rather than azimuth-elevation tracking, Coddington's az-el model does not reproduce that kinematics, and the shipped field must say so wherever it's loaded or named — the reconstruction is the outline (petal/pentagonal footprint and spacing), not the tracking behavior. If research instead confirms az-el tracking, drop this caveat at sign-off.
+- **§I dependency:** PS10 is a published north (polar) field; an accurate reconstruction needs §I's Field span (sector) control and oriented receiver window, which is designed but **not yet built** — PS10 cannot ship correctly before §I ships. Gemasolar and Crescent Dunes are surround fields and don't need §I. The Stellio-based field's dependency on §I, if any, follows from its own field arrangement once that's set.
+
 ## J. Acceptance checklist (v0.2 additions)
 
 1. Fidelity picker shows the three purpose subtitles; hovering any optical-error field shows its glossary tooltip.

@@ -47,9 +47,10 @@ BUDGETS = {
     "CLAUDE.md": 400,
     # Not user documentation: the signed-off v0.2 build contract (same
     # reasoning and lifecycle as ui-spec.md above -- freezes at sign-off,
-    # delete when v0.2 ships and the content moves into guide.md). Headroom
-    # for the M.5-M.7 riders still awaiting sign-off.
-    "docs/ui-spec-v0.2.md": 4400,
+    # delete when v0.2 ships and the content moves into guide.md). Raised
+    # 2026-08-29: added draft riders §O (sunshape CSR) and §P (pre-built
+    # reference fields), awaiting their own sign-off alongside §M/§N.
+    "docs/ui-spec-v0.2.md": 5300,
     # Not user documentation: the formula-level build plan spec §C was
     # implemented from. Historical once §C shipped (2026-08-28); kept as
     # the derivation record for the secondary parameterization. Frozen.
