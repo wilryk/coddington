@@ -6,7 +6,7 @@
 ;
 ; Build (from the repository root):
 ;
-;     iscc packaging\desktop\coddington.iss /DMyAppVersion=0.1.0
+;     iscc packaging\desktop\coddington.iss /DMyAppVersion=0.2.0
 ;
 ; MyAppVersion defaults to 0.0.0 if not passed on the command line, so a
 ; direct "iscc coddington.iss" still produces something runnable while
