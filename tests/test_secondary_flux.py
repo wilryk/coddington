@@ -118,9 +118,12 @@ def test_uv_helpers_reject_shapes_with_no_flux_map(secondary):
 
 @pytest.mark.parametrize("secondary", [AXICON, CASSEGRAIN])
 def test_uv_round_trip(secondary):
-    """Points built at known (h, phi) recover exactly the (u, v) the plan's
-    formula predicts: v = h; u = aperture_radius_mm * phi, with phi the
-    ``atan2(x, -y)`` convention -- so x = h*sin(phi), y = -h*cos(phi)."""
+    """Cartesian plan-projection scheme: (u, v) IS (x_local, y_local),
+    trivially -- no arc-length/radius recovery needed at all (contrast the
+    old radial scheme's ``v = h; u = aperture_radius_mm * atan2(x, -y)``,
+    kept only in git history). Points are built at random (h, phi) purely to
+    land them inside the aperture disk, same as the old test's own sampling
+    -- the assertion below no longer cares about phi at all."""
     rng = np.random.default_rng(0)
     n = 500
     h = rng.uniform(0.0, secondary.aperture_radius_mm, n)
@@ -130,30 +133,33 @@ def test_uv_round_trip(secondary):
     z = np.zeros(n)  # secondary_uv only reads x, y
 
     uv = secondary_uv(secondary, np.vstack([x, y, z]))
-    np.testing.assert_allclose(uv[1], h, atol=1e-9, rtol=1e-12)
-    np.testing.assert_allclose(uv[0], secondary.aperture_radius_mm * phi, atol=1e-6, rtol=1e-12)
+    np.testing.assert_allclose(uv[0], x, atol=1e-9, rtol=1e-12)
+    np.testing.assert_allclose(uv[1], y, atol=1e-9, rtol=1e-12)
 
     (u0, u1), (v0, v1) = secondary_uv_extent(secondary)
     r = secondary.aperture_radius_mm
-    assert u0 == pytest.approx(-math.pi * r)
-    assert u1 == pytest.approx(math.pi * r)
-    assert v0 == 0.0
-    assert v1 == r
+    assert u0 == pytest.approx(-r)
+    assert u1 == pytest.approx(r)
+    assert v0 == pytest.approx(-r)
+    assert v1 == pytest.approx(r)
+    # Every point sampled inside the aperture disk sits inside the SQUARE
+    # bounding box too -- the square is a superset of the disk (that is
+    # exactly why secondary_bin_areas_m2 has bins to mask).
     assert np.all(uv[0] >= u0 - 1e-6) and np.all(uv[0] <= u1 + 1e-6)
-    assert np.all(uv[1] >= v0 - 1e-9) and np.all(uv[1] <= v1 + 1e-9)
+    assert np.all(uv[1] >= v0 - 1e-6) and np.all(uv[1] <= v1 + 1e-6)
 
 
-def test_uv_seam_and_axis_are_well_defined():
-    """North seam (+y axis, x=0) and the axis itself (h=0) are ordinary
-    inputs, not singularities -- atan2(0, -y) is 0 at u=0 for y>0 (south of
-    the seam convention) and well-defined at the origin."""
+def test_uv_axis_is_an_ordinary_point():
+    """The old radial scheme's ``v = 0`` axis was a degenerate point every
+    azimuth converged on (worst for the Cassegrain, whose vertex sits there)
+    -- the Cartesian scheme has no such singularity: the origin is just the
+    point ``(0, 0)``, like any other."""
     p = np.array([[0.0, 0.0], [1.0, -1.0], [0.0, 0.0]])  # (0,1,0) and (0,-1,0)
     uv = secondary_uv(AXICON, p)
     assert np.all(np.isfinite(uv))
     origin = np.zeros((3, 1))
     uv0 = secondary_uv(AXICON, origin)
-    assert uv0[1, 0] == 0.0
-    assert np.isfinite(uv0[0, 0])
+    np.testing.assert_array_equal(uv0[:, 0], [0.0, 0.0])
 
 
 # ---------------------------------------------------------------------------
@@ -198,23 +204,39 @@ def test_uv_to_world_rejects_shapes_with_no_flux_map(secondary):
 # ---------------------------------------------------------------------------
 
 
-def test_axicon_bin_area_sum_matches_closed_form():
-    """h*sec(slope) is linear in h for a cone (constant slope), so the
-    midpoint rule integrates it exactly for ANY bin count -- same tightness
-    as FrustumReceiver's own linear-in-v area test
-    (tests/test_receiver_shapes.py)."""
+def test_axicon_bin_area_sum_converges_to_closed_form():
+    """Cartesian scheme (owner-proposed, superseding the old radial one --
+    see git history): a bin's area is masked to 0 whenever its CENTRE falls
+    outside the aperture disk (secondary_bin_areas_m2's own masking note),
+    so the bin-area sum is now a square-grid pixelation of a circle -- a
+    classic Gauss-circle-problem-shaped approximation with O(1/n) relative
+    error, converging to the true area as the grid refines, but no longer
+    EXACT at any finite resolution the way the old radial scheme's
+    axicon case was (there, ``h*sec(slope)`` was linear in the single
+    coordinate ``v``, so 1-D midpoint quadrature was exact regardless of
+    bin count -- that special exactness does not survive pixelating a disk
+    with squares). Measured relative error: ~0.34% at n=64, ~0.007% at
+    n=256 (this module's own SECONDARY_FLUX_GRID_N-scale resolution),
+    ~0.002% at n=1024 -- the tolerances below have generous headroom over
+    each, while still proving the trend converges rather than merely being
+    "close enough once"."""
     analytic_m2 = math.pi * AXICON.aperture_radius_mm**2 / math.cos(math.radians(AXICON.half_angle_deg)) / 1.0e6
-    for grid in [(8, 8), (64, 37), (128, 500)]:
-        total = float(np.sum(secondary_bin_areas_m2(AXICON, grid)))
-        assert total == pytest.approx(analytic_m2, rel=1e-9), grid
+    coarse = float(np.sum(secondary_bin_areas_m2(AXICON, (64, 64))))
+    production = float(np.sum(secondary_bin_areas_m2(AXICON, (256, 256))))
+    fine = float(np.sum(secondary_bin_areas_m2(AXICON, (1024, 1024))))
+    assert coarse == pytest.approx(analytic_m2, rel=1e-2)
+    assert production == pytest.approx(analytic_m2, rel=5e-4)
+    assert fine == pytest.approx(analytic_m2, rel=1e-4)
+    # The trend itself matters as much as any one number: finer grids must
+    # not merely be close, they must be CLOSER than coarser ones.
+    assert abs(fine - analytic_m2) < abs(production - analytic_m2) < abs(coarse - analytic_m2)
 
 
 def test_cassegrain_bin_area_sum_converges_to_numeric_surface_area():
-    """No closed form for a hyperboloid's lateral area; reference is a direct
-    numerical integration of the same h*sec(slope) integrand
-    secondary_bin_areas_m2 evaluates at bin midpoints. The midpoint rule's
-    error is O(1/n_v^2) for this smooth, non-linear integrand, so a modest
-    v-bin count already lands well inside a loose tolerance."""
+    """Same Gauss-circle-problem convergence as the axicon test above, this
+    shape's own reference computed by direct numerical integration of the
+    same h*sec(slope) integrand secondary_bin_areas_m2 evaluates at bin
+    midpoints (no closed form exists for a hyperboloid's lateral area)."""
     r, kk = CASSEGRAIN.vertex_radius_mm, 1.0 + CASSEGRAIN.conic
 
     def integrand(h):
@@ -226,8 +248,13 @@ def test_cassegrain_bin_area_sum_converges_to_numeric_surface_area():
     val, _ = integrate.quad(integrand, 0.0, CASSEGRAIN.aperture_radius_mm)
     analytic_m2 = 2.0 * math.pi * val / 1.0e6
 
-    total = float(np.sum(secondary_bin_areas_m2(CASSEGRAIN, (64, 2000))))
-    assert total == pytest.approx(analytic_m2, rel=1e-5)
+    coarse = float(np.sum(secondary_bin_areas_m2(CASSEGRAIN, (64, 64))))
+    production = float(np.sum(secondary_bin_areas_m2(CASSEGRAIN, (256, 256))))
+    fine = float(np.sum(secondary_bin_areas_m2(CASSEGRAIN, (1024, 1024))))
+    assert coarse == pytest.approx(analytic_m2, rel=1e-2)
+    assert production == pytest.approx(analytic_m2, rel=5e-4)
+    assert fine == pytest.approx(analytic_m2, rel=1e-4)
+    assert abs(fine - analytic_m2) < abs(production - analytic_m2) < abs(coarse - analytic_m2)
 
 
 # ---------------------------------------------------------------------------
@@ -313,11 +340,23 @@ def test_energy_pin_mc(secondary, row):
     """Monte Carlo: secondary_xy already carries the (x, y) of every ray
     that struck the secondary (heliostat.trace.mc.trace_heliostat's
     ``return_secondary_hits=True``, no new ray tracing). Histogramming those
-    hits through secondary_uv/secondary_bin_areas_m2's own bins and
-    re-integrating power must reproduce ``hit_secondary`` count *
-    watts-per-ray exactly (to float round-off) -- a genuine conservation
-    check on the (u, v) extent/binning: any bug that clips hits at the bin
-    edges or mis-scales area would show up here at far more than 1e-6."""
+    hits through secondary_uv's own bins recovers ``hit_secondary`` count
+    exactly (``counts.sum() == n_hit`` -- every real hit's (x, y) satisfies
+    ``hypot(x, y) <= aperture_radius_mm``, well inside the Cartesian grid's
+    square extent, so nothing can fall outside it regardless of masking).
+
+    Re-integrating power through ``flux = counts * watts_per_ray /
+    areas_m2`` needs a guard now that secondary_bin_areas_m2 masks bins
+    outside the aperture disk to area 0.0 (that function's own note): an
+    unguarded divide would put NaN in ``flux`` at every masked bin (0/0),
+    contaminating the sum via ``nan * 0`` even where no hit ever landed
+    there. For THIS fixture (a single heliostat's beam is a compact spot,
+    nowhere near the aperture rim where masked bins live -- measured: max
+    hit radius ~4.8m against a 14m aperture) no hit lands in a masked bin at
+    all, so the exact reproduction still holds at 1e-6; a field trace
+    illuminating the full aperture could show a small masked-bin blind spot
+    here, but that never affects the app's own energy totals -- see
+    heliostat.web.app._mc_secondary_flux's identical guard and comment."""
     rng = np.random.default_rng(1)
     out = trace_heliostat(
         row["x_mm"], row["y_mm"], row["rot_az_deg"], row["rot_el_deg"],
@@ -333,13 +372,13 @@ def test_energy_pin_mc(secondary, row):
     p3 = np.vstack([sec_xy, np.zeros(sec_xy.shape[1])])
     uv = secondary_uv(secondary, p3)
     (u0, u1), (v0, v1) = secondary_uv_extent(secondary)
-    n_u, n_v = 128, 128
+    n_u, n_v = 256, 256
     u_edges = np.linspace(u0, u1, n_u + 1)
     v_edges = np.linspace(v0, v1, n_v + 1)
     counts, _, _ = np.histogram2d(uv[1], uv[0], bins=[v_edges, u_edges])
     assert counts.sum() == n_hit  # no hit lost to a binning/extent bug
 
     areas_m2 = secondary_bin_areas_m2(secondary, (n_u, n_v))
-    flux = counts * watts_per_ray / areas_m2
+    flux = np.divide(counts * watts_per_ray, areas_m2, out=np.zeros_like(areas_m2), where=areas_m2 > 0)
     power_via_histogram = float(np.sum(flux * areas_m2))
     assert power_via_histogram == pytest.approx(expected_power, rel=1e-6)

@@ -2801,20 +2801,15 @@ function build(container) {
     store.set("ui.fluxSurface", "field");
   });
   fluxHead.appendChild(fluxSurfaceSeg);
-  // docs/ui-spec-v0.2.md §C2, mockup M23: Plan (default) / Unrolled
-  // (technical) -- a display transform only, shown beside the Receiver |
-  // Secondary | Field selector, only meaningful (and only shown) while
-  // Secondary is selected. Same (u, v) bins and same colormap/values either
-  // way -- see paintSecondaryFluxPlan/paintSecondaryFluxCanvas below.
-  const fluxSecondaryViewSeg = document.createElement("div");
-  fluxSecondaryViewSeg.className = "seg an-surfaceseg an-secviewseg";
-  const fluxSecondaryViewPlanBtn = segButton(fluxSecondaryViewSeg, "Plan", true, () =>
-    store.set("ui.secondaryFluxView", "plan")
-  );
-  const fluxSecondaryViewUnrolledBtn = segButton(fluxSecondaryViewSeg, "Unrolled (technical)", false, () =>
-    store.set("ui.secondaryFluxView", "unrolled")
-  );
-  fluxHead.appendChild(fluxSecondaryViewSeg);
+  // docs/ui-spec-v0.2.md §C2, mockup M23: the secondary map used to offer a
+  // Plan/Unrolled (technical) toggle -- a display transform between the
+  // radial (u, v) bins' native unrolled layout and a polar plan projection
+  // of them. Now that secondary_uv is itself a Cartesian (x_local, y_local)
+  // plan-projection pair (see heliostat.geometry.secondary's module notes),
+  // the grid already IS the plan view -- there is no second, genuinely
+  // different "unrolled" layout left to synthesize, so the toggle is
+  // removed rather than kept as a no-op. paintSecondaryFluxCanvasPlan below
+  // is now the map's only presentation.
   // docs/ui-spec-v0.2.md §N, mockup M18c: this inline map stays here for
   // fast scrubbing (decided, not moved) -- this link is the one-click-deeper
   // path to the richer 3D View viewers (drape, aperture, FEA export) mockup
@@ -3347,9 +3342,6 @@ function build(container) {
     fluxSurfaceReceiverBtn,
     fluxSurfaceSecondaryBtn,
     fluxSurfaceFieldBtn,
-    fluxSecondaryViewSeg,
-    fluxSecondaryViewPlanBtn,
-    fluxSecondaryViewUnrolledBtn,
     fluxSecondaryPlanNote,
     fluxSecondaryCanvas,
     fluxSecondaryReadout,
@@ -3616,66 +3608,31 @@ function secondaryFluxMagmaColor(t) {
   return [0, 0, 4];
 }
 
-// Paints app.py's _flux_grid_payload straight onto a 2D canvas -- there is
-// no server-rendered PNG for the secondary map (only the opt-in raw grid,
-// spec §C), unlike the receiver's own flux_png. `values` is row-major, row
-// 0 = v_min (the bottom of the map, matplotlib's own origin="lower"
-// convention _render_flux_png uses) -- canvas row 0 is its TOP, so row 0 of
-// `values` is drawn into the canvas's LAST row (same flip as scene3d.js's
-// fluxGridTexture).
+// docs/ui-spec-v0.2.md §C2, mockup M23 (updated for the Cartesian
+// plan-projection binning switch): paints app.py's _flux_grid_payload
+// straight onto a 2D canvas -- there is no server-rendered PNG for the
+// secondary map (only the opt-in raw grid, spec §C), unlike the receiver's
+// own flux_png. This used to be two different presentations (a native
+// "unrolled" arc-length/radius raster, and a polar-to-Cartesian "plan"
+// projection of it) because the old radial (u, v) parameterization's native
+// layout WASN'T a plan view. Now that secondary_uv is itself a Cartesian
+// (x_local east, y_local north) pair over the aperture's own square
+// bounding box, the grid already IS the plan view -- painting it is a
+// direct raster, not a projection, so the old toggle and its second painter
+// are gone (synthesizing a distinct "unrolled" layout from data that is
+// already Cartesian would show nothing the plan view doesn't).
 //
-// docs/ui-spec-v0.2.md §C2, mockup M23: this is now the "Unrolled
-// (technical)" view, RETAINED as a one-click secondary toggle rather than
-// dropped -- the default presentation is paintSecondaryFluxCanvasPlan below.
-// Same grid, same colormap, drawn exactly the way this function always has
-// ("it costs nothing to keep -- no new data, just a second draw of the
-// identical grid", the rider's own words).
-function paintSecondaryFluxCanvasUnrolled(canvas, grid) {
-  const { n_u, n_v, values } = grid;
-  let max = 0;
-  for (const v of values) if (v != null && v > max) max = v;
-  canvas.width = n_u;
-  canvas.height = n_v;
-  const ctx2d = canvas.getContext("2d");
-  const img = ctx2d.createImageData(n_u, n_v);
-  for (let row = 0; row < n_v; row++) {
-    const canvasRow = n_v - 1 - row;
-    for (let col = 0; col < n_u; col++) {
-      const val = values[row * n_u + col];
-      const [r, g, b] = secondaryFluxMagmaColor(max > 0 && val != null ? val / max : 0);
-      const idx = (canvasRow * n_u + col) * 4;
-      img.data[idx] = r;
-      img.data[idx + 1] = g;
-      img.data[idx + 2] = b;
-      img.data[idx + 3] = 255;
-    }
-  }
-  ctx2d.putImageData(img, 0, 0);
-}
-
-// docs/ui-spec-v0.2.md §C2, mockup M23: the DEFAULT secondary presentation
-// -- looking down the optical axis, so an axicon cone or Cassegrain surface
-// reads as a disk/annulus. Display transform only; the underlying (u, v)
-// bins and every flux value are exactly what the unrolled view above draws
-// -- only the screen POSITION of each bin changes:
-//
-//   theta = u_mm / aperture_radius_mm     (secondary_uv's own az, radians)
-//   x = v_mm * sin(theta), y = -v_mm * cos(theta)
-//
-// -- the identical atan2(x, -y)/south-at-0/seam-at-north convention every
-// other compass-marked map in this app uses (receiver.py's module
-// docstring, this file's own compassCaptionFor, main.js's
-// CYLINDER_AXIS_COMPASS): south at theta=0 sits at the BOTTOM of the plan
-// circle (canvas y grows down, so -y_world is drawn downward), and
-// increasing theta (positive u, toward the aperture's own +x/east side)
-// sweeps clockwise through east on the RIGHT -- matching §C2's own "angle
-// increasing clockwise through East" wording exactly, not a fresh
-// derivation. `aperture_radius_mm` is never a new payload field: v spans
-// 0..aperture_radius_mm by construction (secondary_uv_extent), so v_max_mm
-// on the grid itself already IS that radius.
+// `values` is row-major, row 0 = v_min (the bottom of the map, south) --
+// canvas y grows down, so row 0 is drawn at the canvas's own bottom edge,
+// same flip every other flux painter in this app uses (matplotlib's
+// origin="lower", scene3d.js's fluxGridTexture). A bin whose centre falls
+// outside the aperture disk is left unpainted (background shows through)
+// rather than drawn in its own (always-zero, per
+// secondary_bin_areas_m2's masking) color -- that is what makes the result
+// read as a circular disk rather than a dark-cornered square.
 function paintSecondaryFluxCanvasPlan(canvas, grid) {
   const { n_u, n_v, u_min_mm, u_max_mm, v_min_mm, v_max_mm, values } = grid;
-  const apertureRadiusMm = Math.max(v_max_mm, 1e-6);
+  const apertureRadiusMm = Math.max((u_max_mm - u_min_mm) / 2, (v_max_mm - v_min_mm) / 2, 1e-6);
   const size = 380;
   canvas.width = size;
   canvas.height = size;
@@ -3690,49 +3647,27 @@ function paintSecondaryFluxCanvasPlan(canvas, grid) {
   for (const v of values) if (v != null && v > max) max = v;
   const duMm = (u_max_mm - u_min_mm) / n_u;
   const dvMm = (v_max_mm - v_min_mm) / n_v;
-
-  const toXY = (vMm, thetaRad) => {
-    const x = vMm * Math.sin(thetaRad);
-    const y = -vMm * Math.cos(thetaRad);
-    return [cx + x * scale, cy - y * scale];
-  };
+  const wPx = duMm * scale + 0.75; // slight overlap so adjacent bins don't
+  const hPx = dvMm * scale + 0.75; // leave antialiasing seams between them
 
   for (let row = 0; row < n_v; row++) {
-    const vLo = v_min_mm + row * dvMm;
-    const vHi = vLo + dvMm;
+    const yMm = v_min_mm + (row + 0.5) * dvMm;
     for (let col = 0; col < n_u; col++) {
+      const xMm = u_min_mm + (col + 0.5) * duMm;
+      if (Math.hypot(xMm, yMm) > apertureRadiusMm) continue; // outside the aperture disk
       const val = values[row * n_u + col];
       const t = max > 0 && val != null ? val / max : 0;
-      const uLo = u_min_mm + col * duMm;
-      const uHi = uLo + duMm;
-      const thLo = uLo / apertureRadiusMm;
-      const thHi = uHi / apertureRadiusMm;
-      // A coarse grid's outer bins span a wide angle at a large radius --
-      // subdivide the arc so it still reads as a curve, not a chord.
-      const steps = Math.max(1, Math.ceil(Math.abs(thHi - thLo) / 0.15));
-      ctx2d.beginPath();
-      for (let s = 0; s <= steps; s++) {
-        const th = thLo + ((thHi - thLo) * s) / steps;
-        const [px, py] = toXY(vHi, th);
-        if (s === 0) ctx2d.moveTo(px, py);
-        else ctx2d.lineTo(px, py);
-      }
-      for (let s = steps; s >= 0; s--) {
-        const th = thLo + ((thHi - thLo) * s) / steps;
-        const [px, py] = toXY(vLo, th);
-        ctx2d.lineTo(px, py);
-      }
-      ctx2d.closePath();
       const [r, g, b] = secondaryFluxMagmaColor(t);
       ctx2d.fillStyle = `rgb(${r},${g},${b})`;
-      ctx2d.fill();
+      const px = cx + xMm * scale - wPx / 2;
+      const py = cy - yMm * scale - hPx / 2;
+      ctx2d.fillRect(px, py, wPx, hPx);
     }
   }
 
-  // Compass markers (§C2/§M rider) -- at the circle's OWN compass
-  // positions, not fixed screen corners (the way the flat receiver's square
-  // map places them) -- N/E/S/W sit just outside the rim, at their own
-  // theta (0=S bottom, pi/2=E right, pi=N top, -pi/2=W left).
+  // Compass markers (§C2/§M rider) -- N/E/S/W just outside the rim, matching
+  // the same "x east, y north" world-frame convention every other
+  // compass-marked map/export in this app uses.
   ctx2d.fillStyle = "#334155";
   ctx2d.font = "11px sans-serif";
   ctx2d.textAlign = "center";
@@ -3746,16 +3681,10 @@ function paintSecondaryFluxCanvasPlan(canvas, grid) {
   ctx2d.fillText("W", cx - rEdge - 5, cy + 4);
 }
 
-// Dispatches to the Plan (default) or Unrolled painter per the §C2 toggle
-// (ui.secondaryFluxView, "plan"|"unrolled") -- the one place both call sites
-// (the day/year source's paintFluxPanel and the instant source's
-// paintInstantFluxPanel) need to touch to honor it.
+// Thin alias kept so call sites read the same as before this file's own
+// toggle removal -- there is only one secondary presentation now.
 function paintSecondaryFlux(canvas, grid) {
-  if (store.get("ui.secondaryFluxView") === "unrolled") {
-    paintSecondaryFluxCanvasUnrolled(canvas, grid);
-  } else {
-    paintSecondaryFluxCanvasPlan(canvas, grid);
-  }
+  paintSecondaryFluxCanvasPlan(canvas, grid);
 }
 
 // v0.2 followups item 1, mockup M15: plan-view power coloring -- one dot per
@@ -3905,21 +3834,15 @@ function paintInstantFluxSurfaceSelector(result) {
   return "receiver";
 }
 
-// docs/ui-spec-v0.2.md §C2, mockup M23: the Plan/Unrolled toggle and the
-// fixed not-equal-area note are only meaningful while the secondary map is
-// actually on screen -- shared by both paintFluxPanel (day/year source) and
-// paintInstantFluxPanel (§R's instant source), so the two can never disagree
-// about when to show them.
+// docs/ui-spec-v0.2.md §C2, mockup M23: the fixed not-equal-area note is
+// only meaningful while the secondary map is actually on screen -- shared
+// by both paintFluxPanel (day/year source) and paintInstantFluxPanel (§R's
+// instant source), so the two can never disagree about when to show it.
+// (Used to also drive a Plan/Unrolled toggle -- removed now that
+// secondary_uv's own binning is Cartesian, see paintSecondaryFluxCanvasPlan's
+// comment.)
 function paintSecondaryViewControls(showSecondary) {
-  els.fluxSecondaryViewSeg.hidden = !showSecondary;
-  if (!showSecondary) {
-    els.fluxSecondaryPlanNote.hidden = true;
-    return;
-  }
-  const view = store.get("ui.secondaryFluxView") === "unrolled" ? "unrolled" : "plan";
-  els.fluxSecondaryViewPlanBtn.classList.toggle("active", view === "plan");
-  els.fluxSecondaryViewUnrolledBtn.classList.toggle("active", view === "unrolled");
-  els.fluxSecondaryPlanNote.hidden = view !== "plan";
+  els.fluxSecondaryPlanNote.hidden = !showSecondary;
 }
 
 function paintInstantFluxPanel() {
@@ -3964,9 +3887,7 @@ function paintInstantFluxPanel() {
     paintSecondaryFlux(els.fluxSecondaryCanvas, result.secondary.flux_grid);
     els.fluxCaption.textContent = `incident flux on secondary, kW/m² · same colormap & units as the receiver map · peak ${fmtFlux(result.secondary.peak_flux_kw_m2)}`;
     els.fluxCompass.textContent =
-      store.get("ui.secondaryFluxView") === "unrolled"
-        ? ""
-        : "Compass: N top · S bottom · E right · W left (plan projection, looking down the optical axis)";
+      "Compass: N top · S bottom · E right · W left (plan projection, looking down the optical axis)";
     els.fluxSecondaryReadout.hidden = false;
     els.secIncidentRow.num.textContent = fmtPower(result.secondary.power_w);
     const rPct = (result.secondary.secondary_reflectance * 100).toFixed(1);
@@ -4054,13 +3975,9 @@ function paintFluxPanel() {
     paintSecondaryFlux(els.fluxSecondaryCanvas, fluxSecondary.flux_grid);
     els.fluxCaption.textContent = `incident flux on secondary, kW/m² · same colormap & units as the receiver map · peak ${fmtFlux(fluxSecondary.peak_flux_kw_m2)}`;
     // §C2/§M rider: the plan view carries the same compass convention as
-    // every other map in the app; the unrolled (technical) view keeps no
-    // compass caption of its own (its u/v is arc length/radius, not a
-    // north-seam azimuth reading the way a flat square map's edges are).
+    // every other map in the app.
     els.fluxCompass.textContent =
-      store.get("ui.secondaryFluxView") === "unrolled"
-        ? ""
-        : "Compass: N top · S bottom · E right · W left (plan projection, looking down the optical axis)";
+      "Compass: N top · S bottom · E right · W left (plan projection, looking down the optical axis)";
     els.fluxSecondaryReadout.hidden = false;
     els.secIncidentRow.num.textContent = fmtPower(fluxSecondary.power_w);
     const rPct = (fluxSecondary.secondary_reflectance * 100).toFixed(1);

@@ -189,11 +189,11 @@ const fluxSurfaceSeg = document.getElementById("flux-surfaceseg");
 const fluxSurfaceReceiverBtn = document.getElementById("flux-surface-receiver");
 const fluxSurfaceSecondaryBtn = document.getElementById("flux-surface-secondary");
 const fluxSecondaryCanvas = document.getElementById("flux-secondary-canvas");
-// docs/ui-spec-v0.2.md §C2, mockup M23: Plan (default) / Unrolled toggle and
-// the fixed not-equal-area note, shown only while Secondary is selected.
-const fluxSecviewSeg = document.getElementById("flux-secview-seg");
-const fluxSecviewPlanBtn = document.getElementById("flux-secview-plan");
-const fluxSecviewUnrolledBtn = document.getElementById("flux-secview-unrolled");
+// docs/ui-spec-v0.2.md §C2, mockup M23: the fixed not-equal-area note, shown
+// only while Secondary is selected. (Used to sit beside a Plan/Unrolled
+// toggle -- removed now that secondary_uv's own binning is Cartesian, see
+// paintSecondaryCanvasPlan's own comment below: the grid already IS the
+// plan view, so there is no second layout left to toggle to.)
 const fluxSecondaryPlanNote = document.getElementById("flux-secondary-plannote");
 const fluxSecondaryCaption = document.getElementById("flux-secondary-caption");
 const fluxSecondaryReadout = document.getElementById("flux-secondary-readout");
@@ -885,54 +885,30 @@ function secondaryMagmaColor(t) {
   return SECONDARY_MAGMA_STOPS[SECONDARY_MAGMA_STOPS.length - 1][1];
 }
 
-// Paints app.py's _flux_grid_payload straight onto a 2D canvas -- there is
-// no server-rendered PNG for the secondary (only the opt-in raw grid, spec
-// §C), so this is the client's own rendering of it. `values` is row-major,
-// row 0 = v_min (the bottom of the map, matplotlib's own origin="lower"
-// convention _render_flux_png uses for the receiver PNG) -- canvas row 0 is
-// its TOP, so row 0 of `values` is drawn into the canvas's LAST row,
-// exactly mirroring scene3d.js's fluxGridTexture flip.
+// docs/ui-spec-v0.2.md §C2, mockup M23 (updated for the Cartesian
+// plan-projection binning switch): paints app.py's _flux_grid_payload
+// straight onto a 2D canvas -- there is no server-rendered PNG for the
+// secondary (only the opt-in raw grid, spec §C). This used to be two
+// presentations (a native "unrolled" arc-length/radius raster, and a
+// polar-to-Cartesian "plan" projection of it) because the old radial (u, v)
+// parameterization's native layout wasn't a plan view. Now that
+// secondary_uv is itself a Cartesian (x_local east, y_local north) pair
+// over the aperture's own square bounding box, the grid already IS the
+// plan view -- painting it is a direct raster, not a projection, so the old
+// toggle and second painter are gone. See js/tabs/analysis.js's
+// paintSecondaryFluxCanvasPlan for the identical logic (this file's own
+// copy per its established per-file-duplication idiom for small painters).
 //
-// docs/ui-spec-v0.2.md §C2, mockup M23: this is now the "Unrolled
-// (technical)" view, retained as a one-click toggle -- paintSecondaryCanvasPlan
-// below is the default. Same grid, same colormap, unchanged.
-function paintSecondaryCanvasUnrolled(canvas, grid) {
-  const { n_u, n_v, values } = grid;
-  let max = 0;
-  for (const v of values) if (v != null && v > max) max = v;
-  canvas.width = n_u;
-  canvas.height = n_v;
-  const ctx2d = canvas.getContext("2d");
-  const img = ctx2d.createImageData(n_u, n_v);
-  for (let row = 0; row < n_v; row++) {
-    const canvasRow = n_v - 1 - row;
-    for (let col = 0; col < n_u; col++) {
-      const val = values[row * n_u + col];
-      const [r, g, b] = secondaryMagmaColor(max > 0 && val != null ? val / max : 0);
-      const idx = (canvasRow * n_u + col) * 4;
-      img.data[idx] = r;
-      img.data[idx + 1] = g;
-      img.data[idx + 2] = b;
-      img.data[idx + 3] = 255;
-    }
-  }
-  ctx2d.putImageData(img, 0, 0);
-}
-
-// docs/ui-spec-v0.2.md §C2, mockup M23: the DEFAULT secondary presentation
-// -- looking down the optical axis, so an axicon cone or Cassegrain surface
-// reads as a disk/annulus. Display transform only -- same (u, v) bins and
-// flux values as the unrolled view above; only the screen POSITION of each
-// bin changes. See js/tabs/analysis.js's paintSecondaryFluxCanvasPlan for
-// the full derivation (this is the identical transform, this file's own
-// copy per its established per-file-duplication idiom for small painters):
-//   theta = u_mm / aperture_radius_mm; x = v_mm*sin(theta), y = -v_mm*cos(theta)
-// -- the same atan2(x, -y)/south-at-0/seam-at-north convention every other
-// compass-marked map in this app uses. aperture_radius_mm is v_max_mm on
-// the grid itself (secondary_uv_extent: v spans 0..aperture_radius_mm).
+// `values` is row-major, row 0 = v_min (south, the bottom of the map) --
+// canvas y grows down, so row 0 paints at the canvas's own bottom, the same
+// flip every other flux painter in this app uses. A bin whose centre falls
+// outside the aperture disk is left unpainted (background shows through)
+// rather than drawn in its own (always-zero, per
+// secondary_bin_areas_m2's masking) color, so the result reads as a
+// circular disk rather than a dark-cornered square.
 function paintSecondaryCanvasPlan(canvas, grid) {
   const { n_u, n_v, u_min_mm, u_max_mm, v_min_mm, v_max_mm, values } = grid;
-  const apertureRadiusMm = Math.max(v_max_mm, 1e-6);
+  const apertureRadiusMm = Math.max((u_max_mm - u_min_mm) / 2, (v_max_mm - v_min_mm) / 2, 1e-6);
   const size = 380;
   canvas.width = size;
   canvas.height = size;
@@ -947,40 +923,21 @@ function paintSecondaryCanvasPlan(canvas, grid) {
   for (const v of values) if (v != null && v > max) max = v;
   const duMm = (u_max_mm - u_min_mm) / n_u;
   const dvMm = (v_max_mm - v_min_mm) / n_v;
-
-  const toXY = (vMm, thetaRad) => {
-    const x = vMm * Math.sin(thetaRad);
-    const y = -vMm * Math.cos(thetaRad);
-    return [cx + x * scale, cy - y * scale];
-  };
+  const wPx = duMm * scale + 0.75;
+  const hPx = dvMm * scale + 0.75;
 
   for (let row = 0; row < n_v; row++) {
-    const vLo = v_min_mm + row * dvMm;
-    const vHi = vLo + dvMm;
+    const yMm = v_min_mm + (row + 0.5) * dvMm;
     for (let col = 0; col < n_u; col++) {
+      const xMm = u_min_mm + (col + 0.5) * duMm;
+      if (Math.hypot(xMm, yMm) > apertureRadiusMm) continue;
       const val = values[row * n_u + col];
       const t = max > 0 && val != null ? val / max : 0;
-      const uLo = u_min_mm + col * duMm;
-      const uHi = uLo + duMm;
-      const thLo = uLo / apertureRadiusMm;
-      const thHi = uHi / apertureRadiusMm;
-      const steps = Math.max(1, Math.ceil(Math.abs(thHi - thLo) / 0.15));
-      ctx2d.beginPath();
-      for (let s = 0; s <= steps; s++) {
-        const th = thLo + ((thHi - thLo) * s) / steps;
-        const [px, py] = toXY(vHi, th);
-        if (s === 0) ctx2d.moveTo(px, py);
-        else ctx2d.lineTo(px, py);
-      }
-      for (let s = steps; s >= 0; s--) {
-        const th = thLo + ((thHi - thLo) * s) / steps;
-        const [px, py] = toXY(vLo, th);
-        ctx2d.lineTo(px, py);
-      }
-      ctx2d.closePath();
       const [r, g, b] = secondaryMagmaColor(t);
       ctx2d.fillStyle = `rgb(${r},${g},${b})`;
-      ctx2d.fill();
+      const px = cx + xMm * scale - wPx / 2;
+      const py = cy - yMm * scale - hPx / 2;
+      ctx2d.fillRect(px, py, wPx, hPx);
     }
   }
 
@@ -997,16 +954,10 @@ function paintSecondaryCanvasPlan(canvas, grid) {
   ctx2d.fillText("W", cx - rEdge - 5, cy + 4);
 }
 
-// Dispatches to the Plan (default) or Unrolled painter per the §C2 toggle
-// (ui.secondaryFluxView) -- shared with js/tabs/analysis.js's own dispatcher
-// only in spirit (this module has no import of that one, same per-file
-// duplication idiom every other small painter here already follows).
+// Thin alias kept so call sites read the same as before this file's own
+// toggle removal -- there is only one secondary presentation now.
 function paintSecondaryCanvasView(canvas, grid) {
-  if (store.get("ui.secondaryFluxView") === "unrolled") {
-    paintSecondaryCanvasUnrolled(canvas, grid);
-  } else {
-    paintSecondaryCanvasPlan(canvas, grid);
-  }
+  paintSecondaryCanvasPlan(canvas, grid);
 }
 
 // v0.2 followups item 1, mockup M15: plan-view power coloring -- one dot per
@@ -1130,15 +1081,10 @@ function paintFluxOverlay() {
   fluxCompassW.hidden = true;
   fluxCompassAxis.hidden = true;
   fluxFanSeg.hidden = true;
-  fluxSecviewSeg.hidden = true;
   fluxSecondaryPlanNote.hidden = true;
 
   if (showSecondary) {
-    const secView = store.get("ui.secondaryFluxView") === "unrolled" ? "unrolled" : "plan";
-    fluxSecviewSeg.hidden = false;
-    fluxSecviewPlanBtn.classList.toggle("active", secView === "plan");
-    fluxSecviewUnrolledBtn.classList.toggle("active", secView === "unrolled");
-    fluxSecondaryPlanNote.hidden = secView !== "plan";
+    fluxSecondaryPlanNote.hidden = false;
 
     fluxSecondaryCanvas.hidden = false;
     paintSecondaryCanvasView(fluxSecondaryCanvas, secondary.flux_grid);
@@ -1213,8 +1159,6 @@ fluxSecFeaExport.addEventListener("click", (e) => {
   e.preventDefault();
   exportSecondaryFluxFeaCsv();
 });
-fluxSecviewPlanBtn.addEventListener("click", () => store.set("ui.secondaryFluxView", "plan"));
-fluxSecviewUnrolledBtn.addEventListener("click", () => store.set("ui.secondaryFluxView", "unrolled"));
 // v0.2 followups item 2: the fan view is a genuinely different server
 // render (app.py's TraceRequest.flux_view), not client-side data already
 // on hand -- so toggling it re-runs the SAME trace (runTrace() rebuilds

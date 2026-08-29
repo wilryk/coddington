@@ -546,13 +546,18 @@ def test_energy_pin_mc_under_perturbation(shape):
 
     uv = secondary_uv(perturbed, sec_xyz)
     (u0, u1), (v0, v1) = secondary_uv_extent(perturbed)
-    n_u, n_v = 128, 128
+    n_u, n_v = 256, 256
     u_edges = np.linspace(u0, u1, n_u + 1)
     v_edges = np.linspace(v0, v1, n_v + 1)
     counts, _, _ = np.histogram2d(uv[1], uv[0], bins=[v_edges, u_edges])
     assert counts.sum() == n_hit  # no hit lost to a binning/extent bug
 
+    # secondary_bin_areas_m2 masks bins outside the aperture disk to area 0
+    # (see that function's own note) -- guard the divide the same way
+    # tests/test_secondary_flux.py::test_energy_pin_mc does (see that test's
+    # own comment for why this fixture's compact beam never actually lands
+    # in a masked bin, so the exact 1e-6 reproduction still holds here too).
     areas_m2 = secondary_bin_areas_m2(perturbed, (n_u, n_v))
-    flux = counts * watts_per_ray / areas_m2
+    flux = np.divide(counts * watts_per_ray, areas_m2, out=np.zeros_like(areas_m2), where=areas_m2 > 0)
     power_via_histogram = float(np.sum(flux * areas_m2))
     assert power_via_histogram == pytest.approx(expected_power, rel=1e-6)

@@ -224,25 +224,32 @@ def _flux_edges(receiver) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return u_edges, v_edges, receiver.bin_areas_m2((n_u, n_v))
 
 
-def _secondary_flux_grid(secondary) -> tuple[int, int]:
-    """``(n_u, n_v)`` for a secondary's own flux map.
+#: Fixed per-axis bin count for a secondary's own flux map, now that
+#: :func:`~heliostat.geometry.secondary.secondary_uv` is a Cartesian plan
+#: pair over a SQUARE bounding box (``secondary_uv_extent``) rather than the
+#: old radial scheme's ``(circumference, radius)`` rectangle -- there is no
+#: more aspect ratio to correct the way :func:`_receiver_flux_grid` still
+#: corrects for a curved receiver, so this is just one square constant.
+#:
+#: Chosen to match the OLD scheme's finer axis (``v``, fixed at
+#: ``FLUX_GRID`` = 128 rows spanning ``0..aperture_radius_mm``) while making
+#: every bin square (the old scheme's u-axis was capped at
+#: ``FLUX_GRID_MAX_U`` = 512, 1.57x coarser than v at a full-aperture u:v
+#: ratio of ``2*pi`` -- the anisotropy this whole switch exists to remove).
+#: ``256 * 256 == 128 * 512 == 65536``: the same total bin budget (and so
+#: the same deposit cost per sample) as the old scheme's capped grid, not a
+#: new one -- this is a reshuffle of the same resolution into square bins,
+#: not a resolution change.
+SECONDARY_FLUX_GRID_N = 256
 
-    A secondary's ``(u, v)`` (see :mod:`heliostat.geometry.secondary`) is
-    the same kind of unrolled parameterization a curved RECEIVER uses --
-    full circumference in ``u``, a bounded span in ``v`` -- so this is the
-    identical "square bins on the unrolled surface" rule
-    :func:`_receiver_flux_grid` applies to a cylinder/frustum, deliberately
-    NOT reusing that function's own edges: a secondary's aperture is its own
-    surface with its own extent, unrelated to whatever the receiver's
-    adaptive grid resolved to (a fresh change noted in this module's own
-    history -- receiver flux edges now come from an adaptive grid for curved
-    receivers, and a secondary must not silently inherit or collide with
-    that unless its own geometry happens to agree).
+
+def _secondary_flux_grid(secondary) -> tuple[int, int]:
+    """``(n_u, n_v)`` for a secondary's own flux map -- always the fixed
+    square :data:`SECONDARY_FLUX_GRID_N` now (see that constant's own note);
+    ``secondary`` is accepted only to keep this function's signature
+    identical to :func:`_receiver_flux_grid`'s at every call site.
     """
-    (u0, u1), (v0, v1) = secondary_uv_extent(secondary)
-    ratio = (u1 - u0) / (v1 - v0)
-    n_u = int(np.ceil(FLUX_GRID * ratio / FLUX_GRID_TEXTURE_DIM)) * FLUX_GRID_TEXTURE_DIM
-    return (int(np.clip(n_u, FLUX_GRID, FLUX_GRID_MAX_U)), FLUX_GRID)
+    return (SECONDARY_FLUX_GRID_N, SECONDARY_FLUX_GRID_N)
 
 
 def _secondary_flux_edges(secondary) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -273,7 +280,16 @@ def _mc_secondary_flux(
     # §E2 rigid-body misalignment exactly.
     uv = secondary_uv(secondary, secondary_xy)
     counts, _, _ = np.histogram2d(uv[1], uv[0], bins=[v_edges, u_edges])
-    flux = counts * watts_per_ray / bin_area_m2
+    # secondary_bin_areas_m2 masks bins outside the aperture disk to area=0
+    # (see that function's own note) -- guard the divide so those bins
+    # report flux=0 rather than inf/nan. A real ray that happened to land in
+    # one of these boundary-straddling bins is NOT lost from any TOTAL this
+    # module reports: power_w is always n_hit * watts_per_ray downstream
+    # (_secondary_maps_from_result), never a reintegration of this grid, so
+    # masking only ever hides a sliver of DISPLAYED flux right at the rim.
+    flux = np.divide(
+        counts * watts_per_ray, bin_area_m2, out=np.zeros_like(bin_area_m2), where=bin_area_m2 > 0
+    )
     return flux, u_edges, v_edges
 
 
@@ -3917,24 +3933,39 @@ def _secondary_flux_fea_csv(
     in the surface's own NOMINAL frame moved back to world exactly as a real
     ray hit would be (spec §E2: a decenter/tilt relocates these points along
     with the physical part).
+
+    Bins whose centre falls outside the aperture disk (the Cartesian grid's
+    own square bounding box is bigger than the round aperture it covers --
+    see :func:`~heliostat.geometry.secondary.secondary_bin_areas_m2`'s own
+    masking note) are DROPPED rather than emitted: there is no real surface
+    point at a masked centre for ``secondary_uv_to_world`` to place honestly
+    (its ``z`` would be the nominal figure's bare extrapolation past the
+    physical rim), so this follows the same convention :func:`_sag_fea_csv`
+    already uses for a point outside every facet -- excluded, not written
+    as a row of nonsense.
     """
     u_mid = 0.5 * (u_edges_mm[:-1] + u_edges_mm[1:])
     v_mid = 0.5 * (v_edges_mm[:-1] + v_edges_mm[1:])
     gu, gv = np.meshgrid(u_mid, v_mid)  # (n_v, n_u), matches flux's own shape
-    world_mm = secondary_uv_to_world(secondary, np.vstack([gu.ravel(), gv.ravel()]))
+    in_aperture = (np.hypot(gu, gv) <= secondary.aperture_radius_mm).ravel()
+    n_total = in_aperture.size
+    n_valid = int(in_aperture.sum())
+    world_mm = secondary_uv_to_world(
+        secondary, np.vstack([gu.ravel()[in_aperture], gv.ravel()[in_aperture]])
+    )
     header = _fea_csv_header(
         units_line=(
             "x_m, y_m, z_m in meters; flux_w_m2, absorbed_w_m2 in W/m² "
             f"(absorbed = (1 - secondary_reflectance) * flux, secondary_reflectance={secondary_reflectance:g})"
         ),
         subject_line=subject_line,
-        grid_line=f"{gu.shape[1]} x {gu.shape[0]} bins",
+        grid_line=f"{gu.shape[1]} x {gu.shape[0]} bins, {n_valid} of {n_total} inside the aperture disk",
         extra_lines=(_FEA_WORLD_FRAME_NOTE,),
     )
     xs_m = world_mm[0] / 1000.0
     ys_m = world_mm[1] / 1000.0
     zs_m = world_mm[2] / 1000.0
-    flux_flat = flux_w_m2.ravel()
+    flux_flat = flux_w_m2.ravel()[in_aperture]
     absorbed_flat = flux_flat * (1.0 - secondary_reflectance)
     return _fea_csv_bytes(header, zip(xs_m, ys_m, zs_m, flux_flat, absorbed_flat))
 

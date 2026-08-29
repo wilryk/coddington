@@ -999,12 +999,26 @@ def trace_heliostat_cone(
                 iv = np.clip((uv_j[1] - sv0) // sv_step, 0, sn_v - 1).astype(np.intp)
                 np.add.at(sec_out, (iv.astype(np.intp), iu.astype(np.intp)), share)
 
+        # secondary_power_w is computed from `sec_out` (raw deposited weight
+        # per uniform bin) BEFORE the true-area correction below -- every
+        # sample's weight telescopes back out exactly regardless of which
+        # bin (masked or not) it landed in, so this total is unaffected by
+        # the masking secondary_bin_areas_m2 applies next.
         secondary_power_w = float(sec_out.sum() * sec_bin_area_mm2)
         secondary_flux = sec_out * 1.0e6  # W/mm^2 -> W/m^2
         sec_true_area_m2 = secondary_bin_areas_m2(secondary, (sn_u, sn_v))
         sec_uniform_area_m2 = sec_bin_area_mm2 * 1.0e-6
-        if not np.allclose(sec_true_area_m2, sec_uniform_area_m2):
-            secondary_flux = secondary_flux * (sec_uniform_area_m2 / sec_true_area_m2)
+        # secondary_bin_areas_m2 masks bins outside the aperture disk to
+        # area=0 (see that function's own note) -- guard the divide so those
+        # bins report flux=0 rather than inf/nan (a chief-point or
+        # node-fallback deposit CAN land in one of these boundary-
+        # straddling bins; its weight is still counted in secondary_power_w
+        # above, only its displayed flux is zeroed here).
+        ratio = np.divide(
+            sec_uniform_area_m2, sec_true_area_m2,
+            out=np.zeros_like(sec_true_area_m2), where=sec_true_area_m2 > 0,
+        )
+        secondary_flux = secondary_flux * ratio
         secondary_extra = {
             "secondary_flux": secondary_flux,
             "secondary_u_edges": su_edges,

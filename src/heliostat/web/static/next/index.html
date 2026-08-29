@@ -194,14 +194,14 @@
                single-heliostat trace, main.js's paintFluxOverlay(). -->
           <button type="button" id="flux-surface-field">Field</button>
         </div>
-        <!-- docs/ui-spec-v0.2.md §C2, mockup M23: Plan (default) / Unrolled
-             (technical) -- a display transform on the secondary map only,
-             shown beside the Receiver | Secondary | Field selector while
-             Secondary is selected (main.js's paintFluxOverlay()). -->
-        <div class="seg" id="flux-secview-seg" hidden>
-          <button type="button" id="flux-secview-plan">Plan</button>
-          <button type="button" id="flux-secview-unrolled">Unrolled (technical)</button>
-        </div>
+        <!-- docs/ui-spec-v0.2.md §C2, mockup M23: the secondary map used to
+             offer a Plan (default) / Unrolled (technical) toggle here. Now
+             that heliostat.geometry.secondary.secondary_uv bins the
+             secondary in Cartesian (x_local, y_local) plan-projection
+             coordinates rather than the old radial (arc length, radius)
+             pair, the stored grid already IS the plan view -- there is no
+             second "unrolled" layout left to synthesize, so the toggle is
+             gone rather than kept as a no-op (main.js's paintFluxOverlay()). -->
         <!-- v0.2 followups item 2 (owner-approved): the frustum's TRUE
              developed ("fan") view, an alternative to the default
              parameter-space rectangle -- see app.py's

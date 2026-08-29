@@ -241,11 +241,15 @@ function bakeCylindricalUV(geometry, vMinM, vMaxM) {
   geometry.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
 }
 
-// v0.2 followups item 3: the SECONDARY's own irradiance drape, same idea as
-// bakeCylindricalUV above but against heliostat.geometry.secondary's own
-// (u, v) -- u = aperture_radius_mm * atan2(x_local, -y_local), v =
-// hypot(x_local, y_local), both local to the secondary's NOMINAL frame
-// (docs/secondary-irradiance-plan.md, secondary_uv's own formula).
+// v0.2 followups item 3 (updated for the Cartesian plan-projection binning
+// switch): the SECONDARY's own irradiance drape, mapped against
+// heliostat.geometry.secondary's now-Cartesian secondary_uv -- u = x_local
+// (east), v = y_local (north), both local to the secondary's NOMINAL frame,
+// over the SQUARE bounding box secondary_uv_extent returns
+// (+/-aperture_radius_mm on both axes). Direct normalized position, no
+// polar unwrapping -- the Cartesian scheme has no seam and no axis
+// singularity to work around (see secondary_uv's own module docstring), so
+// this needs none of bakeCylindricalUV's anchor/step/wrap machinery below.
 //
 // rebuildSecondary below builds this LatheGeometry (revolved about its own
 // local Y axis: profile point (r, z) at revolution angle phi sits at
@@ -257,41 +261,18 @@ function bakeCylindricalUV(geometry, vMinM, vMaxM) {
 // attribute is still in the LATHE's un-posed local frame, and the
 // secondary's local x/y are not simply position.x/position.y. Working out
 // the same +90 deg turn by hand (rotateX(+90 deg): (x,y,z) -> (x,-z,y))
-// gives secondary-local x = position.x, secondary-local y = -position.z;
-// substituting into secondary_uv's own formula, atan2(x_local, -y_local)
-// becomes atan2(position.x, position.z), and hypot(x_local, y_local)
-// becomes hypot(position.x, position.z) -- verified against a live axicon/
-// Cassegrain trace (see VERIFY notes), not just derived on paper.
-//
-// LatheGeometry closes a full revolution the same way CylinderGeometry does
-// -- a duplicated seam vertex column at phi=0 and phi=2*pi -- so this reuses
-// bakeCylindricalUV's own anchor-and-step fix rather than a naive per-vertex
-// atan2 (see that function's comment for why). The anchor/step vertices are
-// picked at the RIM (largest r, index nProfilePoints-1 within each phi
-// column) rather than searched for by native-u, since the apex/vertex
-// (r~0, index 0) is exactly where az is ill-conditioned -- rebuildSecondary
-// constructs this geometry with `new THREE.LatheGeometry(points, segments)`,
-// whose own vertex order is phi-major/profile-minor (index = phi*nProfilePoints
-// + profileIndex), so those two rim vertices sit at fixed, known indices.
-function bakeSecondaryUV(geometry, nProfilePoints, vMaxM) {
+// gives secondary-local x = position.x, secondary-local y = -position.z --
+// verified against a live axicon/Cassegrain trace (see VERIFY notes), not
+// just derived on paper.
+function bakeSecondaryUV(geometry, apertureRadiusM) {
   const pos = geometry.attributes.position;
   const uv = new Float32Array(pos.count * 2);
-  const azOf = (i) => Math.atan2(pos.getX(i), pos.getZ(i));
-  const vOf = (i) => Math.hypot(pos.getX(i), pos.getZ(i));
-  const anchor = nProfilePoints - 1; // phi column 0, rim point
-  const step = 2 * nProfilePoints - 1; // phi column 1, rim point
-  const azAnchor = azOf(anchor);
-  let delta = azOf(step) - azAnchor;
-  if (delta > Math.PI) delta -= 2 * Math.PI;
-  if (delta < -Math.PI) delta += 2 * Math.PI;
-  const dir = delta >= 0 ? 1 : -1;
-  const nativeUv = geometry.attributes.uv;
-  const vMax = vMaxM || 1;
+  const r = apertureRadiusM || 1;
   for (let i = 0; i < pos.count; i++) {
-    const az = azAnchor + dir * 2 * Math.PI * nativeUv.getX(i);
-    const wrapped = (((az + Math.PI) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
-    uv[i * 2] = wrapped / (2 * Math.PI);
-    uv[i * 2 + 1] = Math.min(1, vOf(i) / vMax);
+    const xLocal = pos.getX(i);
+    const yLocal = -pos.getZ(i);
+    uv[i * 2] = (xLocal + r) / (2 * r);
+    uv[i * 2 + 1] = (yLocal + r) / (2 * r);
   }
   geometry.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
 }
@@ -625,7 +606,7 @@ export function createScene(container, callbacks) {
     // aperture radius, the exact v_max secondary_uv_extent uses -- no new
     // payload field needed, this can never disagree with the backend.
     const apertureRadiusM = Math.max(...points.map((p) => p.x));
-    bakeSecondaryUV(lathe, points.length, apertureRadiusM);
+    bakeSecondaryUV(lathe, apertureRadiusM);
     // LatheGeometry revolves about its local Y axis; rotating +90 deg about
     // X puts that axis along world Z (a body of revolution has no
     // handedness to get backwards by the accompanying angular mirroring).
