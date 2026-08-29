@@ -63,6 +63,16 @@ export function clampToGridAxis(grid, value, axis) {
   return Math.max(lo, Math.min(hi, value));
 }
 
+// The same "how far can the circle grow" cap both callers' drag-resize
+// handlers already inlined (1.5x the longer grid half-extent, floor 1 mm) --
+// shared here (v0.2 followups M.6) so the typed radius input below and a
+// drag resize can never disagree about the limit.
+export function apertureClampRadius(grid, radiusMm) {
+  const halfU = Math.abs(grid.u_max_mm - grid.u_min_mm) / 2;
+  const halfV = Math.abs(grid.v_max_mm - grid.v_min_mm) / 2;
+  return Math.max(1, Math.min(radiusMm, 1.5 * Math.max(halfU, halfV)));
+}
+
 // grid.values are §M.3's own kW/m^2 convention (heliostat.web.app's
 // _flux_grid_payload, row-major, row 0 = v_min_mm -- the bottom of the map,
 // same as _render_flux_png's origin="lower") -- scaled back to W/m^2 here

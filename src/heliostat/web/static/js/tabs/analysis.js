@@ -31,6 +31,7 @@ import {
   apertureDefaultCenter,
   apertureDefaultRadiusMm,
   clampToGridAxis,
+  apertureClampRadius,
   apertureMetrics,
   apertureCurve,
   apertureDataToCanvas,
@@ -1704,10 +1705,49 @@ function apertureHandlePointerMove(e) {
   } else {
     const center = currentApertureCenterMm(grid, step);
     const rMm = Math.hypot(uMm - center.u, vMm - center.v);
-    const halfU = Math.abs(grid.u_max_mm - grid.u_min_mm) / 2;
-    const halfV = Math.abs(grid.v_max_mm - grid.v_min_mm) / 2;
-    apertureRadiusMm = Math.max(1, Math.min(rMm, 1.5 * Math.max(halfU, halfV)));
+    apertureRadiusMm = apertureClampRadius(grid, rMm);
   }
+  paintIfVisible();
+}
+
+// -- M.6: typed center u/v (mm) and radius (mm), alongside the drag above --
+// Each handler clamps exactly like the drag handlers (clampToGridAxis /
+// apertureClampRadius, the same functions the pointer-move code above
+// calls) so a typed value can never land the circle somewhere a drag
+// couldn't, then repaints -- the same live update a drag triggers.
+//
+// currentApertureCenterMm only trusts apertureCenterUMm/VMm as a pair --
+// if either is still null it falls back to the DEFAULT center entirely
+// (see that function, and currentApertureRadiusMm's own single-value
+// equivalent has no such pairing issue). Typing just Center u first (the
+// natural first edit) would otherwise leave v null and silently snap back
+// to the default center on every keystroke -- both handlers seed the
+// OTHER axis from the current effective center first so a lone edit holds.
+function apertureHandleCenterUInput(e) {
+  if (!apertureGrid) return;
+  const v = parseFloat(e.target.value);
+  if (!Number.isFinite(v)) return;
+  const center = currentApertureCenterMm(apertureGrid, currentStepForAperture());
+  apertureCenterUMm = clampToGridAxis(apertureGrid, v, "u");
+  apertureCenterVMm = center.v;
+  paintIfVisible();
+}
+
+function apertureHandleCenterVInput(e) {
+  if (!apertureGrid) return;
+  const v = parseFloat(e.target.value);
+  if (!Number.isFinite(v)) return;
+  const center = currentApertureCenterMm(apertureGrid, currentStepForAperture());
+  apertureCenterVMm = clampToGridAxis(apertureGrid, v, "v");
+  apertureCenterUMm = center.u;
+  paintIfVisible();
+}
+
+function apertureHandleRadiusInput(e) {
+  if (!apertureGrid) return;
+  const v = parseFloat(e.target.value);
+  if (!Number.isFinite(v) || v <= 0) return;
+  apertureRadiusMm = apertureClampRadius(apertureGrid, v);
   paintIfVisible();
 }
 
@@ -1819,8 +1859,17 @@ function build(container) {
   savedRunsBar.appendChild(manageLink);
 
   // -- main content: left (sweep + energy + year), right (table + map) -----
+  // v0.2 followups M.6: `content` used to be the flex ROW itself (left +
+  // right side by side); it now stacks that row above a full-width strip
+  // (an-contentrow / an-contentbottom) so the analysis aperture below can
+  // lay its map and encircled-power curve out side by side and its readout
+  // out as one horizontal row -- neither fits in the 360px right column
+  // (.an-right) the rest of this tab's cards live in.
   const content = document.createElement("div");
-  content.className = "tabcontent";
+  content.className = "tabcontent an-contentcol";
+
+  const contentRow = document.createElement("div");
+  contentRow.className = "an-contentrow";
 
   const left = document.createElement("div");
   left.className = "an-left";
@@ -2177,6 +2226,32 @@ function build(container) {
   yearFrame.hidden = true;
   yearPanel.appendChild(yearFrame);
 
+  // -- M.5: year -> day drill-in ---------------------------------------
+  // Every sample day the year plot above shows can be opened as a full day
+  // sweep -- the year machinery already traces these days with the day-
+  // sweep code (this just reuses startSweep()'s own launch path with the
+  // chosen date, same as clicking "Trace day sweep" by hand). See
+  // openYearDay below.
+  const yearDaysWrap = document.createElement("div");
+  yearDaysWrap.className = "an-yeardayswrap";
+  yearDaysWrap.hidden = true;
+  const yearDaysHead = document.createElement("div");
+  yearDaysHead.className = "an-drillhead";
+  yearDaysHead.textContent = "Sampled days — click one to open it as a day sweep";
+  yearDaysWrap.appendChild(yearDaysHead);
+  const yearDaysTable = document.createElement("table");
+  yearDaysTable.className = "an-table an-yeardaystable";
+  yearDaysTable.innerHTML =
+    "<thead><tr><th>Date</th><th>Declination</th><th>Energy</th><th>Peak</th></tr></thead><tbody></tbody>";
+  const yearDaysTbody = yearDaysTable.querySelector("tbody");
+  yearDaysTbody.addEventListener("click", (e) => {
+    const row = e.target.closest("tr[data-idx]");
+    if (!row) return;
+    openYearDay(Number(row.dataset.idx));
+  });
+  yearDaysWrap.appendChild(yearDaysTable);
+  yearPanel.appendChild(yearDaysWrap);
+
   const yearReopenBanner = document.createElement("div");
   yearReopenBanner.className = "an-reopenbanner";
   yearReopenBanner.hidden = true;
@@ -2513,7 +2588,13 @@ function build(container) {
   drillPanel.appendChild(drillCaption);
   right.appendChild(drillPanel);
 
-  // -- analysis aperture (docs/ui-spec-v0.2.md §M.4) ------------------------
+  // -- analysis aperture (docs/ui-spec-v0.2.md §M.4, riders on M.4 = M.6) ---
+  // M.6 rearranges this panel: the encircled-power curve moves beside the
+  // map (an-aperturebody, a row) instead of stacked below it, and the
+  // readout becomes one horizontal strip beneath both (an-apreadoutbar)
+  // instead of a tall 230px side card -- neither fits the 360px .an-right
+  // column the rest of this tab's cards live in, so the whole panel is
+  // full-width now (see contentRow/content above).
   const aperturePanel = document.createElement("div");
   aperturePanel.className = "panel an-aperturepanel";
   const apertureH2 = document.createElement("h2");
@@ -2541,15 +2622,72 @@ function build(container) {
   apertureCanvasCaption.textContent = "Dashed circle: drag to move · square: drag to resize.";
   apertureCanvasWrap.appendChild(apertureCanvasCaption);
 
+  const apertureCurveFrame = document.createElement("div");
+  apertureCurveFrame.className = "an-aperturecurveframe";
+  const apertureCurveH3 = document.createElement("div");
+  apertureCurveH3.className = "an-drillhead";
+  apertureCurveH3.textContent = "Encircled power vs. aperture radius";
+  const apertureCurveCanvas = document.createElement("canvas");
+  apertureCurveCanvas.className = "an-aperturecurvecanvas";
+  apertureCurveFrame.appendChild(apertureCurveH3);
+  apertureCurveFrame.appendChild(apertureCurveCanvas);
+
+  apertureBody.appendChild(apertureCanvasWrap);
+  apertureBody.appendChild(apertureCurveFrame);
+  aperturePanel.appendChild(apertureBody);
+
+  // -- M.6: horizontal readout strip -- three typed fields (center u/v,
+  // radius, all mm) that write straight into the same module state the
+  // drag handlers above do, beside the same four read-only metrics as
+  // before. One row, wrapping on a narrow window rather than the old
+  // fixed-width side card.
   const apertureReadout = document.createElement("div");
-  apertureReadout.className = "readout";
+  apertureReadout.className = "readout an-apreadoutbar";
   const apertureReadoutH3 = document.createElement("h3");
   apertureReadoutH3.textContent = "Aperture readout";
   apertureReadout.appendChild(apertureReadoutH3);
 
+  const apertureReadoutRow = document.createElement("div");
+  apertureReadoutRow.className = "an-apreadoutrow";
+  apertureReadout.appendChild(apertureReadoutRow);
+
+  function apInput(label, tooltip, onInput) {
+    const field = document.createElement("div");
+    field.className = "an-apfield";
+    field.title = tooltip;
+    const lbl = document.createElement("label");
+    lbl.textContent = label;
+    const input = document.createElement("input");
+    input.type = "number";
+    input.className = "val";
+    input.step = "1";
+    input.addEventListener("input", onInput);
+    field.appendChild(lbl);
+    field.appendChild(input);
+    apertureReadoutRow.appendChild(field);
+    return input;
+  }
+  // §G-style tooltips: one sentence, plain language, matching the existing
+  // "Dashed circle: drag..." caption above rather than duplicating it.
+  const apCenterUInput = apInput(
+    "Center u (mm)",
+    "East/west position of the aperture's center on the flux map, in millimeters -- typing moves the circle, same as dragging it.",
+    apertureHandleCenterUInput
+  );
+  const apCenterVInput = apInput(
+    "Center v (mm)",
+    "North/south position of the aperture's center on the flux map, in millimeters -- typing moves the circle, same as dragging it.",
+    apertureHandleCenterVInput
+  );
+  const apRadiusInput = apInput(
+    "Radius (mm)",
+    "Radius of the aperture circle, in millimeters -- typing resizes the circle, same as dragging its resize handle.",
+    apertureHandleRadiusInput
+  );
+
   function apRow(label) {
     const row = document.createElement("div");
-    row.className = "rmetric";
+    row.className = "rmetric an-apmetric";
     const lbl = document.createElement("div");
     lbl.className = "rlbl";
     lbl.textContent = label;
@@ -2557,10 +2695,9 @@ function build(container) {
     num.className = "rnum";
     row.appendChild(lbl);
     row.appendChild(num);
-    apertureReadout.appendChild(row);
+    apertureReadoutRow.appendChild(row);
     return num;
   }
-  const apRadius = apRow("aperture radius");
   const apPower = apRow("power within");
   const apFrac = apRow("of collected");
   const apFlux = apRow("avg flux");
@@ -2577,28 +2714,15 @@ function build(container) {
   const apHint = document.createElement("div");
   apHint.className = "hint";
   apHint.textContent =
-    "Draggable and resizable on the map above; saves with the run as an annotation. Post-processing only -- the trace, intercept and collected totals never change.";
+    "Type exact values or drag on the map above; saves with the run as an annotation. Post-processing only -- the trace, intercept and collected totals never change.";
   apertureReadout.appendChild(apHint);
 
-  apertureBody.appendChild(apertureCanvasWrap);
-  apertureBody.appendChild(apertureReadout);
-  aperturePanel.appendChild(apertureBody);
+  aperturePanel.appendChild(apertureReadout);
 
-  const apertureCurveFrame = document.createElement("div");
-  apertureCurveFrame.className = "an-aperturecurveframe";
-  const apertureCurveH3 = document.createElement("div");
-  apertureCurveH3.className = "an-drillhead";
-  apertureCurveH3.textContent = "Encircled power vs. aperture radius";
-  const apertureCurveCanvas = document.createElement("canvas");
-  apertureCurveCanvas.className = "an-aperturecurvecanvas";
-  apertureCurveFrame.appendChild(apertureCurveH3);
-  apertureCurveFrame.appendChild(apertureCurveCanvas);
-  aperturePanel.appendChild(apertureCurveFrame);
-
-  right.appendChild(aperturePanel);
-
-  content.appendChild(left);
-  content.appendChild(right);
+  contentRow.appendChild(left);
+  contentRow.appendChild(right);
+  content.appendChild(contentRow);
+  content.appendChild(aperturePanel);
 
   // -- "Manage saved runs" overlay (docs/ui-spec.md 4) -----------------------
   // Reuses app.css's .overlay/.overlay-panel/.overlay-close (the same
@@ -2632,6 +2756,7 @@ function build(container) {
 
   els = {
     staleChip,
+    sweepPanel,
     energyPanel,
     tsPanel,
     fluxPanel,
@@ -2691,7 +2816,9 @@ function build(container) {
     apertureCanvasWrap,
     apertureCanvas,
     apertureReadout,
-    apRadius,
+    apCenterUInput,
+    apCenterVInput,
+    apRadiusInput,
     apPower,
     apFrac,
     apFlux,
@@ -2721,6 +2848,8 @@ function build(container) {
     yearFrame,
     yearImg,
     yearPlaceholder,
+    yearDaysWrap,
+    yearDaysTbody,
     yearReopenBanner,
     yearRunSaveBtn,
     yearRunDiscardBtn,
@@ -3189,8 +3318,16 @@ function paintDrillPanel() {
 
 // -- analysis aperture (§M.4) -------------------------------------------------
 
+// M.6: `frozen` also disables the three typed fields -- a reopened saved
+// run has no live grid to recompute against (see paintAperturePanel's own
+// reopenedAperture branch), so editing them would have nothing to act on.
 function renderApertureReadout(data, frozen) {
-  els.apRadius.textContent = data.radius_mm != null ? (data.radius_mm / 1000).toFixed(2) + " m" : "—";
+  setVal(els.apCenterUInput, data.center_u_mm != null ? Math.round(data.center_u_mm) : "");
+  setVal(els.apCenterVInput, data.center_v_mm != null ? Math.round(data.center_v_mm) : "");
+  setVal(els.apRadiusInput, data.radius_mm != null ? Math.round(data.radius_mm) : "");
+  els.apCenterUInput.disabled = !!frozen;
+  els.apCenterVInput.disabled = !!frozen;
+  els.apRadiusInput.disabled = !!frozen;
   els.apPower.textContent = data.power_w != null ? fmtPower(data.power_w) : "—";
   els.apFrac.textContent = data.frac_collected_pct != null ? data.frac_collected_pct.toFixed(1) + " %" : "—";
   els.apFlux.textContent = data.avg_flux_w_m2 != null ? fmtFlux(data.avg_flux_w_m2 / 1000) : "—";
@@ -3209,6 +3346,7 @@ function paintAperturePanel() {
     els.apertureMsg.textContent = "The analysis aperture is available for flat receivers (curved receivers are not yet supported).";
     els.apertureBody.hidden = true;
     els.apertureCurveFrame.hidden = true;
+    els.apertureReadout.hidden = true;
     return;
   }
 
@@ -3233,6 +3371,7 @@ function paintAperturePanel() {
       "This run's saved aperture belongs to a different timestep -- select it to see the same circle and readout.";
     els.apertureBody.hidden = true;
     els.apertureCurveFrame.hidden = true;
+    els.apertureReadout.hidden = true;
     return;
   }
 
@@ -3250,6 +3389,7 @@ function paintAperturePanel() {
       : apertureGridError || "Select a timestep with a stored irradiance map to use the aperture.";
     els.apertureBody.hidden = true;
     els.apertureCurveFrame.hidden = true;
+    els.apertureReadout.hidden = true;
     return;
   }
 
@@ -3270,6 +3410,8 @@ function paintAperturePanel() {
   const dni = step.dni_w_m2;
   renderApertureReadout(
     {
+      center_u_mm: center.u,
+      center_v_mm: center.v,
       radius_mm: radius,
       power_w: powerW,
       frac_collected_pct: collectedW ? (100 * powerW) / collectedW : null,
@@ -3354,6 +3496,69 @@ function paintDayRunControls() {
 }
 
 // -- year estimate -------------------------------------------------------------
+
+// -- M.5: year -> day drill-in (docs/ui-spec-v0.2.md §M item 5) -------------
+// Reuses startSweep()'s own launch path verbatim, the same one "Trace day
+// sweep" calls -- see this file's day-sweep lifecycle section. formDate is
+// the only thing this sets before calling it; formHourStep/formMinElevation
+// Deg/fidelity stay whatever the day-sweep controls already hold (the
+// "current design/site settings" the drill-in is supposed to use), and
+// startSweep()'s own resetRunState() clears any earlier day-sweep result on
+// screen the same way a manual click would.
+const yearDaysRowEls = [];
+
+function renderYearDaysRows(days) {
+  if (yearDaysRowEls.length !== days.length) {
+    els.yearDaysTbody.innerHTML = "";
+    yearDaysRowEls.length = 0;
+    days.forEach((_, i) => {
+      const tr = document.createElement("tr");
+      tr.dataset.idx = String(i);
+      const tdDate = document.createElement("td");
+      const tdDec = document.createElement("td");
+      const tdEnergy = document.createElement("td");
+      const tdPeak = document.createElement("td");
+      tr.appendChild(tdDate);
+      tr.appendChild(tdDec);
+      tr.appendChild(tdEnergy);
+      tr.appendChild(tdPeak);
+      els.yearDaysTbody.appendChild(tr);
+      yearDaysRowEls.push({ tr, tdDate, tdDec, tdEnergy, tdPeak });
+    });
+  }
+  days.forEach((d, i) => {
+    const row = yearDaysRowEls[i];
+    row.tdDate.textContent = d.traced ? d.date : `${d.date} (by symmetry)`;
+    // Untraced (symmetry-filled) days have no sun-position trace of their
+    // own -- clicking one opens the traced day it was mirrored from instead
+    // (openYearDay below), so the day sweep that opens matches the numbers
+    // already shown for it here. Traced twin named up front, not just on
+    // hover, since it changes what a click actually does.
+    row.tr.title = d.traced
+      ? `Opens this day as a day sweep.`
+      : `Filled in by symmetry from ${d.source_date} -- opens that traced day instead.`;
+    row.tdDec.textContent = d.declination_deg != null ? d.declination_deg.toFixed(1) + "°" : "—";
+    row.tdEnergy.textContent = fmtEnergy(d.energy_kwh);
+    row.tdPeak.textContent = d.peak_power_kw != null ? fmtPower(d.peak_power_kw * 1000) : "—";
+  });
+}
+
+function openYearDay(idx) {
+  const days = yearResult && yearResult.days;
+  const entry = days && days[idx];
+  if (!entry) return;
+  // See renderYearDaysRows's own comment -- source_date is entry.date
+  // itself for a traced day, its traced twin's date for a symmetry-filled
+  // one, so this line is correct either way.
+  formDate = entry.source_date;
+  startSweep();
+  // "Land in the day view", not just fill in the date (owner's own words)
+  // -- the day-sweep panel sits above the year panel that was just clicked
+  // in, so scroll up to where the run everyone just started is happening.
+  if (els.sweepPanel) {
+    els.sweepPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+}
 
 function paintYearControls() {
   els.yearFastBtn.classList.toggle("active", yearFastMode);
@@ -3446,6 +3651,9 @@ function paintYearResult() {
   } else {
     els.yearTotal.hidden = true;
   }
+
+  els.yearDaysWrap.hidden = !haveResult;
+  if (haveResult) renderYearDaysRows(days);
 
   const isReopened = !yearResultJobId && !!yearRunSavedName;
   els.yearReopenBanner.hidden = !isReopened;

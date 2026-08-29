@@ -12,6 +12,7 @@ import {
   apertureDefaultCenter,
   apertureDefaultRadiusMm,
   clampToGridAxis,
+  apertureClampRadius,
   apertureMetrics,
   apertureDataToCanvas,
   apertureCanvasToData,
@@ -173,9 +174,7 @@ function apHandlePointerMove(e) {
   } else {
     const center = apCurrentCenter();
     const rMm = Math.hypot(uMm - center.u, vMm - center.v);
-    const halfU = Math.abs(apGrid.u_max_mm - apGrid.u_min_mm) / 2;
-    const halfV = Math.abs(apGrid.v_max_mm - apGrid.v_min_mm) / 2;
-    apRadiusMm = Math.max(1, Math.min(rMm, 1.5 * Math.max(halfU, halfV)));
+    apRadiusMm = apertureClampRadius(apGrid, rMm);
   }
   paintDockAperture();
 }
