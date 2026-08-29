@@ -38,7 +38,11 @@ from test_mc_parity import _geometry_for, _load_fixture
 FIXTURES_ROOT = Path(__file__).parent / "fixtures"
 SHADING_ROOT = FIXTURES_ROOT / "shading"
 
-KERNEL = sunshape_kernel("super_gauss")
+# MC references here (``_occluder_aware_trace`` / ``big_mc_trace``) call
+# ``trace_heliostat`` without ``sampler=``, so they draw from the app-wide
+# default (Buie, since the sunshape swap) -- this module-level cone kernel
+# must match, or every cross-backend comparison below is apples to oranges.
+KERNEL = sunshape_kernel("buie")
 MID_MORNING_STEP = "20260321_0939"
 TIGHT_APERTURE_HELIOSTAT = 574
 BLOCKING_HELIOSTAT = 414

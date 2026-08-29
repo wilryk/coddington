@@ -199,7 +199,7 @@ def _secondary_ring_clears(
 
 
 def sunshape_kernel(
-    source_model: str = "super_gauss",
+    source_model: str = "buie",
     slope_error_mrad: float = 0.0,
     pointing_error_mrad: float = 0.0,
     specularity_mrad: float = 0.0,

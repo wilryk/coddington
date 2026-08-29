@@ -2575,7 +2575,7 @@ def _trace_core(
         return result
 
     kernel = sunshape_kernel(
-        "super_gauss",
+        "buie",
         slope_error_mrad=slope_error_mrad,
         specularity_mrad=specularity_mrad,
         pointing_error_mrad=pointing_error_mrad,

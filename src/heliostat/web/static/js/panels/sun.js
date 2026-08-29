@@ -146,6 +146,20 @@ function build(container) {
   const el = numberRow(directFields, SUN_FIELDS[1]);
   body.appendChild(directFields);
 
+  // §G-style disclosure: the sun's ANGULAR shape (as opposed to its
+  // intensity, the DNI control below) is not user-configurable -- every
+  // trace, at every fidelity, draws from the Buie limb-darkened solar disk
+  // (heliostat.trace.samplers.BuieSampler / heliostat.trace.cone's
+  // sunshape_kernel default). Stated here so a spot's width is never read
+  // as "whatever the app happens to assume" -- the super-Gaussian sampler
+  // this app shipped with initially is still in the codebase (kernel-level
+  // tests exercise it) but nothing user-facing selects it any more.
+  const sunshapeNote = document.createElement("div");
+  sunshapeNote.className = "summary";
+  sunshapeNote.textContent =
+    "Sunshape: Buie limb-darkened solar disk (4.65 mrad limb angle, ratio-of-cosines profile, no circumsolar aureole term). Applied identically at every fidelity and is not user-adjustable.";
+  body.appendChild(sunshapeNote);
+
   // -- spec §M.7: site DNI -- independent of how az/el were arrived at
   // (site & time, or a typed angle pair), so this shows either way rather
   // than living inside siteFields/directFields above.

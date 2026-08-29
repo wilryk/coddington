@@ -33,7 +33,7 @@ from heliostat import metrics
 from heliostat.geometry.receiver import FlatWindowReceiver
 from heliostat.geometry.secondary import AxiconSecondary, CassegrainSecondary, NoSecondary
 from heliostat.trace.mc import trace_heliostat
-from heliostat.trace.samplers import SuperGaussSampler
+from heliostat.trace.samplers import BuieSampler
 
 FIXTURES_ROOT = Path(__file__).parent / "fixtures"
 MC_ROOT = FIXTURES_ROOT / "mc_parity"
@@ -199,7 +199,7 @@ def test_mc_parity(config, heliostat_id, step_key):
     label = f"{config} heliostat={heliostat_id} step={step_key}"
 
     secondary, receiver = _geometry_for(config)
-    sampler = SuperGaussSampler()  # provenance: source_model == "super_gauss"
+    sampler = BuieSampler()  # provenance: source_model == "buie"
 
     step_int = int(step_key.replace("_", ""))
     rng = np.random.default_rng(np.random.SeedSequence((BASE_SEED, step_int, heliostat_id)))

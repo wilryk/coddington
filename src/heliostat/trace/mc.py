@@ -7,8 +7,13 @@ never considered again; the counter chain records where.
 
 Convention pins that are not free to change
 --------------------------------------------
-- Super-Gaussian source: ``I(theta) = exp(-(theta^2 / 2 sigma^2)^n)``,
-  ``sigma = 0.0024`` rad, ``n = 2``. See :mod:`heliostat.trace.samplers`.
+- Default source (``sampler=None``): the Buie limb-darkened solar disk --
+  a ratio-of-cosines profile out to a fixed 4.65 mrad limb angle, no
+  circumsolar aureole term. See :class:`~heliostat.trace.samplers.BuieSampler`
+  and :mod:`heliostat.trace.samplers`. The super-Gaussian sampler
+  (``I(theta) = exp(-(theta^2 / 2 sigma^2)^n)``, ``sigma = 0.0024`` rad,
+  ``n = 2``) remains available via an explicit ``sampler=SuperGaussSampler()``
+  but is no longer the default anywhere user-facing.
 - Figure sag is the ANSI Z80.28 astigmatic/defocus form, radius normalised
   to 1 mm: ``sag = c3*sqrt(6)*2xy + c4*sqrt(3)*(2x^2+2y^2-1) +
   c5*sqrt(6)*(x^2-y^2)``.
@@ -23,7 +28,7 @@ import numpy as np
 from ..geometry.heliostat import zernike_sag_and_slopes as _zernike_sag_and_slopes
 from ..geometry.receiver import Receiver
 from ..geometry.secondary import Secondary
-from .samplers import SuperGaussSampler
+from .samplers import BuieSampler, SuperGaussSampler
 
 if TYPE_CHECKING:
     from ..geometry.design import HeliostatDesign
@@ -39,13 +44,22 @@ SOURCE_POWER_W = 38484.5  # = 1000 W/m^2 * pi * 3.5^2 m^2
 MIRROR_HALF_X_MM = 2500.0
 MIRROR_HALF_Y_MM = 1500.0
 
-_DEFAULT_SAMPLER: SuperGaussSampler | None = None
+_DEFAULT_SAMPLER: BuieSampler | None = None
 
 
-def _default_sampler() -> SuperGaussSampler:
+def _default_sampler() -> BuieSampler:
+    """The sampler ``trace_heliostat`` draws from when ``sampler=None``.
+
+    Buie -- the limb-darkened solar disk (see :mod:`heliostat.trace.samplers`)
+    is the only sunshape the owner considers physically legitimate; the
+    super-Gaussian sampler remains fully implemented (kernel machinery tests
+    construct it explicitly) but is no longer selected by anything
+    user-facing. See ``sunshape_kernel``'s own default in
+    :mod:`heliostat.trace.cone` for the matching cone-backend choice.
+    """
     global _DEFAULT_SAMPLER
     if _DEFAULT_SAMPLER is None:
-        _DEFAULT_SAMPLER = SuperGaussSampler()
+        _DEFAULT_SAMPLER = BuieSampler()
     return _DEFAULT_SAMPLER
 
 
@@ -203,7 +217,7 @@ def trace_heliostat(
     receiver: Receiver,
     n_rays: int,
     rng: np.random.Generator,
-    sampler: SuperGaussSampler | None = None,
+    sampler: SuperGaussSampler | BuieSampler | None = None,
     source_disk_radius_mm: "float | str" = SOURCE_DISK_RADIUS_MM,
     source_power_w: float | None = SOURCE_POWER_W,
     return_paths: bool = False,

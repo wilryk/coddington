@@ -506,8 +506,26 @@ def test_scene_is_deterministic_and_does_not_disturb_the_trace(client, mode):
 # measured 0.073% accuracy envelope), and power now equals incident
 # BITWISE -- the B-spline evaluation clamps its undershoot and rescales to
 # the deposit's exact total, so the full-pass bound holds exactly.
-PIN_DEFAULT_RECT_POWER_W = 8225.855000744928
-PIN_DEFAULT_RECT_RMS_MM = 505.51851375643406
+#
+# Re-pinned 2026-08-28 for the sunshape swap (owner's ruling: super-Gaussian
+# is not a legitimate sunshape -- Buie is now the default everywhere,
+# heliostat.trace.cone.sunshape_kernel's own default param and every
+# app-side choke point). incident_power_w and slant_range_m are UNCHANGED --
+# both are purely geometric (cosine-weighted mirror area, and the
+# heliostat-to-receiver distance) and never touch the kernel. power_w is
+# unchanged to 12 significant figures (the B-spline deposit's exact-total
+# rescale is kernel-agnostic, so it still lands within 1 ULP of incident_w,
+# not bitwise-identical to it this time -- ordinary float noise from a
+# differently-shaped kernel's deposit weights, not a broken invariant).
+# rms_radius_mm moved from 505.51851375643406 to 629.9313684622526 (+24.6%):
+# Buie's flatter, more evenly-spread profile (see
+# heliostat.trace.samplers.BuieSampler's docstring: "measurably wider ...
+# sampled RMS") puts more power at larger radii than the super-Gaussian did,
+# widening the default trace's spot exactly as the EE audit predicted
+# (scratchpad ee_audit_report.md: axicon r90 0.608m -> 0.730m, a similar-
+# sized broadening on this different geometry/metric).
+PIN_DEFAULT_RECT_POWER_W = 8225.855000744927
+PIN_DEFAULT_RECT_RMS_MM = 629.9313684622526
 PIN_DEFAULT_RECT_INCIDENT_W = 8225.855000744928
 PIN_DEFAULT_RECT_SLANT_M = 96.32411487265273
 
@@ -681,10 +699,21 @@ def test_flat_rect_washes_and_leaves_the_legacy_path(client):
     """surface="flat" on the default-size rectangle must NOT take the legacy
     path (which hard-codes the astigmatic figure): with no figure at all the
     spot is a mirror-sized wash, several times the focused rms, and the cone
-    backend still reports real power through it."""
+    backend still reports real power through it.
+
+    The multiplier was 3.0 (actual ratio ~3.14) under the super-Gaussian
+    sunshape; re-derived to 2.25 (actual ratio ~2.52, still comfortable
+    margin above 1) after the sunshape swap (owner's ruling: super-Gaussian
+    is not legitimate, Buie is now the default everywhere) -- the flat
+    wash's rms is dominated by the mirror's own geometric spread and barely
+    moves with the sunshape (1586.4 mm here vs a similar order under
+    super_gauss), while the TWISTING baseline's rms grew +24.6% (505.5 ->
+    629.9 mm, see PIN_DEFAULT_RECT_RMS_MM above) because a focused spot's
+    width is dominated by the sunshape's own profile -- compressing the
+    ratio between the two, not a sign either number is wrong."""
     twisting = client.post("/api/trace", json=_trace_payload(RECT_DESIGN)).json()
     flat = client.post("/api/trace", json=_trace_payload({**RECT_DESIGN, "surface": "flat"})).json()
-    assert flat["rms_radius_mm"] > 3.0 * twisting["rms_radius_mm"]
+    assert flat["rms_radius_mm"] > 2.25 * twisting["rms_radius_mm"]
     assert flat["power_w"] > 0
 
 

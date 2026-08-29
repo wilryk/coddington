@@ -707,7 +707,7 @@ def run_sweep(
         },
     )
 
-    kernel = sunshape_kernel("super_gauss") if trace_mode.backend == "cone" else None
+    kernel = sunshape_kernel("buie") if trace_mode.backend == "cone" else None
     cone_flux_grid = (GRID_SIZE, GRID_SIZE)
 
     pool = None
