@@ -111,6 +111,18 @@ function projectSubtitle(entry) {
   return Number.isNaN(when.getTime()) ? `Saved ${entry.saved_at}` : `Saved ${when.toLocaleString()}`;
 }
 
+// docs/ui-spec-v0.2.md §P / mockup M20: a built-in reference field's card
+// subtitle reads "<field kind> · <N> heliostats · <receiver summary>" --
+// e.g. "Surround field · 2,650 heliostats · 140 m tower · external
+// cylindrical molten-salt receiver" -- everything the provenance metadata
+// (heliostat.web.builtin_library.BUILTIN_PROJECT_PROVENANCE, fetched
+// alongside the document in refreshCollection) carries.
+function builtinProjectSubtitle(prov) {
+  if (!prov) return "";
+  const count = Number.isFinite(prov.heliostat_count) ? prov.heliostat_count.toLocaleString() : "?";
+  return `${prov.field_kind} · ${count} heliostats · ${prov.receiver_summary}`;
+}
+
 // -- IN USE matching (loose numeric equality, 1e-6 relative) -------------
 
 function numsClose(a, b) {
@@ -171,10 +183,31 @@ function refreshCollection(collection) {
   return getLibrary(collection)
     .then((data) => {
       if (collection === "projects") {
-        cache.projects = data.entries;
-        state.listError.projects = null;
-        update();
-        return;
+        // A user's own saved project stays listing-only (name + date is
+        // enough, per the original brief this module's header comment
+        // still describes). Built-ins are different since §P: the four
+        // reference-field cards need their heliostat count, field kind,
+        // receiver summary and (binding, §P) their citation -- all of
+        // which live in the document/provenance the {name} route returns,
+        // not the plain listing. Only four entries ever match, so this
+        // costs four extra requests, once per drawer-open/mutation, not
+        // per render.
+        const builtinNames = data.entries.filter((e) => e.builtin).map((e) => e.name);
+        return Promise.all(
+          builtinNames.map((name) =>
+            getLibraryEntry("projects", name)
+              .then((full) => [name, { document: full.document, provenance: full.provenance }])
+              .catch(() => [name, null])
+          )
+        ).then((pairs) => {
+          const byName = new Map(pairs);
+          cache.projects = data.entries.map((e) => {
+            const extra = byName.get(e.name);
+            return extra ? Object.assign({}, e, extra) : e;
+          });
+          state.listError.projects = null;
+          update();
+        });
       }
       // designs/receivers: fetch every entry's document alongside the
       // listing -- the collections are small (three built-ins plus
@@ -259,6 +292,13 @@ function loadProject(name) {
         state.saveError = { collection: "projects", message: "Couldn't load that project: " + err };
       } else {
         store.set("ui.projectName", name);
+        // docs/ui-spec-v0.2.md §P: while a built-in reconstruction is
+        // loaded, its citation stamps into the top bar (main.js's
+        // renderTopbar()) so a result screenshot carries the provenance,
+        // not just the plant name. `full.provenance` is null for every
+        // non-reconstruction project (a user's own, or a built-in with no
+        // provenance entry).
+        store.set("ui.projectProvenance", full.provenance || null);
         store.set("ui.dirty", false);
         state.saveError = null;
       }
@@ -330,6 +370,7 @@ function confirmDelete(collection, name) {
       state.saveError = null;
       if (collection === "projects" && store.get("ui.projectName") === name) {
         store.set("ui.projectName", null);
+        store.set("ui.projectProvenance", null);
       }
       return refreshCollection(collection);
     })
@@ -351,6 +392,11 @@ function saveProjectAs(name) {
       state.saveAsName = "";
       state.saveError = null;
       store.set("ui.projectName", name);
+      // A save always produces the user's own project, not a
+      // reconstruction, even if the workspace was last loaded from a
+      // built-in -- the top-bar citation stamp (§P) belongs to the
+      // built-in it came from, not to a saved copy of it.
+      store.set("ui.projectProvenance", null);
       store.set("ui.dirty", false);
       return refreshCollection("projects");
     })
@@ -378,10 +424,13 @@ function saveProjectOverwrite() {
 
 // docs/ui-spec.md 5, "Migration": converts, saves under the setup's own
 // name (falling back to "name (imported)" on a collision -- checked
-// against a fresh listing here rather than relying on a 409, since
-// `projects` has no built-ins for the server to 409 against), loads it
-// into the workspace, and reports what didn't map. The original setup is
-// never touched -- no DELETE call anywhere in this path.
+// against a fresh listing here rather than relying on a 409, so this
+// works whether or not the name happens to collide with a built-in;
+// docs/ui-spec-v0.2.md §P gave `projects` its first four built-ins, and
+// `existing` below already includes them since it comes from the same
+// merged listing the Library drawer renders), loads it into the
+// workspace, and reports what didn't map. The original setup is never
+// touched -- no DELETE call anywhere in this path.
 function importSetup(setupName) {
   state.importReport = null;
   getSetup(setupName)
@@ -393,6 +442,7 @@ function importSetup(setupName) {
         return saveLibraryEntry("projects", targetName, document).then(() => {
           const applyErr = applyProject(document);
           store.set("ui.projectName", targetName);
+          store.set("ui.projectProvenance", null); // an imported setup is always the user's own
           store.set("ui.dirty", false);
           state.importReport = { setupName, unmapped, savedAs: targetName, applyError: applyErr };
           return refreshCollection("projects");
@@ -407,9 +457,26 @@ function importSetup(setupName) {
 
 // -- DOM: card + section markup ---------------------------------------------
 
+// docs/ui-spec-v0.2.md §P, mockup M20: the RECONSTRUCTION badge's citation
+// and (when present) its disclosed-limitation caveats, directly beneath the
+// card subtitle -- "the most important clause in this rider": a reference
+// field that ships without its citation visible on the card is not
+// acceptable, so this renders whenever `opts.provenance` is given rather
+// than behind any further click.
+function provenanceHtml(prov) {
+  if (!prov) return "";
+  let html = `<div class="idealnote">Ideal build: slope error, specularity, pointing error all 0</div>`;
+  html += `<div class="citation"><strong>Source:</strong> ${esc(prov.citation)}</div>`;
+  if (prov.caveats && prov.caveats.length) {
+    html += '<ul class="citation caveats">' + prov.caveats.map((c) => `<li>${esc(c)}</li>`).join("") + "</ul>";
+  }
+  return html;
+}
+
 function cardHtml(collection, entry, opts) {
   const badges = [];
   if (opts.isBuiltin) badges.push('<span class="badge builtin">BUILT-IN</span>');
+  if (opts.reconstruction) badges.push('<span class="badge recon">RECONSTRUCTION</span>');
   if (opts.isCurrent) badges.push('<span class="badge inuse">IN USE</span>');
   const lock = opts.isBuiltin
     ? '<svg class="lock" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#64748b" stroke-width="1.6"><rect x="3.5" y="7" width="9" height="6.5" rx="1"></rect><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"></path></svg>'
@@ -448,6 +515,7 @@ function cardHtml(collection, entry, opts) {
   return `<div class="card${opts.isCurrent ? " current" : ""}">
     <div class="cardhead">${lock}<span class="name">${nameEsc}</span>${badges.join("")}</div>
     <div class="cardsub">${esc(opts.subtitle || "")}</div>
+    ${provenanceHtml(opts.provenance)}
     <div class="cardactions">${actions}</div>
     ${extra}
   </div>`;
@@ -456,6 +524,7 @@ function cardHtml(collection, entry, opts) {
 function cardForEntry(collection, entry, doc, isBuiltin) {
   let subtitle = "";
   let isCurrent = false;
+  let provenance = null;
   if (collection === "receivers" && entry.document) {
     subtitle = receiverSubtitle(entry.document);
     isCurrent = receiverMatchesCurrent(doc, entry.document);
@@ -463,7 +532,12 @@ function cardForEntry(collection, entry, doc, isBuiltin) {
     subtitle = designSubtitle(entry.document);
     isCurrent = designMatchesCurrent(doc, entry.document);
   } else if (collection === "projects") {
-    subtitle = projectSubtitle(entry);
+    // §P built-ins carry provenance (fetched alongside the document in
+    // refreshCollection); a user's own saved project never does, and falls
+    // back to the plain "Saved <date>" subtitle exactly as before this
+    // rider.
+    subtitle = entry.provenance ? builtinProjectSubtitle(entry.provenance) : projectSubtitle(entry);
+    provenance = entry.provenance || null;
     isCurrent = store.get("ui.projectName") === entry.name;
   }
   if (entry.loadError) subtitle = "Could not load: " + entry.loadError;
@@ -471,6 +545,8 @@ function cardForEntry(collection, entry, doc, isBuiltin) {
     subtitle,
     isCurrent,
     isBuiltin,
+    reconstruction: !!(provenance && provenance.reconstruction),
+    provenance,
     useLabel: collection === "projects" ? "Load" : "Use",
     useAction: collection === "projects" ? "load" : "use",
   });
@@ -667,7 +743,12 @@ function renderTabBody() {
     const builtins = entries.filter((e) => e.builtin);
     const yours = entries.filter((e) => !e.builtin);
     if (builtins.length) {
-      html += '<div class="sectionlabel">Built-in — manuscript baseline</div>';
+      // docs/ui-spec-v0.2.md §P, mockup M20: the Projects tab's built-ins
+      // are reconstructed reference fields, not the manuscript's own
+      // numbers (designs/receivers keep the label that's always been true
+      // of them).
+      const label = tab === "projects" ? "Built-in — manuscript & reference fields" : "Built-in — manuscript baseline";
+      html += `<div class="sectionlabel">${label}</div>`;
       for (const e of builtins) html += cardForEntry(tab, e, doc, true);
     }
     html += '<div class="sectionlabel">Yours</div>';

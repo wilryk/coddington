@@ -17,14 +17,21 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from heliostat.web.app import (  # noqa: E402
     _OPTICS_PARAM_MODELS,
+    ProjectDocument,
     RectParams,
     create_app,
 )
-from heliostat.web.builtin_library import BUILTIN_DESIGNS, BUILTIN_RECEIVERS  # noqa: E402
+from heliostat.web.builtin_library import (  # noqa: E402
+    BUILTIN_DESIGNS,
+    BUILTIN_PROJECT_PROVENANCE,
+    BUILTIN_PROJECTS,
+    BUILTIN_RECEIVERS,
+)
 
 RECT_DOC = {"type": "rect", "width_mm": 1000.0, "height_mm": 800.0}
 BUILTIN_DESIGN_NAMES = list(BUILTIN_DESIGNS)
 BUILTIN_RECEIVER_NAMES = list(BUILTIN_RECEIVERS)
+BUILTIN_PROJECT_NAMES = list(BUILTIN_PROJECTS)
 
 
 @pytest.fixture(scope="module")
@@ -318,9 +325,127 @@ def test_project_round_trips(client, library_dir):
     assert loaded["builtin"] is False
 
 
-def test_projects_have_no_builtins(client, library_dir):
+def test_projects_have_the_four_builtin_reference_fields(client, library_dir):
+    """docs/ui-spec-v0.2.md §P: projects gained its first built-ins."""
     listed = client.get("/api/library/projects").json()["entries"]
-    assert listed == []  # nothing yet -- and no built-in entries at all
+    assert [e["name"] for e in listed] == BUILTIN_PROJECT_NAMES
+    assert all(e["builtin"] for e in listed)
+
+
+# ---------------------------------------------------------------------------
+# docs/ui-spec-v0.2.md §P: the four built-in reference fields (Gemasolar,
+# PS10, Crescent Dunes, the Stellio-based Hami field). Load-and-render
+# verification only, matching the rider itself -- these tests never trace a
+# field (the largest is 14,500 heliostats; see CLAUDE.md's machine-resource
+# rule).
+
+#: Each project's documented/generated heliostat count -- the number of
+#: rows scripts/generate_reference_fields.py wrote to that project's CSV,
+#: carried here as an independent expectation (not read back from the
+#: document under test) so a regression that silently truncated or padded
+#: a field would actually fail this.
+BUILTIN_PROJECT_HELIOSTAT_COUNTS = {
+    "Gemasolar (reconstruction)": 2650,
+    "PS10 (reconstruction)": 624,
+    "Crescent Dunes (reconstruction)": 10347,
+    "Stellio-based field (reconstruction)": 14500,
+}
+
+
+@pytest.mark.parametrize("name", BUILTIN_PROJECT_NAMES)
+def test_builtin_project_loads_from_the_constant(client, library_dir, name):
+    resp = client.get(f"/api/library/projects/{name}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["builtin"] is True
+    assert data["document"] == BUILTIN_PROJECTS[name]
+
+
+@pytest.mark.parametrize("name", BUILTIN_PROJECT_NAMES)
+def test_builtin_project_validates_as_a_project_document(name):
+    """Parity gate, same shape as the design/receiver parity tests above --
+    a built-in project must be exactly what ProjectDocument accepts, not
+    something that only happens to work because built-ins skip validation
+    on read."""
+    ProjectDocument.model_validate(BUILTIN_PROJECTS[name])
+
+
+@pytest.mark.parametrize("name", BUILTIN_PROJECT_NAMES)
+def test_builtin_project_has_the_documented_heliostat_count(client, library_dir, name):
+    doc = client.get(f"/api/library/projects/{name}").json()["document"]
+    xy_mm = doc["field"]["layout"]["xy_mm"]
+    assert len(xy_mm) == BUILTIN_PROJECT_HELIOSTAT_COUNTS[name]
+
+
+@pytest.mark.parametrize("name", BUILTIN_PROJECT_NAMES)
+def test_builtin_project_is_an_ideal_build(client, library_dir, name):
+    """§P binding clause: slope error, specularity and pointing error all
+    0, so what's shown is the layout's own performance, not a guess at a
+    real plant's error budget."""
+    design = client.get(f"/api/library/projects/{name}").json()["document"]["design"]
+    assert design["slope_error_mrad"] == 0.0
+    assert design["specularity_mrad"] == 0.0
+    assert design["pointing_error_mrad"] == 0.0
+
+
+@pytest.mark.parametrize("name", BUILTIN_PROJECT_NAMES)
+def test_builtin_project_carries_provenance(client, library_dir, name):
+    """§P's binding provenance requirement -- a reference field that ships
+    without its citation is the rider's one unacceptable failure."""
+    data = client.get(f"/api/library/projects/{name}").json()
+    prov = data["provenance"]
+    assert prov is not None
+    assert prov["reconstruction"] is True
+    assert isinstance(prov["citation"], str) and prov["citation"].strip()
+    assert isinstance(prov["caveats"], list) and len(prov["caveats"]) > 0
+    assert all(isinstance(c, str) and c.strip() for c in prov["caveats"])
+    assert prov["heliostat_count"] == BUILTIN_PROJECT_HELIOSTAT_COUNTS[name]
+
+
+def test_builtin_project_provenance_matches_the_constant(client, library_dir):
+    name = BUILTIN_PROJECT_NAMES[0]
+    data = client.get(f"/api/library/projects/{name}").json()
+    assert data["provenance"] == BUILTIN_PROJECT_PROVENANCE[name]
+
+
+def test_non_builtin_project_has_no_provenance(client, library_dir):
+    """A user's own saved project is never mistaken for a reconstruction."""
+    client.post(
+        "/api/library/projects", json={"name": "mine", "document": _project_document()}
+    )
+    data = client.get("/api/library/projects/mine").json()
+    assert data["provenance"] is None
+
+
+@pytest.mark.parametrize("name", [BUILTIN_PROJECT_NAMES[0]])
+def test_builtin_project_cannot_be_overwritten(client, library_dir, name):
+    resp = client.post(
+        "/api/library/projects", json={"name": name, "document": _project_document()}
+    )
+    assert resp.status_code == 409
+
+
+@pytest.mark.parametrize("name", [BUILTIN_PROJECT_NAMES[0]])
+def test_builtin_project_cannot_be_deleted(client, library_dir, name):
+    resp = client.delete(f"/api/library/projects/{name}")
+    assert resp.status_code == 409
+    assert client.get(f"/api/library/projects/{name}").status_code == 200
+
+
+def test_builtin_project_can_be_duplicated(client, library_dir):
+    """The Library's Duplicate-to-edit affordance (docs/ui-spec-v0.2.md §P)
+    must actually work for a >1000-heliostat built-in -- this is the
+    behaviour app.ProjectField's widened layout cap (GeometryFieldLayout,
+    not the narrower live-trace FieldLayout) exists for."""
+    name = "Crescent Dunes (reconstruction)"
+    assert BUILTIN_PROJECT_HELIOSTAT_COUNTS[name] > 1000
+    doc = client.get(f"/api/library/projects/{name}").json()["document"]
+    saved = client.post(
+        "/api/library/projects", json={"name": "my copy", "document": doc}
+    )
+    assert saved.status_code == 200
+    loaded = client.get("/api/library/projects/my copy").json()
+    assert len(loaded["document"]["field"]["layout"]["xy_mm"]) == BUILTIN_PROJECT_HELIOSTAT_COUNTS[name]
 
 
 def test_project_missing_schema_version_is_422(client, library_dir):

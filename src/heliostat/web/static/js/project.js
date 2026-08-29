@@ -74,6 +74,8 @@ export function serializeProject(doc, ui) {
     site: doc.sun.site,
     // Spec §M.7: persisted like every other site setting.
     dni: doc.sun.dni,
+    // Spec §O: persisted like every other Sun-stage setting.
+    circumsolar_ratio: doc.sun.csr || 0,
   };
   const run = {
     mode: ui.fidelity,
@@ -103,8 +105,14 @@ export function applyProject(document) {
   }
   const field = (document && document.field) || {};
   if (field.layout && field.layout.type === "positions") {
-    if (!xyMatchesManuscriptField(field.layout.xy_mm)) {
-      return "custom position layouts arrive with the layout picker";
+    // Any positions blob loads now (docs/ui-spec-v0.2.md §P's built-in
+    // reference projects are the reason this stopped being "manuscript or
+    // reject" -- see the "positions" branch below and doc.field.positions
+    // in store.js). The only real requirement is that it's a real array of
+    // real [x, y] pairs; a malformed one still 422s before it does anything
+    // else useful, so accept the shape here rather than second-guess it.
+    if (!Array.isArray(field.layout.xy_mm) || field.layout.xy_mm.length === 0) {
+      return "field layout \"positions\" is missing its xy_mm positions";
     }
   } else if (field.layout && field.layout.type === "radial_stagger") {
     const bc = field.layout.band_counts;
@@ -170,13 +178,24 @@ export function applyProject(document) {
       band2Count: bc ? bc[2] : defaults.band2Count,
     });
   } else if (field.layout && field.layout.type === "positions") {
-    // Validated above: xy_mm matches the cached manuscript field exactly,
-    // so this project's field IS the manuscript layout -- store it as that
-    // symbolic choice rather than a frozen positions blob, so it stays live
-    // (and re-fetchable/re-serializable) exactly like a freshly-defaulted
-    // document's field does.
-    store.set("doc.field.mode", "field");
-    store.set("doc.field.layout", "manuscript");
+    if (xyMatchesManuscriptField(field.layout.xy_mm)) {
+      // The manuscript's own field, byte-for-byte -- store it as that
+      // symbolic choice rather than a frozen positions blob, so it stays
+      // live (and re-fetchable/re-serializable) exactly like a
+      // freshly-defaulted document's field does.
+      store.set("doc.field.mode", "field");
+      store.set("doc.field.layout", "manuscript");
+    } else {
+      // Any other positions layout (docs/ui-spec-v0.2.md §P's built-in
+      // reference projects: Gemasolar, PS10, Crescent Dunes, the
+      // Stellio-based field) -- no parametric generator reconstructs these
+      // client-side, so the positions ride verbatim in doc.field.positions
+      // and currentLayoutPayload's "positions" branch sends them back out
+      // unchanged for both geometry requests and a re-save.
+      store.set("doc.field.mode", "field");
+      store.set("doc.field.layout", "positions");
+      store.set("doc.field.positions", { xy_mm: field.layout.xy_mm });
+    }
   } else {
     store.set("doc.field.mode", "single");
   }
@@ -204,6 +223,10 @@ export function applyProject(document) {
     // back to the same default (constant, 1000 W/m^2) that project already
     // traced at -- so it keeps reopening bit-identical.
     dni: Object.assign({}, DEFAULT_DOC.sun.dni, sun.dni || {}),
+    // A document saved before spec §O simply has no circumsolar_ratio at
+    // all, and falls back to 0 -- the same hard-cutoff physics that project
+    // already traced at, so it keeps reopening bit-identical.
+    csr: sun.circumsolar_ratio != null ? sun.circumsolar_ratio : DEFAULT_DOC.sun.csr,
   });
 
   const run = (document && document.run) || {};
