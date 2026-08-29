@@ -186,7 +186,21 @@ def test_specularity_matches_cone_backend():
     """Cone already applies ``specularity_mrad`` as an isotropic angular
     broadening with no doubling (:func:`heliostat.trace.cone.sunshape_kernel`);
     the fixed Monte Carlo backend must land on the same total power at the
-    same 45-deg-incidence geometry, within the two backends' own noise."""
+    same 45-deg-incidence geometry, within the two backends' own noise.
+
+    ``kernel`` below is built ``sunshape_kernel("super_gauss")`` while ``mc``
+    draws from ``trace_heliostat``'s no-``sampler=`` default (Buie, commit
+    7c4fd08) -- a real shape mismatch, but harmless for a TOTAL-POWER
+    comparison specifically: ``_specularity_only_receiver`` is "sized
+    generously... so neither backend's power comparison is contaminated by a
+    systematic edge-clipping mismatch" (see that helper's own docstring),
+    and confirmed here (``hit_mirror == in_window`` under both super-Gauss
+    and Buie samplers, checked when this comment was added) -- with no ray
+    clipped by the window, total captured power cannot depend on the
+    sunshape's angular WIDTH, only on total emitted power, which no sampler
+    choice changes. Do not match the sampler here without re-deriving this
+    receiver size argument; a peak-flux or centroid-width version of this
+    test would need the fix, this power-only one does not."""
     secondary = NoSecondary()
     receiver = _specularity_only_receiver()
 
@@ -303,7 +317,18 @@ def test_offcentre_outline_mc_matches_cone():
     """MC total power for the off-centre outline must agree with the cone
     backend within noise -- cone has no source-disk concept to get wrong
     (it samples the mirror surface directly), so it is an independent
-    reference unaffected by this bug."""
+    reference unaffected by this bug.
+
+    ``kernel`` below is ``sunshape_kernel("super_gauss")`` while ``mc`` uses
+    ``trace_heliostat``'s no-``sampler=`` Buie default (commit 7c4fd08) -- a
+    real shape mismatch, harmless here for the same reason as
+    ``test_specularity_matches_cone_backend`` above: this is a TOTAL power
+    comparison and ``_offcentre_receiver`` does not clip either sunshape
+    (measured ``hit_mirror == in_window`` under both samplers, and the power
+    difference between them was ~0.1%, noise-scale, when this comment was
+    added) -- with nothing clipped, total power cannot depend on sunshape
+    width. Would need matching if this test ever grew a shape/peak
+    assertion."""
     design_off, _ = _offcentre_designs()
     secondary = NoSecondary()
     receiver = _offcentre_receiver()

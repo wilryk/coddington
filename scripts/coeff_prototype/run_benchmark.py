@@ -41,10 +41,19 @@ from coeff_prototype.hermite import DEFAULT_ORDER, HermiteBasis, accumulate_herm
 from coeff_prototype.sampling import flux_grid_edges, trace_heliostat_samples
 from heliostat.trace.cone import sunshape_kernel
 from heliostat.trace.mc import SOURCE_POWER_W, trace_heliostat
+from heliostat.trace.samplers import SuperGaussSampler
 
 MC_SEED_BASE = 424242
 OUT_JSON = Path(__file__).parent / "benchmark_results.json"
 KERNEL = sunshape_kernel("super_gauss")  # shared for every scenario, matching ULTRA_FAST's own
+# run_mc_reference() below calls trace_heliostat() with no sampler=, which
+# would draw from the app-wide Buie default (commit 7c4fd08) -- wider than
+# KERNEL above, so its reported total_power_w/peak_flux_w_m2 would read
+# systematically low next to the cone-side deposit-comparison numbers this
+# script writes to the same benchmark_results.json, purely from the
+# sunshape mismatch. Explicit here so the two halves of that file stay
+# comparable.
+MC_SAMPLER = SuperGaussSampler()
 
 
 def _sample_scenario(scenario, order=1) -> tuple[list, list]:
@@ -197,6 +206,7 @@ def run_mc_reference(scenario, n_rays_per_heliostat: int, flux_grid, receiver_ex
             case.x_mm, case.y_mm, case.rot_az_deg, case.rot_el_deg,
             case.c3, case.c4, case.c5, case.solar_az_deg, case.solar_el_deg,
             scenario.secondary, scenario.receiver, n_rays_per_heliostat, rng,
+            sampler=MC_SAMPLER,
         )
         watts_per_ray = SOURCE_POWER_W / n_rays_per_heliostat
         # incident (cosine-weighted, on-mirror) power: emitted power scaled by

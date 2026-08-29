@@ -239,6 +239,15 @@ class TestMonteCarloRefereesTheCavitySeam:
     bearing to the same ratio at a seam-free bearing cancels every
     normalisation difference between the backends; a periodic-basis
     regression would drag that double ratio off 1.
+
+    Sunshape mismatch is harmless here despite ``_KERNEL`` above being built
+    with ``sunshape_kernel("super_gauss")`` while ``_mc_power_w`` below calls
+    ``trace_heliostat`` with no ``sampler=`` (the app-wide Buie default,
+    commit 7c4fd08): both bearings share the SAME cone kernel and the SAME
+    MC sampler, so whatever bias the shape mismatch introduces is identical
+    at bearing 0 and bearing 180 and cancels out of the ratio-of-ratios --
+    do not "fix" this by matching the sampler, it would not change what the
+    test can detect and would only make it slower.
     """
 
     def _mc_power_w(self, receiver, x, y, solar_az, n_rays=200_000):
