@@ -165,6 +165,14 @@ const DEFAULT_DOC = {
       day: 21,
       hour: 12.0,
     },
+    // Spec §M.7 site DNI control -- "constant" at 1000 W/m^2 is the
+    // default deliberately, NOT the rider's literally-stated "clear-sky
+    // model": every trace/day-sweep endpoint already assumed flat 1000
+    // W/m^2 regardless of sun elevation before this control existed, so
+    // this is the value that keeps a fresh project's numbers unchanged
+    // (see heliostat.web.app's DNISetting docstring for the full
+    // reasoning). "Clear-sky model" is one click away in the Sun panel.
+    dni: { mode: "constant", constant_w_m2: 1000.0, clearsky_scale: 1.0 },
   },
 };
 

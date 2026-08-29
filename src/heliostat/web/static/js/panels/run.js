@@ -139,6 +139,13 @@ function paintDockAperture() {
   els.apPowerNum.textContent = fmtPower(powerW);
   els.apFracNum.textContent = collectedW ? ((100 * powerW) / collectedW).toFixed(1) + " %" : "—";
   els.apFluxNum.textContent = fmtFlux(avgFluxWM2 / 1000);
+  // Spec §M.7: a live trace now carries its own dni_w_m2 (see api.js's
+  // buildTraceRequest and heliostat.web.app's trace()/field_trace()
+  // responses), closing the gap commit 45d6515 left open -- "concentration
+  // deliberately omitted [in the dock] -- a live trace carries no DNI to
+  // divide by".
+  const dni = apMetricsLike && apMetricsLike.dni_w_m2;
+  els.apConcNum.textContent = dni ? (avgFluxWM2 / dni).toFixed(0) + "×" : "—";
 }
 
 function apHandlePointerDown(e) {
@@ -342,6 +349,7 @@ function build(container, dockContainer, actions) {
   const apPowerNum = apRow("power within");
   const apFracNum = apRow("of collected");
   const apFluxNum = apRow("avg flux");
+  const apConcNum = apRow("avg concentration");
   apWrap.appendChild(apReadout);
   results.appendChild(apWrap);
 
@@ -420,6 +428,7 @@ function build(container, dockContainer, actions) {
     apPowerNum,
     apFracNum,
     apFluxNum,
+    apConcNum,
     fluxOverlayToggleInput,
     axisCaption,
     stamp,
@@ -515,7 +524,11 @@ export function render(container, dockContainer, actions, ctx) {
     // The fidelity that produced these numbers, not whichever one is
     // selected now -- switching the control must not relabel old results.
     const tracedAt = ui.traceFidelity || ui.fidelity;
-    els.stamp.textContent = when ? `traced ${when} · ${tracedAt}` : "";
+    // Spec §M.7: state the DNI these numbers assumed, right beside the
+    // fidelity that produced them -- a published/screenshotted number
+    // should never leave that implicit.
+    const dniNote = data.dni_note ? ` · DNI: ${data.dni_note}` : "";
+    els.stamp.textContent = when ? `traced ${when} · ${tracedAt}${dniNote}` : "";
   } else {
     els.peakNum.textContent = "—";
     els.meanNum.textContent = "—";

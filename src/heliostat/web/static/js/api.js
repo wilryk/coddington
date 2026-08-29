@@ -541,6 +541,11 @@ export function buildTraceRequest(doc, ui) {
     // No new ray tracing either way (docs/secondary-irradiance-plan.md):
     // it reuses hits the trace already computed.
     include_secondary_flux: true,
+    // Spec §M.7: the site DNI in effect, so power/flux/aperture-concentration
+    // scale consistently everywhere a trace request flows -- single trace,
+    // field trace, and (via buildDayRequest/buildYearRequest, which both
+    // build on this function) day sweep and year estimate alike.
+    dni: doc.sun.dni,
   };
   if (ui.fidelity === "monte_carlo" && ui.mcRays) body.n_rays = ui.mcRays;
   if (doc.field.mode === "field") {
@@ -569,6 +574,8 @@ export function buildFluxCsvRequest(doc, ui) {
     optics_params: currentOpticsParams(doc),
     heliostat_x_mm: doc.field.single.x_mm,
     heliostat_y_mm: doc.field.single.y_mm,
+    // Spec §M.7: keeps the exported grid consistent with the on-screen one.
+    dni: doc.sun.dni,
   };
   if (ui.fidelity === "monte_carlo" && ui.mcRays) body.n_rays = ui.mcRays;
   return body;

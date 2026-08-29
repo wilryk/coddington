@@ -137,7 +137,7 @@ from heliostat.geometry.shading import (
     polygon_occlusion,
     search_radius_for,
 )
-from heliostat.dni import ClearSkyDNI
+from heliostat.dni import STANDARD_DNI, ClearSkyDNI, ConstantDNI, DNIProvider, ScaledDNI
 from heliostat.solar import build_time_grid, sun_position, sunrise_sunset
 from heliostat.trace.cone import sunshape_kernel, trace_heliostat_cone
 from heliostat.trace.mc import MIRROR_HALF_X_MM, MIRROR_HALF_Y_MM, trace_heliostat
@@ -1149,6 +1149,88 @@ class SunRequest(_StrictModel):
     hour: float = Field(default=12.0, ge=0.0, lt=24.0)
 
 
+class DNISetting(_StrictModel):
+    """Spec §M.7's site DNI control: what sun this project assumes when it
+    turns a trace/sweep/aperture reading into a real number.
+
+    ``mode="constant"`` (the default) is a fixed W/m^2 value, applied at
+    every elevation/time alike -- what every trace/day-sweep/aperture
+    endpoint already assumed before this control existed, since none of
+    them ever varied DNI with the sun's position (only the YEAR estimate
+    did, hardcoded to :class:`~heliostat.dni.ClearSkyDNI` with no user
+    control -- exactly the rider's complaint). Defaulting THIS control to
+    ``constant`` at :data:`~heliostat.dni.STANDARD_DNI` (1000 W/m^2), rather
+    than the rider's literally-stated "clear-sky model (default)", is a
+    deliberate deviation: a clear-sky default would make a live single/field
+    trace's power vary with ``solar_el_deg`` where it never has before,
+    moving numbers the physics-regression test suite pins at flat 1000 for
+    every existing test fixture. "Clear-sky model" is one click away in the
+    Sun panel and, once chosen, applies to every surface consistently (the
+    rider's actual ask) -- it just is not what a project gets for free.
+
+    ``mode="clearsky"`` evaluates :class:`~heliostat.dni.ClearSkyDNI`,
+    scaled by ``clearsky_scale`` (rider: "or a scale factor on the model" --
+    1.0 is the model unscaled; e.g. 0.85 models a persistent haze/dust
+    discount on an otherwise clear sky).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["constant", "clearsky"] = "constant"
+    constant_w_m2: float = Field(default=STANDARD_DNI, gt=0)
+    clearsky_scale: float = Field(default=1.0, gt=0)
+
+    def dni_at_elevation(self, elevation_deg: float) -> float:
+        """DNI in effect (W/m^2) at one instant, given only its solar
+        elevation -- what a live single/field trace and one day/year-sweep
+        timestep all have on hand, no site or calendar date required."""
+        if self.mode == "constant":
+            return self.constant_w_m2
+        return self.clearsky_scale * ClearSkyDNI.dni_at_elevation(elevation_deg)
+
+    def provider(self, site) -> DNIProvider:
+        """A full ``(date, hour) -> W/m^2`` provider, for the surfaces that
+        need one -- today, only the year estimate, whose hourly grid spans
+        far more instants than it ever traces (see
+        :func:`heliostat.energy.annual_energy`). ``site`` needs
+        ``.latitude``/``.longitude``/``.timezone`` (a plain
+        ``SimpleNamespace`` is what every caller here already builds one
+        from -- see ``_year_energy_cfg``).
+        """
+        if self.mode == "constant":
+            return ConstantDNI(self.constant_w_m2)
+        base = ClearSkyDNI(site)
+        return ScaledDNI(base, self.clearsky_scale) if self.clearsky_scale != 1.0 else base
+
+    def describe(self) -> str:
+        """Short, user-facing label -- spec §M.7: "stated on results (...)
+        so a published number always says which sun it assumed." Distinct
+        from a :class:`~heliostat.dni.DNIProvider`'s own, more technical
+        ``describe()`` (kept separately, e.g. the year estimate's
+        ``dni_provider`` diagnostic field) -- this one is the short rider
+        wording, not the physics-parameter dump."""
+        if self.mode == "constant":
+            return f"{self.constant_w_m2:g} W/m² fixed"
+        if self.clearsky_scale == 1.0:
+            return "clear-sky model"
+        return f"clear-sky model x{self.clearsky_scale:g}"
+
+
+def _resolve_dni(setting: DNISetting, elevation_deg: float) -> tuple[float, float]:
+    """``(scale, dni_w_m2)`` for one instant, given only its elevation.
+
+    ``scale`` is the multiplier every already-1000-normalised power/flux
+    number (the trace convention -- see ``heliostat.dni``'s own module
+    docstring) gets multiplied by; ``dni_w_m2`` is the same number in W/m^2,
+    for display. The one choke point every live-instant caller (single
+    trace, field trace, one day-sweep timestep) applies its site DNI
+    through, so "scale flux/power by dni/1000" is written in exactly one
+    place rather than once per endpoint.
+    """
+    value = setting.dni_at_elevation(elevation_deg)
+    return value / STANDARD_DNI, value
+
+
 class PreviewRequest(_StrictModel):
     design: DesignParams
 
@@ -1192,6 +1274,11 @@ class _TraceRequestBase(_StrictModel):
     #: single-valued flux-map parameterization (see
     #: :func:`~heliostat.geometry.secondary.secondary_has_flux_map`).
     include_secondary_flux: bool = False
+    #: Spec §M.7: the site DNI in effect for this trace/sweep. Absent means
+    #: the default (constant, 1000 W/m^2) -- see :class:`DNISetting`'s own
+    #: docstring for why that default, not the rider's literal "clear-sky",
+    #: is what reproduces every prior response bit-for-bit.
+    dni: DNISetting = Field(default_factory=DNISetting)
 
     def trace_mode(self) -> TraceMode:
         """The fidelity mode this request asks for, ray budget applied."""
@@ -1571,6 +1658,16 @@ class DaySite(_StrictModel):
     year: int = Field(default=2026, ge=1901, le=2099)
     month: int = Field(default=3, ge=1, le=12)
     day: int = Field(default=21, ge=1, le=31)
+    #: Pre-existing bug fixed in passing (unrelated to spec §M.7): a day
+    #: sweep itself never reads this (it traces every hour from sunrise to
+    #: sunset, not one clock hour -- see _day_timesteps), but this same
+    #: model is also ProjectSun.site, and the Sun panel's "site & time"
+    #: fields always carry an ``hour`` (js/store.js's DEFAULT_DOC.sun.site,
+    #: js/panels/sun.js's SUN_SITE_FIELDS) -- so every project save posted
+    #: a ``sun.site.hour`` this model, with ``extra="forbid"``, rejected.
+    #: Optional-with-default so an old saved project (which never carried
+    #: one either way) keeps validating unchanged.
+    hour: float = Field(default=12.0, ge=0.0, lt=24.0)
 
 
 class DayTraceRequest(_TraceRequestBase):
@@ -1628,10 +1725,16 @@ class YearTraceRequest(_TraceRequestBase):
     ``fast_mode`` (default on) traces 7 dates rather than 12; the other 5 of
     the 12 reported sample days are reconstructed by mirroring a traced
     date's optics onto its declination twin on the far side of a solstice
-    (see :func:`_year_report_days`), not by tracing them. DNI is always
-    :class:`heliostat.dni.ClearSkyDNI` -- the only provider that needs no
-    data file (see that module's docstring) -- so the reported total is a
-    clear-sky upper bound, not a weather-corrected estimate.
+    (see :func:`_year_report_days`), not by tracing them. DNI (spec §M.7)
+    defaults to :class:`heliostat.dni.ClearSkyDNI` -- overriding the
+    ``dni`` field's OWN default (``_TraceRequestBase``'s, "constant" at
+    1000 W/m^2) because THIS endpoint's default has always been clear-sky,
+    unconditionally, since before the site DNI control existed; keeping
+    that default here (rather than the base class's) is what makes a year
+    estimate posted with no ``dni`` field at all -- every year estimate
+    ever posted before this control shipped -- keep reporting the exact
+    same clear-sky upper bound it always did. An explicit ``dni`` (constant
+    or a scaled clear-sky) overrides it like any other surface.
     """
 
     site: YearSite = Field(default_factory=YearSite)
@@ -1646,6 +1749,7 @@ class YearTraceRequest(_TraceRequestBase):
     exclude_ids: list[int] = Field(default_factory=list)
     heliostat_x_mm: float = 0.0
     heliostat_y_mm: float = -89609.0
+    dni: DNISetting = Field(default_factory=lambda: DNISetting(mode="clearsky"))
 
 
 # ---------------------------------------------------------------------------
@@ -1727,6 +1831,11 @@ class ProjectSun(_StrictModel):
     azimuth_deg: float = Field(ge=0, le=360)
     elevation_deg: float = Field(le=90)
     site: DaySite | None = None
+    #: Spec §M.7, persisted like every other site setting. Absent (a
+    #: project saved before this control existed) means the default --
+    #: constant, 1000 W/m^2 -- which is exactly what that project already
+    #: traced at, so it keeps reopening bit-identical.
+    dni: DNISetting = Field(default_factory=DNISetting)
 
 
 class ProjectRun(_StrictModel):
@@ -2727,6 +2836,7 @@ def _trace_field_heliostats(
     secondary_defocus_um: float = 0.0,
     secondary_astig_um: float = 0.0,
     secondary_astig_axis_deg: float = 0.0,
+    dni_w_m2: float = STANDARD_DNI,
 ) -> dict:
     """One trace per heliostat, summed onto the receiver grid -- the whole
     field endpoint's "phase 3", shared by the synchronous endpoint and the
@@ -2760,6 +2870,13 @@ def _trace_field_heliostats(
     focus, pyramid).
     """
     n = xy_mm.shape[0]
+    # Spec §M.7: the one choke point this field trace scales through -- every
+    # per-heliostat result below is still at the trace's native DNI=1000
+    # normalisation when consume() reads it; dni_scale turns that into the
+    # real number, applied once per heliostat rather than once on the
+    # already-summed total, so a per-heliostat `rows[i]["power_w"]` is
+    # honest too, not just the field total.
+    dni_scale = dni_w_m2 / STANDARD_DNI
     # Cost-weighted companion to the plain per-heliostat count, passed to
     # ``on_progress`` alongside it so a caller's ETA/progress-bar fraction
     # can track wall-time share instead of racing through cheap inner rings
@@ -2816,19 +2933,20 @@ def _trace_field_heliostats(
             counts, _, _ = np.histogram2d(
                 result["xy"][1], result["xy"][0], bins=[v_edges, u_edges]
             )
-            own_power = result["watts_per_ray"] * result["counters"].get("in_window", 0)
-            flux += counts * result["watts_per_ray"] / bin_area_m2 * eta
+            watts_per_ray = result["watts_per_ray"] * dni_scale
+            own_power = watts_per_ray * result["counters"].get("in_window", 0)
+            flux += counts * watts_per_ray / bin_area_m2 * eta
         else:
-            own_power = result["power_w"]
-            incident_power_w += result["incident_power_w"] * eta_incident
-            flux += result["flux"] * eta
+            own_power = result["power_w"] * dni_scale
+            incident_power_w += result["incident_power_w"] * dni_scale * eta_incident
+            flux += result["flux"] * dni_scale * eta
         power_w += own_power * eta
         if want_field_secondary:
             sec_maps = _secondary_maps_from_result(result, secondary)
             if sec_maps is not None:
                 s_flux, _s_u, _s_v, s_power_w, s_fidelity = sec_maps
-                secondary_flux = secondary_flux + s_flux * eta
-                secondary_power_w += s_power_w * eta
+                secondary_flux = secondary_flux + s_flux * dni_scale * eta
+                secondary_power_w += s_power_w * dni_scale * eta
                 secondary_fidelity = s_fidelity
         for k, v in result["counters"].items():
             counters[k] = counters.get(k, 0) + v
@@ -3109,22 +3227,6 @@ def _day_secondary_grid_blob_key(step: int) -> str:
     return f"day-secondary-grid/{step}"
 
 
-def _day_dni_provider(req: "DayTraceRequest") -> ClearSkyDNI:
-    """Clear-sky DNI source for a day sweep's own per-timestep
-    ``dni_w_m2`` -- §M.4's average-concentration readout (avg flux / DNI)
-    needs a DNI number to divide by, and the day sweep otherwise reports
-    none (unlike the year estimate, which already leans on this same
-    :class:`~heliostat.dni.ClearSkyDNI` model via ``heliostat.energy``).
-    Display/analysis only: never fed back into the trace, the flux grid, or
-    the collected-power numbers, which is why this lives beside
-    ``_day_timesteps`` rather than inside ``_trace_instant_metrics``.
-    """
-    site = req.site
-    return ClearSkyDNI(
-        SimpleNamespace(latitude=site.latitude_deg, longitude=site.longitude_deg, timezone=site.timezone_h)
-    )
-
-
 def _day_timesteps(req: "DayTraceRequest") -> list:
     """The day's sample times, from true sunrise to true sunset."""
     site = req.site
@@ -3375,12 +3477,16 @@ def _flux_grid_for(
         pointing_error_mrad=body.design.pointing_error_mrad,
         **_secondary_perturb_kwargs(optics_params),
     )
+    # Spec §M.7: the same DNI an on-screen /api/trace call for this body
+    # would apply -- so an exported CSV always matches what the UI shows
+    # for identical inputs, never a silently-different flat-1000 number.
+    dni_scale, _dni_w_m2 = _resolve_dni(body.dni, body.solar_el_deg)
     if result["backend"] == "mc":
         flux, u_edges, v_edges, _rms, _cen = _mc_flux_and_metrics(
-            result["xy"], result["watts_per_ray"], receiver
+            result["xy"], result["watts_per_ray"] * dni_scale, receiver
         )
         return flux, u_edges, v_edges, receiver
-    return result["flux"], result["u_edges"], result["v_edges"], receiver
+    return result["flux"] * dni_scale, result["u_edges"], result["v_edges"], receiver
 
 
 def _secondary_flux_grid_for(
@@ -3436,7 +3542,9 @@ def _secondary_flux_grid_for(
         return None
     flux, u_edges, v_edges, _power_w, _fidelity = secondary_maps
     secondary_reflectance = getattr(optics_params, "secondary_reflectance", 0.90)
-    return flux, u_edges, v_edges, secondary_reflectance
+    # Spec §M.7 -- see _flux_grid_for's identical comment.
+    dni_scale, _dni_w_m2 = _resolve_dni(body.dni, body.solar_el_deg)
+    return flux * dni_scale, u_edges, v_edges, secondary_reflectance
 
 
 # ---------------------------------------------------------------------------
@@ -4746,11 +4854,6 @@ def create_app():
         # (receiver kind/curved-unrolling note), so a kept timestep's export
         # never has to re-resolve optics params or rebuild the geometry.
         _, day_receiver = _geometry_for(body.optics, optics_params)
-        # §M.4: clear-sky DNI per timestep, for the aperture readout's
-        # "avg concentration = avg flux / DNI" -- cheap (no tracing), see
-        # _day_dni_provider.
-        day_dni_provider = _day_dni_provider(body)
-        day_date = _dt.date(body.site.year, body.site.month, body.site.day)
         if body.layout is None:
             day_heliostat_desc = (
                 f"single heliostat at x={body.heliostat_x_mm / 1000.0:.3f} m, "
@@ -4803,6 +4906,25 @@ def create_app():
                     job.done = index + 1
                     continue
                 elapsed_ms = (time.perf_counter() - t0) * 1000.0
+                # Spec §M.7: this timestep's own site DNI, from its own
+                # elevation -- applied HERE, once, rather than inside
+                # _trace_instant_metrics (which the year endpoint also
+                # calls, through its OWN choke point -- energy.py's
+                # dni_provider -- and must not have this scaling applied a
+                # second time; see year_start's own comment). A day sweep's
+                # power/flux is therefore honestly the number this
+                # project's DNI setting says it is at each timestep's own
+                # sun elevation, not always flat 1000 regardless of where
+                # the sun is (the gap the rider actually complains about).
+                step_scale, step_dni_w_m2 = _resolve_dni(body.dni, step.solar_el_deg)
+                metrics["power_w"] = metrics["power_w"] * step_scale
+                metrics["peak_flux_kw_m2"] = metrics["peak_flux_kw_m2"] * step_scale
+                metrics["mean_flux_kw_m2"] = metrics["mean_flux_kw_m2"] * step_scale
+                if "flux" in metrics:
+                    metrics["flux"] = metrics["flux"] * step_scale
+                if "secondary_flux" in metrics:
+                    metrics["secondary_flux"] = metrics["secondary_flux"] * step_scale
+                    metrics["secondary_power_w"] = metrics["secondary_power_w"] * step_scale
                 if want_flux:
                     job.blobs[_day_flux_blob_key(index)] = _render_flux_png(
                         metrics["flux"], metrics["u_edges"], metrics["v_edges"], body.mode, elapsed_ms
@@ -4866,9 +4988,13 @@ def create_app():
                         },
                         "n_heliostats": metrics["n_heliostats"],
                         "has_flux_map": want_flux,
-                        # §M.4: clear-sky DNI at this instant, display/analysis
-                        # only -- see _day_dni_provider.
-                        "dni_w_m2": round(float(day_dni_provider.dni(day_date, float(step.hour))), 2),
+                        # Spec §M.7: the site DNI actually applied to THIS
+                        # timestep's power/flux above (was previously a
+                        # separate, display-only clear-sky-only computation
+                        # that never affected power_w -- see this endpoint's
+                        # git history; now the two are the same number by
+                        # construction).
+                        "dni_w_m2": round(step_dni_w_m2, 2),
                     }
                 )
                 job.done = index + 1
@@ -4880,6 +5006,7 @@ def create_app():
                 "mode": body.mode,
                 "optics": body.optics,
                 "n_heliostats": rows[0]["n_heliostats"] if rows else 0,
+                "dni_note": body.dni.describe(),
             }
 
         job = JOBS.start(len(steps), work, label=f"day trace, {len(steps)} timesteps")
@@ -5154,7 +5281,17 @@ def create_app():
                 }
 
             summary = pd.DataFrame(rows)
-            dni_provider = ClearSkyDNI(cfg.site)
+            # Spec §M.7: this project's own site DNI, not a hardcoded
+            # ClearSkyDNI -- energy.annual_energy/traced_day_energy are
+            # THEIR OWN choke point for turning `rows`' flat-1000
+            # `power_w` into a real number (they divide by STANDARD_DNI to
+            # get eta_optical, then re-multiply by dni_provider.dni(date,
+            # hour) -- see that module's docstring). YearTraceRequest.dni
+            # defaults to clear-sky (overriding the base class's own
+            # constant/1000 default -- see that field's comment), so a
+            # request with no ``dni`` at all resolves to exactly the same
+            # ClearSkyDNI(cfg.site) this endpoint has always used.
+            dni_provider = body.dni.provider(cfg.site)
             annual = energy.annual_energy(summary, cfg, dni_provider, year=year, n_heliostats=n_heliostats)
 
             days_out = []
@@ -5190,6 +5327,7 @@ def create_app():
                 "fast_mode": body.fast_mode,
                 "year": year,
                 "dni_provider": dni_provider.describe(),
+                "dni_note": body.dni.describe(),
                 "extrapolated_fraction": round(extrap, 4) if np.isfinite(extrap) else None,
                 "days": days_out,
                 "failed_steps": failed_steps,
@@ -5606,13 +5744,21 @@ def create_app():
         )
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
 
+        # Spec §M.7: the site DNI in effect for this instant -- the ONE
+        # choke point every downstream watt/flux number is scaled through
+        # (see DNISetting/_resolve_dni). Every backend result above (and the
+        # secondary maps below) is still at the trace's native DNI=1000
+        # normalisation at this point; dni_scale is what turns that into the
+        # real number, applied once, here, rather than at every consumer.
+        dni_scale, dni_w_m2 = _resolve_dni(body.dni, body.solar_el_deg)
+
         if result["backend"] == "mc":
             traced_paths = result["paths"]
             traced_miss_paths = result["miss_paths"]
             traced_miss_dirs = result["miss_dirs"]
             xy = result["xy"]
             counters = result["counters"]
-            watts_per_ray = result["watts_per_ray"]
+            watts_per_ray = result["watts_per_ray"] * dni_scale
             power_w = watts_per_ray * counters.get("in_window", 0)
             incident_power_w = None
             flux, u_edges, v_edges, rms_mm, centroid = _mc_flux_and_metrics(
@@ -5622,10 +5768,10 @@ def create_app():
             traced_paths = None  # cone optics carries no rays; the scene samples its own
             traced_miss_paths = None
             traced_miss_dirs = None
-            flux = result["flux"]
+            flux = result["flux"] * dni_scale
             u_edges, v_edges = result["u_edges"], result["v_edges"]
-            power_w = result["power_w"]
-            incident_power_w = result["incident_power_w"]
+            power_w = result["power_w"] * dni_scale
+            incident_power_w = result["incident_power_w"] * dni_scale
             counters = result["counters"]
             rms_mm, centroid = _cone_metrics(flux, u_edges, v_edges)
 
@@ -5640,8 +5786,13 @@ def create_app():
         if body.include_secondary_flux:
             secondary_maps = _secondary_maps_from_result(result, secondary)
             if secondary_maps is not None:
+                s_flux, s_u_edges, s_v_edges, s_power_w, s_fidelity = secondary_maps
                 secondary_payload = _secondary_payload(
-                    *secondary_maps,
+                    s_flux * dni_scale,
+                    s_u_edges,
+                    s_v_edges,
+                    s_power_w * dni_scale,
+                    s_fidelity,
                     secondary_reflectance=getattr(optics_params, "secondary_reflectance", 0.90),
                     include_flux_grid=body.include_flux_grid,
                 )
@@ -5690,6 +5841,13 @@ def create_app():
                 # copy of these defaults.
                 "optics_resolved": optics_params.model_dump(),
                 "scene": scene,
+                # Spec §M.7: the DNI this response's power/flux were scaled
+                # by, and a short label for what assumed it -- so a live
+                # trace, like every other surface, states its own DNI
+                # instead of leaving it implicit (commit 45d6515's "a live
+                # trace carries no DNI to divide by" is exactly this gap).
+                "dni_w_m2": _clean(dni_w_m2),
+                "dni_note": body.dni.describe(),
             }
         )
 
@@ -5778,6 +5936,13 @@ def create_app():
         # inside _trace_field_heliostats is always False).
         u_edges, v_edges, bin_area_m2 = _flux_edges(receiver)
 
+        # Spec §M.7: this field's site DNI, resolved once from the sun
+        # elevation the whole field shares -- passed into
+        # _trace_field_heliostats so every per-heliostat contribution (and
+        # the summed total) is scaled through that one function's own choke
+        # point, not re-scaled here afterwards.
+        _dni_scale, dni_w_m2 = _resolve_dni(body.dni, body.solar_el_deg)
+
         traced = _trace_field_heliostats(
             designs,
             xy_mm,
@@ -5801,6 +5966,7 @@ def create_app():
             pointing_error_mrad=body.design.pointing_error_mrad,
             workers=body.workers or 1,
             return_secondary_flux=body.include_secondary_flux,
+            dni_w_m2=dni_w_m2,
             **_secondary_perturb_kwargs(optics_params),
         )
         flux = traced["flux"]
@@ -5880,6 +6046,9 @@ def create_app():
                 "heliostats": rows,
                 "failed_heliostats": failed,
                 "scene": scene,
+                # Spec §M.7 -- see /api/trace's identically-named fields.
+                "dni_w_m2": _clean(dni_w_m2),
+                "dni_note": body.dni.describe(),
             }
         )
 
@@ -5949,6 +6118,8 @@ def create_app():
                 job.detail = f"{done} / {n} heliostats"
 
             job.detail = f"0 / {n} heliostats"
+            # Spec §M.7 -- see /api/field/trace's identical comment.
+            _dni_scale, dni_w_m2 = _resolve_dni(body.dni, body.solar_el_deg)
             try:
                 traced = _trace_field_heliostats(
                     designs,
@@ -5975,6 +6146,7 @@ def create_app():
                     should_cancel=job.cancelled,
                     on_progress=on_progress,
                     return_secondary_flux=body.include_secondary_flux,
+                    dni_w_m2=dni_w_m2,
                     **_secondary_perturb_kwargs(optics_params),
                 )
             except _TraceCancelled:
@@ -6058,6 +6230,9 @@ def create_app():
                 "failed_heliostats": failed,
                 "scene": scene,
                 "workers": workers,
+                # Spec §M.7 -- see /api/trace's identically-named fields.
+                "dni_w_m2": _clean(dni_w_m2),
+                "dni_note": body.dni.describe(),
             }
 
         job = JOBS.start(n, work, label=f"field trace, {n} heliostats, {workers} workers")

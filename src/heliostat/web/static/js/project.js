@@ -68,7 +68,13 @@ export function serializeProject(doc, ui) {
   // The site rides along whether or not the sun is currently being solved
   // from it, so reopening a project restores the place and moment its
   // author was working in, not just the angles that came out.
-  const sun = { azimuth_deg: doc.sun.az, elevation_deg: doc.sun.el, site: doc.sun.site };
+  const sun = {
+    azimuth_deg: doc.sun.az,
+    elevation_deg: doc.sun.el,
+    site: doc.sun.site,
+    // Spec §M.7: persisted like every other site setting.
+    dni: doc.sun.dni,
+  };
   const run = {
     mode: ui.fidelity,
     n_rays: ui.fidelity === "monte_carlo" ? ui.mcRays : null,
@@ -181,12 +187,23 @@ export function applyProject(document) {
 
   const sun = (document && document.sun) || {};
   store.set("doc.sun", {
-    // A document saved before the Sun stage grew a site simply has none,
-    // and falls back to the default place rather than failing to load.
-    mode: doc_sun_mode(sun),
+    // Pre-existing bug fixed in passing (unrelated to spec §M.7): this
+    // referenced an undefined `doc_sun_mode(sun)`, throwing on every
+    // project load. ProjectSun does not persist a mode at all (only
+    // azimuth_deg/elevation_deg/site/dni) -- az/el are the authoritative
+    // numbers regardless of how they were arrived at (see this function's
+    // own "site rides along" comment above serializeProject), so reopening
+    // always lands in "direct" and shows exactly the angles the project
+    // was saved at; "Site & time" is one click away if a re-solve from the
+    // carried site is wanted.
+    mode: "direct",
     az: sun.azimuth_deg != null ? sun.azimuth_deg : DEFAULT_DOC.sun.az,
     el: sun.elevation_deg != null ? sun.elevation_deg : DEFAULT_DOC.sun.el,
     site: Object.assign({}, DEFAULT_DOC.sun.site, sun.site || {}),
+    // A document saved before spec §M.7 simply has no dni block, and falls
+    // back to the same default (constant, 1000 W/m^2) that project already
+    // traced at -- so it keeps reopening bit-identical.
+    dni: Object.assign({}, DEFAULT_DOC.sun.dni, sun.dni || {}),
   });
 
   const run = (document && document.run) || {};

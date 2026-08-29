@@ -273,6 +273,30 @@ class DailyClimatologyDNI(DNIProvider):
         )
 
 
+class ScaledDNI(DNIProvider):
+    """Another provider, multiplied by a constant factor.
+
+    Spec §M.7's site DNI control offers "clear-sky model, or custom -- a
+    constant W/m^2 OR A SCALE FACTOR ON THE MODEL". The scale-factor half is
+    this: wrap whatever provider "the model" resolved to (today, always
+    :class:`ClearSkyDNI`) rather than inventing a second code path for it --
+    a haze/dust discount on an otherwise clear sky is still shaped exactly
+    like clear sky, just uniformly dimmer.
+    """
+
+    def __init__(self, inner: DNIProvider, scale: float = 1.0):
+        self.inner = inner
+        self.scale = float(scale)
+
+    def dni(self, date: _dt.date, hour: float) -> float:
+        return self.inner.dni(date, hour) * self.scale
+
+    def describe(self) -> str:
+        if self.scale == 1.0:
+            return self.inner.describe()
+        return f"{self.inner.describe()} x{self.scale:g}"
+
+
 def _tidy(frame: pd.DataFrame, tz_offset_hours: float) -> pd.DataFrame:
     """Convert a UTC timestamp + DNI frame into month/day/hour local form."""
     local = frame["timestamp_utc"] + pd.to_timedelta(tz_offset_hours, unit="h")
@@ -356,6 +380,28 @@ class ClearSkyDNI(DNIProvider):
         h = float(elevation_deg)
         return 1.0 / (np.sin(np.radians(h)) + 0.50572 * (h + 6.07995) ** -1.6364)
 
+    @classmethod
+    def dni_at_elevation(
+        cls, elevation_deg: float, am1_w_m2: float = 1000.0, e0_w_m2: float = E0
+    ) -> float:
+        """The Meinel formula from elevation alone -- no site or date needed.
+
+        :meth:`dni` (below) is a thin wrapper: it resolves ``(date, hour)``
+        to an elevation via :func:`~heliostat.solar.sun_position` and then
+        calls this. A caller that already has an elevation in hand -- a live
+        single/field trace's own ``solar_el_deg``, spec §M.7's site DNI
+        control applied to one already-solved instant -- calls this directly
+        rather than paying for (or needing) a site/date round trip through
+        ``sun_position`` at all.
+        """
+        if elevation_deg <= 0.0:
+            return 0.0
+        tau = am1_w_m2 / e0_w_m2
+        am = cls.air_mass(elevation_deg)
+        if not np.isfinite(am):
+            return 0.0
+        return float(e0_w_m2 * tau ** (am**0.678))
+
     def dni(self, date: _dt.date, hour: float) -> float:
         from . import solar
 
@@ -368,12 +414,7 @@ class ClearSkyDNI(DNIProvider):
             date.day,
             hour,
         )[:2]
-        if el <= 0.0:
-            return 0.0
-        am = self.air_mass(el)
-        if not np.isfinite(am):
-            return 0.0
-        return float(self.e0 * self.tau ** (am**0.678))
+        return self.dni_at_elevation(el, self.am1, self.e0)
 
     def day_kwh_m2(self, date: _dt.date, step_h: float = 0.25) -> float:
         hours = np.arange(0.0, 24.0, step_h)

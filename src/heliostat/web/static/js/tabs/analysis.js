@@ -2199,10 +2199,15 @@ function build(container) {
   yearErr.hidden = true;
   yearPanel.appendChild(yearErr);
 
+  // Spec §M.7: which sun this estimate assumed is stated per-run, next to
+  // the annual total itself (paintYearResult's own dniLabel) -- this line
+  // stays as the general, always-true explanation of what "clear-sky
+  // model" means when that IS the site DNI setting in effect (the Sun
+  // panel decides which one that is).
   const yearDniNote = document.createElement("div");
   yearDniNote.className = "hint";
   yearDniNote.textContent =
-    "Assumes clear-sky DNI (no clouds) — a cloud-free upper bound on annual collection, not a weather-corrected forecast.";
+    "The clear-sky model (no clouds) is a cloud-free upper bound, not a weather-corrected forecast — set the site DNI in the Sun panel.";
   yearPanel.appendChild(yearDniNote);
 
   const yearTotal = document.createElement("div");
@@ -2949,6 +2954,10 @@ function paintEnergyPanel() {
     const strong = document.createElement("strong");
     strong.textContent = fmtEnergy(dayResult.energy_kwh);
     els.energyTotal.appendChild(strong);
+    // Spec §M.7: state the DNI this sweep's power/energy assumed.
+    if (dayResult.dni_note) {
+      els.energyTotal.appendChild(document.createTextNode(` (DNI: ${dayResult.dni_note})`));
+    }
   } else {
     els.energyTotal.textContent = "";
   }
@@ -3645,8 +3654,13 @@ function paintYearResult() {
     strong.textContent = fmtMWh(yearResult.annual_energy_mwh);
     els.yearTotal.appendChild(document.createTextNode("Annual collection: "));
     els.yearTotal.appendChild(strong);
+    // Spec §M.7: the DNI this specific run actually assumed (constant W/m^2
+    // fixed, or the clear-sky model) -- was hardcoded to "clear-sky upper
+    // bound" text before the site DNI control existed, which is only true
+    // when this run's own dni_note says so.
+    const dniLabel = yearResult.dni_note ? `DNI: ${yearResult.dni_note}` : "clear-sky upper bound";
     els.yearTotal.appendChild(
-      document.createTextNode(` per year (clear-sky upper bound) — ${modeLabel}, ${yearResult.n_heliostats} heliostat(s)`)
+      document.createTextNode(` per year (${dniLabel}) — ${modeLabel}, ${yearResult.n_heliostats} heliostat(s)`)
     );
   } else {
     els.yearTotal.hidden = true;
