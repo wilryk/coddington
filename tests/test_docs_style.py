@@ -48,9 +48,12 @@ BUDGETS = {
     # Not user documentation: the signed-off v0.2 build contract (same
     # reasoning and lifecycle as ui-spec.md above -- freezes at sign-off,
     # delete when v0.2 ships and the content moves into guide.md). Raised
-    # 2026-08-29: added draft riders §O (sunshape CSR) and §P (pre-built
-    # reference fields), awaiting their own sign-off alongside §M/§N.
-    "docs/ui-spec-v0.2.md": 5300,
+    # 2026-08-29 (1st time): added draft riders §O (sunshape CSR) and §P
+    # (pre-built reference fields), awaiting their own sign-off alongside
+    # §M/§N. Raised again 2026-08-29 (2nd time): added draft rider §Q
+    # ("Measure performance" calibrated duration estimates), awaiting its
+    # own sign-off alongside §M/§N/§O/§P.
+    "docs/ui-spec-v0.2.md": 6100,
     # Not user documentation: the formula-level build plan spec §C was
     # implemented from. Historical once §C shipped (2026-08-28); kept as
     # the derivation record for the secondary parameterization. Frozen.

@@ -121,12 +121,13 @@
   <header class="intro">
     <div class="eyebrow">For sign-off · v0.2 additions · Aug 26, 2026</div>
     <h1>Coddington v0.2 Mockups</h1>
-    <p class="lede"><strong>v0.2 additions</strong> — companion to the Coddington Workspace mockups (M1–M7) and <code>ui-spec-v0.2.md</code>. <strong>Sections A–L and mockups M8–M13 are SIGNED OFF</strong> (2026-08-26); <strong>§M, §N, §O, §P, and mockups M14–M20, are draft, awaiting their own approval.</strong> Thirteen mockups in all: the trace status bar moving to the top of the screen (M8), secondary-mirror irradiance with FEA-oriented CSV exports (M9), the optical-error glossary tooltips plus pointing error and measured error-map import (M10), a fidelity picker that explains itself in plain language (M11), the polar (sector) field with a tilted vertical receiver window (M12), rigid-body/deformation perturbations on the secondary mirror (M13), the native desktop window shell (M14), plan-view power coloring with a per-heliostat sweep drill-down (M15), irradiance draped on the 3D receiver (M16), a draggable analysis aperture with an encircled-power curve (M17), and — drawn as three screens — the FINAL Design/3D View/Heliostat Shape/Analysis tab restructure, opening on 3D View (M18), a numeric circumsolar-ratio sunshape control (M19), and four built-in reconstructed reference fields with binding provenance labeling (M20).</p>
+    <p class="lede"><strong>v0.2 additions</strong> — companion to the Coddington Workspace mockups (M1–M7) and <code>ui-spec-v0.2.md</code>. <strong>Sections A–L and mockups M8–M13 are SIGNED OFF</strong> (2026-08-26); <strong>§M, §N, §O, §P, §Q, and mockups M14–M21, are draft, awaiting their own approval.</strong> Fourteen mockups in all: the trace status bar moving to the top of the screen (M8), secondary-mirror irradiance with FEA-oriented CSV exports (M9), the optical-error glossary tooltips plus pointing error and measured error-map import (M10), a fidelity picker that explains itself in plain language (M11), the polar (sector) field with a tilted vertical receiver window (M12), rigid-body/deformation perturbations on the secondary mirror (M13), the native desktop window shell (M14), plan-view power coloring with a per-heliostat sweep drill-down (M15), irradiance draped on the 3D receiver (M16), a draggable analysis aperture with an encircled-power curve (M17), and — drawn as three screens — the FINAL Design/3D View/Heliostat Shape/Analysis tab restructure, opening on 3D View (M18), a numeric circumsolar-ratio sunshape control (M19), four built-in reconstructed reference fields with binding provenance labeling (M20), and a "Measure performance" calibration action for machine-specific duration estimates (M21).</p>
     <p class="lede">M12's polar-field research (spec §I) finished on 2026-08-25 — the screen below reflects the final control names and defaults (Field span, Center azimuth, Half-span, Window facing, Tilt from vertical), not a preliminary sketch.</p>
     <p class="lede">M14 mockups §L (desktop shell) already carries Ryker's own sign-off on the spec section — the screen is here for a final look at the drawing itself. M15–M17 illustrate §M, which arrived after the main sign-off and has not been reviewed yet — nothing in that group is approved.</p>
     <p class="lede">M18 illustrates §N's tab restructure, evolved through a second round today: <strong>FINAL — decided 2026-08-26.</strong> The morning's Ray Trace tab is superseded — the top bar becomes <strong>Design · 3D View · Heliostat Shape · Analysis</strong>, the app <strong>opens on 3D View</strong>, and every instrument's home (Design's sidebar + 2D canvas, 3D View's scene + trace bar + results dock, Analysis unchanged) is decided, not proposed. The three screens (18a/18b/18c) are drawn for a final look before build, and the old "Workspace declutter" question is dissolved — the Workspace name itself ceases to exist.</p>
-    <p class="lede">M19 and M20 are new riders (2026-08-29), <code>ui-spec-v0.2.md</code> §O and §P: a circumsolar ratio (CSR) control replacing the earlier Aureole/Buie toggle idea, and four built-in reconstructed reference fields (Gemasolar, PS10, Crescent Dunes, Stellio-based). Both are draft — neither is approved, and §P's reference-field parameters are placeholders pending a separate research pass.</p>
-    <p class="lede">The companion spec is <code>docs/ui-spec-v0.2.md</code> in the repo. Nothing gets built from the §M/§N/§O/§P screens until you approve both this document's M14–M20 and that spec's §M/§N/§O/§P.</p>
+    <p class="lede">M19 and M20 are riders (2026-08-29), <code>ui-spec-v0.2.md</code> §O and §P: a circumsolar ratio (CSR) control replacing the earlier Aureole/Buie toggle idea, and four built-in reconstructed reference fields (Gemasolar, PS10, Crescent Dunes, Stellio-based). Both are draft — neither is approved, and §P's reference-field parameters are placeholders pending a separate research pass.</p>
+    <p class="lede">M21 is a new rider (2026-08-29), <code>ui-spec-v0.2.md</code> §Q, answering the owner's question "Could we add a 'measure performance' button somewhere so we get better estimates on timing for traces?" — an on-demand, bounded benchmark that replaces the day-sweep/year-estimate duration guess with numbers measured on the user's own machine. Draft, not approved.</p>
+    <p class="lede">The companion spec is <code>docs/ui-spec-v0.2.md</code> in the repo. Nothing gets built from the §M/§N/§O/§P/§Q screens until you approve both this document's M14–M21 and that spec's §M/§N/§O/§P/§Q.</p>
   </header>
 
   <h2><span class="num">8</span>Trace status bar, top of screen</h2>
@@ -2145,6 +2146,125 @@
   <div class="checknote">The M15 drill-down (mini plan → field map → one heliostat's footprint) stays in Analysis too — same on-demand single-heliostat trace, same "nothing new stored" mechanism as M15.</div>
   <div class="checknote">Day sweep, year estimate, the energy plot, and saved runs are unchanged from earlier Analysis mockups — only the timestep map gains compass labels and the deep link, and the drill-down row is added beneath. The tab bar is the only other change: Design · 3D View · Heliostat Shape · Analysis, Analysis active.</div>
 
+  <h2><span class="num">21</span>Measure performance <span class="tagpill draft">DRAFT §Q — awaiting approval</span></h2>
+  <p class="screennote">A <strong>Performance calibration</strong> panel joins the day-sweep/year-estimate duration controls (§Q) — the same screen the rough estimate line already lives on. Left: the uncalibrated state, with the disclosure shown before the bounded benchmark runs. Right: after calibrating, the measured numbers themselves (not a bare flag) with their timestamp and worker count, and Re-measure always available. The rough duration line above becomes a calibrated one once numbers exist.</p>
+  <div class="stage"><div class="mock"><template shadowrootmode="open"><style>
+    :host { display: block; margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 14px; color: #1f2933; background: #f7f8fa; }
+    a { color: #45739e; } a:hover { color: #345a80; }
+    .topbar { display: flex; align-items: center; gap: 10px; padding: 0 20px; height: 52px; background: #ffffff; border-bottom: 1px solid #d8dee5; }
+    .topbar h1 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: 0.02em; }
+    .tag { color: #64748b; font-size: 12px; }
+    .apptabs { display: flex; gap: 6px; margin-left: 28px; }
+    .apptabs .tab { padding: 7px 14px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; }
+    .apptabs .tab.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .topbar .right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+    .btn { padding: 7px 12px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; }
+    .btn.primary { background: #45739e; border-color: #345a80; color: #ffffff; font-weight: 600; }
+    .btn.small { padding: 5px 9px; font-size: 11px; }
+    .subject { display: flex; align-items: center; gap: 8px; padding: 10px 20px; background: #ffffff; border-bottom: 1px solid #d8dee5; color: #64748b; font-size: 12.5px; }
+    .subject strong { color: #1f2933; font-weight: 600; }
+    .content { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 14px; padding: 16px 20px; overflow: hidden; }
+    .panel { background: #ffffff; border: 1px solid #d8dee5; border-radius: 10px; padding: 16px 18px; }
+    .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: #64748b; margin: 0 0 12px 0; font-weight: 600; }
+    .frow { display: flex; align-items: center; gap: 10px; }
+    .frow label { color: #64748b; font-size: 12.5px; }
+    .frow .val { padding: 5px 8px; border: 1px solid #d8dee5; border-radius: 5px; background: #ffffff; font-size: 13px; font-variant-numeric: tabular-nums; }
+    .fieldhint { color: #64748b; font-size: 11.5px; margin-top: 8px; line-height: 1.4; }
+    .fieldhint.calibrated { color: #1c6b4c; }
+    .fieldhint.calibrated strong { font-weight: 700; }
+    .calibgrid { display: flex; gap: 16px; }
+    .calibcol { flex: 1 1 50%; border: 1px solid #d8dee5; border-radius: 9px; padding: 14px 16px; }
+    .calibcol.before { background: #fbfcfd; }
+    .calibcol.after { background: #f4faf7; border-color: #bfe3d0; }
+    .calibcol h3 { margin: 0 0 4px 0; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; font-weight: 700; }
+    .calibcol h3.after { color: #1c6b4c; }
+    .calibnote { color: #64748b; font-size: 11.5px; line-height: 1.5; margin: 8px 0 12px 0; }
+    .disclose { color: #64748b; font-size: 11px; line-height: 1.5; padding: 9px 10px; border: 1px solid #d8dee5; border-radius: 7px; background: #ffffff; margin: 8px 0 12px 0; }
+    .disclose strong { color: #1f2933; font-weight: 600; }
+    .stamp { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: #345a80; font-weight: 600; margin-bottom: 10px; }
+    .stamp .dot { width: 7px; height: 7px; border-radius: 50%; background: #2f9e6b; flex: 0 0 auto; }
+    .cmetric { display: flex; justify-content: space-between; align-items: baseline; padding: 6px 0; border-bottom: 1px solid #e4f0e9; font-size: 12.5px; }
+    .cmetric:last-of-type { border-bottom: none; }
+    .cmetric .cnum { font-variant-numeric: tabular-nums; font-weight: 650; }
+    .cmetric .clbl { color: #64748b; }
+    .formula { margin-top: 10px; padding-top: 10px; border-top: 1px dashed #d8dee5; font-size: 10.5px; color: #64748b; font-family: ui-monospace, Consolas, monospace; line-height: 1.5; }
+  </style><div style="width: 1440px; height: 900px; display: flex; flex-direction: column; background: #f7f8fa; overflow: hidden">
+
+  <div class="topbar">
+    <div style="width: 26px; height: 26px; border: 1.5px dashed #45739e; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: #45739e; font-size: 11px; font-weight: 700">C</div>
+    <h1>Coddington</h1>
+    <span class="tag">Manuscript baseline — axicon</span>
+    <div class="apptabs">
+      <div class="tab">Design</div>
+      <div class="tab">3D View</div>
+      <div class="tab">Heliostat Shape</div>
+      <div class="tab active">Analysis</div>
+    </div>
+    <div class="right">
+      <div class="btn">Library</div>
+      <span class="tag">Saved</span>
+    </div>
+  </div>
+
+  <div class="subject">
+    Analyzing the current project:
+    <strong>Axicon 27 m / 20° / 14 m</strong> · <strong>643 heliostats</strong> (radial staggered 30–90 m) · <strong>Manuscript 5 × 3 m, twisting</strong>
+    <a style="margin-left: auto; font-size: 12px">change in Design →</a>
+  </div>
+
+  <div class="content">
+
+    <div class="panel">
+      <h2>Year estimate</h2>
+      <div style="display: flex; align-items: center; gap: 14px; flex-wrap: wrap">
+        <div class="frow"><label>Sample days</label><div class="val">12, DNI-weighted</div></div>
+        <div class="frow"><label>Timestep</label><div class="val">30 min</div></div>
+        <div class="frow"><label>Fidelity</label><div class="val">Ultra fast</div></div>
+        <div class="btn primary">Run year</div>
+      </div>
+      <div class="fieldhint calibrated">
+        <strong>Estimated 38 min</strong> for 643 heliostat(s) × 93 timesteps — calibrated for this machine, 7 workers, measured 2026-08-29 14:02. <a>See calibration below</a>.
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Performance calibration <span style="text-transform: none; letter-spacing: 0; color: #94a3b8; font-weight: 400">— feeds the duration estimate above (§Q)</span></h2>
+      <div class="calibnote">Duration estimates are guesses until this machine's own trace cost is measured. Calibrating replaces the built-in constant above with numbers from this hardware — a small, bounded benchmark, never the full field, and only ever run when you ask.</div>
+      <div class="calibgrid">
+
+        <div class="calibcol before">
+          <h3>Before calibrating (today, elsewhere in the app)</h3>
+          <div style="color: #64748b; font-size: 11.5px; line-height: 1.5">Estimates use a rough built-in guess, or this browser's own last finished run averaged over heliostats × timesteps — never the live job's own progress/ETA, which is always exact.</div>
+          <div class="disclose"><strong>What "Measure performance" will do:</strong> run about a dozen short traces on a small reference field (8 heliostats) — never the full 643 — measuring the cold worker-pool startup cost, per-heliostat cost at each fidelity, and the actual parallel speedup at your worker count. Under a minute, bounded, shown here before it starts.</div>
+          <div class="btn primary">Measure performance…</div>
+        </div>
+
+        <div class="calibcol after">
+          <h3 class="after">After calibrating (this machine)</h3>
+          <div class="stamp"><span class="dot"></span>Measured 2026-08-29 14:02 · 7 workers</div>
+          <div class="cmetric"><div class="clbl">cold-pool startup</div><div class="cnum">8.7 s</div></div>
+          <div class="cmetric"><div class="clbl">ultra_fast, per heliostat</div><div class="cnum">4.1 ms</div></div>
+          <div class="cmetric"><div class="clbl">fast_accurate, per heliostat</div><div class="cnum">158 ms</div></div>
+          <div class="cmetric"><div class="clbl">monte_carlo, per heliostat</div><div class="cnum">66 ms</div></div>
+          <div class="cmetric"><div class="clbl">parallel speedup, 7 workers</div><div class="cnum">2.1×</div></div>
+          <div class="formula">duration_s = cold_start_s + n_timesteps × Σ(per_heliostat_cost[mode] × range_i²/range_ref²) ÷ speedup</div>
+          <div style="display: flex; gap: 8px; margin-top: 12px">
+            <div class="btn small">Re-measure</div>
+            <span style="color: #64748b; font-size: 11px; align-self: center">Stale if worker count or app version changes — flagged automatically, not silently reused.</span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+  </div>
+
+</div></template></div></div>
+  <div class="checknote"><strong>New (§Q):</strong> lives beside the sweep/duration controls it improves, not in a settings page — the button and the number it fixes stay on one screen. The reference benchmark (8 heliostats, bounded wall time) is stated before it runs; nothing profiles automatically or on a timer.</div>
+  <div class="checknote">Measured numbers are shown directly — cold-start seconds, per-heliostat cost per fidelity, measured speedup — not a bare "calibrated ✓" flag, with the timestamp and worker count that produced them. Before any calibration exists, the app's current rough-guess behavior is unchanged and still labeled rough.</div>
+  <div class="checknote">Calibration data is stored in localStorage beside today's per-mode trace-cost keys, browser-local like that existing mechanism, and takes precedence over both the built-in constant and the passively-recorded last-run average. It invalidates — flagged, not silently dropped — when the effective worker count or the app version (<code>/api/health</code>) no longer matches what was measured.</div>
+  <div class="checknote">Out of scope: no physics changes anywhere in this rider — it measures wall-clock cost of existing code paths, never their output.</div>
+
 
   <section class="text">
     <h2>Decisions these mockups encode</h2>
@@ -2168,6 +2288,7 @@
       <li><strong>Tab restructure — FINAL</strong> (M18a/18b/18c, §N) — the top bar splits into <strong>Design · 3D View · Heliostat Shape · Analysis</strong>, and the app <strong>opens on 3D View</strong>. Design is the authoring tab: the full four-stage sidebar beside a 2D canvas with an explicit Plan view/Elevation toggle. 3D View is the new "what does the light do right now" home, live from the first frame: the dominant 3D scene, a condensed trace bar (fidelity + Run + stamp), and a results dock (irradiance maps with the §M-rider compass edges, the drape toggle, plan-view power coloring, footprint viewing, the analysis aperture, FEA exports) — plus click-to-edit and a sun chip, with full controls staying in Design. Analysis keeps its inline timestep map for fast scrubbing plus an "Open in 3D View" link, and the M15 drill-down stays there too. The old Workspace declutter question is dissolved — the Workspace name ceases to exist.</li>
       <li><strong>Sunshape circumsolar ratio</strong> (M19, §O, draft) — a numeric CSR field (0–1, default 0) on the Sun stage replaces the Aureole/Buie toggle idea; CSR 0 is bit-identical to today's hard-cutoff Buie disk, both backends (MC sampler, cone kernel) take the same CSR and move together at every fidelity, and the Sun panel's disclosure line now states the CSR in effect.</li>
       <li><strong>Pre-built reference fields</strong> (M20, §P, draft) — Gemasolar, PS10, Crescent Dunes, and a Stellio-based field ship as built-in Projects (Library, first use of that collection's built-in slot), each an ideal build (zero slope error, specularity, pointing error) and each labeled RECONSTRUCTION with a citation wherever it's named or loaded — never presented as an operator's real layout. PS10 needs §I (not yet built); the Stellio tracking caveat is conditional pending research.</li>
+      <li><strong>Measure performance</strong> (M21, §Q, draft) — an on-demand, bounded calibration benchmark (a handful of heliostats, never the full field) measures the cold worker-pool startup constant, per-heliostat cost per fidelity, and the actual parallel speedup on the user's machine, replacing the guessed duration estimate beside the sweep/year-estimate controls with measured numbers, their timestamp, and worker count; re-measurable any time, invalidated (flagged, not silently dropped) by a worker-count or app-version change, and never run automatically.</li>
     </ul>
     <h2>Open questions — all resolved 2026-08-25</h2>
     <ul class="qs">
