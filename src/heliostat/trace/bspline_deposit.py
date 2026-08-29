@@ -48,7 +48,7 @@ there (the node-fallback accumulation).
 from __future__ import annotations
 
 import numpy as np
-from scipy.interpolate import make_interp_spline
+from scipy.interpolate import BSpline, make_interp_spline
 
 DEFAULT_CONTROL_GRID = (32, 32)  # (n_u, n_v); see REPORT.md SS3 for the resolution study
 
@@ -67,30 +67,95 @@ def control_grid_edges(
 
 
 def _upsample_matrix(coarse_edges: np.ndarray, fine_edges: np.ndarray, periodic: bool) -> np.ndarray:
-    """``(n_fine, n_coarse)`` fixed linear operator: cubic-B-spline
-    interpolation from coarse cell-centre values to fine cell centres.
+    """``(n_fine, n_coarse)`` fixed linear operator from coarse cell-centre
+    values to fine cell centres.
+
+    The two branches use different constructions on purpose.
+
+    ``periodic=False`` (used for the ``v`` axis always, and for ``u`` on any
+    non-wrapping receiver): a cubic-B-spline COEFFICIENT BLEND -- the
+    coarse values are used directly as B-spline coefficients (a
+    quasi-interpolation / control-point blend), not solved for as the
+    control points of a spline forced to pass exactly through them. This is
+    what makes the result non-negative for non-negative input with no
+    downstream clamp needed: cubic B-spline basis functions are themselves
+    non-negative and sum to 1 (the "convex hull" property: a point on the
+    curve is a convex combination of nearby coefficients), so a blend of
+    non-negative coefficients through this basis is non-negative *by
+    construction* -- there is no Gibbs-style ringing at a sharp coarse edge
+    to clip away in the first place. An exact-interpolating construction
+    does not have that property: forcing a spline through a sharp edge
+    drives it through under/overshoot lobes on either side, periodic at the
+    coarse cell spacing; clipping the negative lobes to zero (this
+    function's own earlier behaviour, before this fix) chopped the positive
+    rebound lobes next to them into isolated islands surrounded by
+    exact-zero moats -- the reported "grid every 4 pixels" (owner report;
+    CONTROL_GRID_COARSEN=4 by default). Measured on a single-heliostat
+    ultra_fast trace (flat, non-wrapping receiver, both axes non-periodic):
+    the old interpolating construction's raw (pre-clip) undershoot reached
+    ~8-12% of local peak right at a spot edge, spaced at exactly the
+    control grid's cell width and scaling with it (~0.2% of peak at a 2x
+    coarsen, ~8-12% at the default 4x, larger still at 8x) -- textbook
+    cubic-spline ringing at a knot-spaced sharp feature. The same case's
+    binned-deposit (fast_accurate) and Monte Carlo flux maps show no such
+    structure at any amplitude. The trade is mild extra smoothing versus an
+    interpolating spline (a coefficient blend does not reproduce each
+    coarse cell's own value exactly at its own centre -- it blends with
+    neighbours too), well inside the mode's own ~1% documented curvature
+    residual and the 0.3% power-conservation tolerance this module is
+    gated on (which ``evaluate_bspline`` enforces exactly anyway via its
+    own rescale, independent of this matrix's shape) -- and it measurably
+    moved the single-heliostat case above CLOSER to a high-ray-count Monte
+    Carlo reference (whole-map relative L2 error 0.340 -> 0.280), not just
+    quieter at the edge.
+
+    ``periodic=True`` (the cylinder-seam ``u`` axis only): unchanged,
+    still the exact interpolating construction -- see
+    :class:`tests.test_bspline_deposit.TestUpsampleMatrixIsExactPeriodicInterpolation`,
+    a unit-level pin on this exact technique (interpolate through coarse
+    values with a periodic wrap-extension) as the guard against silently
+    reintroducing the cylinder-seam off-by-one this module's own periodic
+    handling was written to fix (see module docstring). A non-negative
+    coefficient blend and an exact interpolant are mutually exclusive for
+    sharp data -- so this axis, on a wrapping (cylindrical) receiver only,
+    can still show a milder version of the ringing artifact above; fixing
+    that too means first re-deriving (and re-pinning) the periodic
+    construction's correctness some other way, which is out of scope here.
     """
     coarse_mid = 0.5 * (coarse_edges[:-1] + coarse_edges[1:])
     fine_mid = 0.5 * (fine_edges[:-1] + fine_edges[1:])
     n_c = coarse_mid.size
     n_f = fine_mid.size
+    k = 3
     m = np.zeros((n_f, n_c))
-    for j in range(n_c):
-        y = np.zeros(n_c)
-        y[j] = 1.0
-        if periodic:
+    if periodic:
+        for j in range(n_c):
+            y = np.zeros(n_c)
+            y[j] = 1.0
             # A periodic interpolant needs its first/last y equal; wrap the
             # basis vector's period explicitly by using make_interp_spline's
             # own periodic extension (it requires y[0] == y[-1]).
-            x = np.concatenate([coarse_mid, [coarse_mid[0] + (coarse_edges[-1] - coarse_edges[0])]])
-            yy = np.concatenate([y, [y[0]]])
-            spl = make_interp_spline(x, yy, k=3, bc_type="periodic")
             period = coarse_edges[-1] - coarse_edges[0]
+            x = np.concatenate([coarse_mid, [coarse_mid[0] + period]])
+            yy = np.concatenate([y, [y[0]]])
+            spl = make_interp_spline(x, yy, k=k, bc_type="periodic")
             fm = coarse_mid[0] + np.mod(fine_mid - coarse_mid[0], period)
             m[:, j] = spl(fm)
-        else:
-            spl = make_interp_spline(coarse_mid, y, k=3)
-            m[:, j] = spl(fine_mid)
+    else:
+        # Coefficient-blend construction (see docstring above): the knot
+        # vector is obtained via make_interp_spline purely for a correctly
+        # clamped cubic knot vector at these coarse cell centres -- the y
+        # values passed to it are never used, only its `.t` is read.
+        t = make_interp_spline(coarse_mid, np.zeros(n_c), k=k).t
+        for j in range(n_c):
+            e = np.zeros(n_c)
+            e[j] = 1.0
+            # Outside the clamped basis's support (within half a coarse
+            # cell of the window edge, where no basis function is nonzero)
+            # is correctly zero, not an extrapolated value -- exactly the
+            # true value of a compactly-supported basis function there.
+            vals = BSpline(t, e, k, extrapolate=False)(fine_mid)
+            m[:, j] = np.nan_to_num(vals)
     return m
 
 

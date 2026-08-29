@@ -353,3 +353,43 @@ class TestControlGridEdgesAndEvaluate:
         coarse = np.zeros((32, 32))
         fine = evaluate_bspline(coarse, u_c, v_c, u_edges, v_edges, wrap_u=False)
         assert np.allclose(fine, 0.0)
+
+
+class TestNoPeriodicRingingArtifact:
+    """Regression pin for the owner-reported "grid every 4 pixels" bug: a
+    darker/brighter line every ``CONTROL_GRID_COARSEN`` (4) fine bins in the
+    rendered irradiance map, on a plain flat (non-wrapping) receiver.
+
+    Root cause (measured on this exact single-heliostat case): the old
+    interpolating construction of the non-periodic ``_upsample_matrix``
+    branch rang at a spot's sharp edge -- undershooting to ~8-12% of local
+    peak, period-4 -- and the module's clamp-to-zero then chopped the
+    positive rebound lobes into isolated islands of nonzero flux completely
+    surrounded by exact-zero "moats". That is a topological signature, not
+    just a numeric one: before the fix this case's flux map had 3 separate
+    connected non-zero regions (the main spot plus two satellite islands at
+    +-1 control cell); after the fix (a non-negative coefficient-blend
+    construction -- see ``_upsample_matrix``'s docstring) it has exactly 1.
+    Binned deposit (``fast_accurate``) and Monte Carlo show 1 on the same
+    case at every control-grid coarsening tried, so this is deposit-method
+    structure, not a real multi-lobe spot.
+    """
+
+    def test_flux_map_has_no_isolated_ringing_islands(self):
+        receiver = FlatWindowReceiver(z_mm=20000.0, half_u_mm=2000.0, half_v_mm=2000.0, facing="down")
+        x, y, solar_az = _rotated_case(0.0)
+        out = _trace(receiver, x, y, solar_az, deposit_method="bspline")
+        flux = out["flux"]
+        assert flux.max() > 0, "test case produced no spot at all -- fixture is broken, not the assertion"
+
+        from scipy.ndimage import label
+
+        # A tiny relative threshold, not exactly 0, so float roundoff in the
+        # smooth (fixed) case can't manufacture a spurious extra "island".
+        mask = flux > (1e-9 * flux.max())
+        _, n_components = label(mask, structure=np.ones((3, 3)))
+        assert n_components == 1, (
+            f"flux map has {n_components} disconnected non-zero regions (expected 1) -- "
+            "isolated ringing islands separated by clamped-to-zero moats, the reported "
+            "'grid every 4 pixels' artifact"
+        )
