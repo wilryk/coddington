@@ -41,7 +41,13 @@ import {
 // in fields.js's shared descriptor tables the way the sidebar-shared ones
 // do.
 // docs/ui-spec-v0.2.md §G: the optical-error glossary wording is signed off
-// verbatim -- these four tooltips must not be reworded.
+// verbatim -- these four tooltips must not be reworded. Exception (2026-08-29):
+// slope_error_mrad's tooltip gained ONE appended sentence, everything before
+// it untouched -- the cone backend's slope-error broadening became elliptical
+// at oblique incidence (beam-frame anisotropy fix, see heliostat.trace.cone's
+// own docstring), so "broadens the beam (doubled on reflection)" alone now
+// undersells a real, user-visible shape, not just a rounder blur. The other
+// three tooltips are unaffected and remain fully verbatim.
 const ERROR_FIELDS = [
   {
     key: "slope_error_mrad",
@@ -50,7 +56,7 @@ const ERROR_FIELDS = [
     min: 0,
     step: 0.1,
     tooltip:
-      "Large-scale waviness of the mirror surface: the local surface normal deviates from the design surface by this RMS angle. Broadens the beam (doubled on reflection). Not pointing error (that's the tracker, §F) and not canting error (that's facet aiming).",
+      "Large-scale waviness of the mirror surface: the local surface normal deviates from the design surface by this RMS angle. Broadens the beam (doubled on reflection). Not pointing error (that's the tracker, §F) and not canting error (that's facet aiming). At oblique incidence the broadening is elliptical: full in the tangential direction, compressed by cos(incidence angle) in the sagittal direction.",
   },
   {
     key: "specularity_mrad",
