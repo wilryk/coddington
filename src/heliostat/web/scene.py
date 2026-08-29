@@ -95,6 +95,21 @@ FIELD_RAY_SOURCES = 12
 # every third vertex. Visual only -- the occlusion answer is unaffected.
 FIELD_SILHOUETTE_VERTICES = 24
 
+# How many heliostat silhouettes the field scene actually draws, independent
+# of heliostat.web.app.MAX_FIELD_HELIOSTATS (the endpoint's own trace cap).
+# Deliberately decoupled: MAX_FIELD_HELIOSTATS exists so real reference
+# fields (Gemasolar 2,650, Crescent Dunes 10,347, Hami 14,500) can actually be
+# traced, and raising it must not silently raise the browser's JSON payload
+# by the same factor. Chosen from the measured payload: a worst-case field
+# (flower-petal facets, whose silhouette is a sampled 72-gon rather than four
+# rectangle corners) costs ~1.23 KB/heliostat once serialised (its
+# FIELD_SILHOUETTE_VERTICES-vertex outline plus its field.heliostats table
+# row), so 1000 heliostats land at ~1.21 MB -- comfortably under the 1.5 MB
+# scene budget with headroom left for rays, the secondary profile and the
+# receiver. (1200 already lands at ~1.46 MB, with almost no headroom left.)
+# See test_field_scene_payload_at_cap_stays_small.
+MAX_FIELD_SCENE_HELIOSTATS = 1000
+
 # Side-trace budget for the cone backends (a few milliseconds) and its
 # fixed seed -- the scene must be identical for two identical requests.
 SIDE_TRACE_RAYS = 4000
@@ -625,6 +640,26 @@ def decimate_outline(outline: np.ndarray, max_vertices: int = FIELD_SILHOUETTE_V
     return outline[::step][:max_vertices]
 
 
+def decimate_heliostats(heliostats: list[dict], max_heliostats: int = MAX_FIELD_SCENE_HELIOSTATS) -> list[dict]:
+    """Thin a field's heliostat list to at most ``max_heliostats``, by even
+    stride -- the same recipe as :func:`decimate_outline`, applied to
+    heliostats instead of vertices.
+
+    A stride rather than a truncation to the first ``max_heliostats``: a
+    Fermat spiral or radial-staggered layout is ordered outward from the
+    tower, so keeping only a prefix would draw the near field and silently
+    drop everything past it. An even stride instead keeps near, middle and
+    far heliostats in the same proportion the full field has, so a
+    decimated scene still reads as the whole field, just less densely drawn.
+    Returns the input untouched when it is already short enough.
+    """
+    n = len(heliostats)
+    if n <= max_heliostats:
+        return heliostats
+    step = int(np.ceil(n / max_heliostats))
+    return heliostats[::step][:max_heliostats]
+
+
 def _field_ray_sources(n: int, n_sources: int) -> list[int]:
     """Indices of the heliostats that contribute drawn rays.
 
@@ -650,6 +685,7 @@ def build_field_scene(
     n_sources: int = FIELD_RAY_SOURCES,
     n_sample_rays: int = SIDE_TRACE_RAYS,
     max_vertices: int = FIELD_SILHOUETTE_VERTICES,
+    max_heliostats: int = MAX_FIELD_SCENE_HELIOSTATS,
 ) -> dict:
     """Describe one traced *field* instant for the browser's 3-D view.
 
@@ -657,7 +693,14 @@ def build_field_scene(
     the trace itself used: ``id``, ``x_mm``, ``y_mm``, ``rot_az_deg``,
     ``rot_el_deg``, ``c3``/``c4``/``c5``, ``design`` (or ``None`` for the
     legacy rectangle) and ``eta`` (the occlusion efficiency actually applied
-    to that heliostat's contribution).
+    to that heliostat's contribution). When the field is bigger than
+    ``max_heliostats``, it is thinned first by :func:`decimate_heliostats`
+    (an even stride, same idea as the outline's own vertex decimation below)
+    -- the trace itself still covers every heliostat and ``eta_min``/
+    ``eta_median``/``eta_max`` in the endpoint's own response are computed
+    from all of them; only *this picture* draws a representative subset, to
+    keep the payload bounded independent of how high
+    ``heliostat.web.app.MAX_FIELD_HELIOSTATS`` (the trace cap) is set.
 
     ``outline_local_mm`` is the design's silhouette in the mirror's own
     ``(u, v)`` plane -- ONE polygon for the whole mirror, not one per facet.
@@ -683,10 +726,11 @@ def build_field_scene(
     :func:`build_geometry_scene` already exposes for the no-trace view.
     """
     outline = decimate_outline(np.asarray(outline_local_mm, dtype=float), max_vertices)
+    shown = decimate_heliostats(heliostats, max_heliostats)
 
     polygons = []
     table = []
-    for h in heliostats:
+    for h in shown:
         centre = np.array([h["x_mm"], h["y_mm"], 0.0])
         _n, u, v = _mirror_frame(h["rot_az_deg"], h["rot_el_deg"])
         poly = centre[None, :] + outline[:, :1] * u[None, :] + outline[:, 1:] * v[None, :]
@@ -702,11 +746,12 @@ def build_field_scene(
             }
         )
 
-    # Every heliostat contributes four corner chief rays, so the picture
-    # shows the whole field working. The dense Monte Carlo bundle that used
-    # to stand in for this came from a stride of a dozen mirrors and read as
-    # "only these were traced" -- which is exactly the wrong impression, the
-    # trace covers all of them.
+    # Every DRAWN heliostat contributes four corner chief rays, so the
+    # picture shows the (possibly decimated) field working, not a stride of
+    # a dozen mirrors that reads as "only these were traced". Built from
+    # ``shown`` rather than ``heliostats`` so the rays line up with the
+    # silhouettes and table rows actually drawn -- the real trace still
+    # covers every heliostat regardless of what this picture shows.
     #
     # return_misses=True so a corner ray that reflects off its mirror (and
     # secondary, if any) but never reaches the receiver -- a shrunk
@@ -715,7 +760,7 @@ def build_field_scene(
     # aperture-rim warning already draws, through the identical
     # field_corner_rays pathway.
     corner, field_miss_rays = field_corner_rays(
-        heliostats,
+        shown,
         outline_local_mm,
         solar_az_deg,
         solar_el_deg,
@@ -733,9 +778,16 @@ def build_field_scene(
         "field": {
             "heliostats": table,
             "silhouette_vertices": int(outline.shape[0]),
-            "decimated": bool(np.asarray(outline_local_mm).shape[0] > outline.shape[0]),
-            # Every heliostat contributes, so there is no stride to
-            # confess to any more; kept so the caption can say how the
+            # True if either axis of decimation fired: fewer heliostats
+            # drawn than traced, or fewer vertices per outline than the
+            # real silhouette. Either way the picture is a thinned stand-in
+            # for the full field, which is what the client's caption warns
+            # about.
+            "decimated": bool(
+                np.asarray(outline_local_mm).shape[0] > outline.shape[0] or len(shown) < len(heliostats)
+            ),
+            # Every DRAWN heliostat contributes, so there is no further
+            # stride to confess to; kept so the caption can say how the
             # bundle was built.
             "ray_sources": len(table),
         },

@@ -79,6 +79,7 @@ from heliostat.web.app import (  # noqa: E402
 )
 from heliostat.web.scene import (  # noqa: E402
     FIELD_SILHOUETTE_VERTICES,
+    MAX_FIELD_SCENE_HELIOSTATS,
     MAX_SCENE_RAYS,
     _outline_sample_points,
     build_field_scene,
@@ -261,8 +262,15 @@ def test_trace_flux_grid_shape_and_extent(client):
     assert values and all(v >= 0 for v in values)
     # A block-averaged grid can only ever read at or below the true peak
     # (peak_flux_kw_m2 is the single hottest FLUX_GRID bin; averaging
-    # several of those into one coarser bin never raises the max).
-    assert max(values) <= data["peak_flux_kw_m2"] + 1e-6
+    # several of those into one coarser bin never raises the max). But
+    # _flux_grid_payload rounds its values to 2 decimal digits in kW/m2
+    # (see its docstring) while peak_flux_kw_m2 is unrounded, so a value
+    # right at the true peak can round UP by up to half the 0.01 rounding
+    # step -- e.g. 5.598637... rounds to 5.60, which is 0.0014 above the
+    # unrounded peak. The tolerance here is rounding-limited, not physics-
+    # limited: 0.005 (half the documented rounding step) plus a tiny epsilon
+    # for float noise.
+    assert max(values) <= data["peak_flux_kw_m2"] + 0.005 + 1e-9
 
 
 def test_trace_flux_grid_matches_a_curved_receiver_extent(client):
@@ -524,8 +532,24 @@ def test_scene_is_deterministic_and_does_not_disturb_the_trace(client, mode):
 # widening the default trace's spot exactly as the EE audit predicted
 # (scratchpad ee_audit_report.md: axicon r90 0.608m -> 0.730m, a similar-
 # sized broadening on this different geometry/metric).
-PIN_DEFAULT_RECT_POWER_W = 8225.855000744927
-PIN_DEFAULT_RECT_RMS_MM = 629.9313684622526
+#
+# Re-pinned 2026-08-29 for commit 77535f8 ("Cache the matrix, halve the
+# coarsening, get the peak back"): CONTROL_GRID_COARSEN dropped 4 -> 2 per
+# axis (now affordable at field scale because the upsample matrices, which
+# depend only on grid geometry, are cached), giving the B-spline deposit a
+# finer control grid and restoring peak-flux accuracy. incident_power_w and
+# slant_range_m are UNCHANGED -- still purely geometric, untouched by the
+# deposit's control-grid resolution. power_w moved by 1 ULP, from
+# 8225.855000744927 to 8225.855000744928, landing it exactly on
+# incident_power_w bitwise again (the exact-total rescale is grid-resolution
+# agnostic; this is float noise from a differently-sized deposit, not a
+# broken invariant -- verified power_w <= incident_power_w still holds).
+# rms_radius_mm moved from 629.9313684622526 to 624.0305355341139 (-0.94%):
+# a finer control grid resolves the peak better without materially
+# reshaping the spot, so the small narrowing is exactly what "get the peak
+# back" without a wild RMS swing should look like.
+PIN_DEFAULT_RECT_POWER_W = 8225.855000744928
+PIN_DEFAULT_RECT_RMS_MM = 624.0305355341139
 PIN_DEFAULT_RECT_INCIDENT_W = 8225.855000744928
 PIN_DEFAULT_RECT_SLANT_M = 96.32411487265273
 
@@ -1694,11 +1718,20 @@ def test_field_scene_is_one_silhouette_per_heliostat(client, design_key):
     assert scene["field"]["ray_sources"] == 7
 
 
-def test_field_scene_payload_at_600_stays_small():
+def test_field_scene_payload_at_cap_stays_small():
     """The whole point of drawing silhouettes instead of facets: a full field
     has to fit in a response the browser will actually parse. Built directly
-    rather than over HTTP -- 600 traces is a minute of wall time and this
-    asserts nothing about the trace."""
+    rather than over HTTP -- this solves MAX_FIELD_HELIOSTATS (the trace cap)
+    heliostats but never traces any of them, so it stays fast even at 15,000.
+
+    MAX_FIELD_HELIOSTATS and the scene's own MAX_FIELD_SCENE_HELIOSTATS are
+    deliberately different numbers: the former is how many heliostats the
+    trace endpoint will accept (big enough for real reference fields like
+    Hami's 14,500), the latter is how many silhouettes the 3-D scene actually
+    draws (bounded by the response-size budget below). This asserts the
+    scene decimates the field down to the SCENE cap even when the request is
+    at the full TRACE cap, so raising the trace cap can never again silently
+    blow up the browser payload."""
     xy = FermatLayout(n=MAX_FIELD_HELIOSTATS).positions_mm()
     params = resolve_optics_params("prime_focus", None)
     secondary, receiver = _geometry_for("prime_focus", params)
@@ -1731,7 +1764,7 @@ def test_field_scene_payload_at_600_stays_small():
     _region, outline, _hw, _hh = _field_geometry(design)
     scene = build_field_scene(heliostats, outline, 180.0, 45.0, secondary, receiver)
 
-    assert len(scene["heliostat"]) == MAX_FIELD_HELIOSTATS
+    assert len(scene["heliostat"]) == MAX_FIELD_SCENE_HELIOSTATS
     assert {len(p) for p in scene["heliostat"]} == {FIELD_SILHOUETTE_VERTICES}
     assert scene["field"]["decimated"] is True
     assert len(json.dumps(scene)) < 1_500_000
@@ -1870,8 +1903,15 @@ def test_radial_stagger_rejects_mismatched_or_nonpositive_shapes(kwargs):
 
 def test_radial_stagger_over_the_trace_cap_is_422(client):
     """band_counts x band_ring_counts exceeding MAX_FIELD_HELIOSTATS is
-    rejected the same way an oversized Fermat ``n`` is."""
-    layout = {"type": "radial_stagger", "band_counts": [2000], "band_ring_counts": [1], "ring_radii_m": [50.0]}
+    rejected the same way an oversized Fermat ``n`` is. Referencing the
+    constant rather than a literal so this cannot rot again if the cap
+    changes."""
+    layout = {
+        "type": "radial_stagger",
+        "band_counts": [MAX_FIELD_HELIOSTATS + 1],
+        "band_ring_counts": [1],
+        "ring_radii_m": [50.0],
+    }
     assert client.post("/api/field/trace", json=_field_payload(layout=layout)).status_code == 422
 
 
