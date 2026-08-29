@@ -52,8 +52,11 @@ BUDGETS = {
     # (pre-built reference fields), awaiting their own sign-off alongside
     # §M/§N. Raised again 2026-08-29 (2nd time): added draft rider §Q
     # ("Measure performance" calibrated duration estimates), awaiting its
-    # own sign-off alongside §M/§N/§O/§P.
-    "docs/ui-spec-v0.2.md": 6100,
+    # own sign-off alongside §M/§N/§O/§P. Raised again 2026-08-29 (3rd time):
+    # added draft rider §R (single-instant field results on the Analysis
+    # tab) and draft sub-rider §C2 (secondary irradiance in plan
+    # projection), both awaiting sign-off alongside §M/§N/§O/§P/§Q.
+    "docs/ui-spec-v0.2.md": 7500,
     # Not user documentation: the formula-level build plan spec §C was
     # implemented from. Historical once §C shipped (2026-08-28); kept as
     # the derivation record for the secondary parameterization. Frozen.

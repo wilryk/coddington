@@ -121,13 +121,14 @@
   <header class="intro">
     <div class="eyebrow">For sign-off · v0.2 additions · Aug 26, 2026</div>
     <h1>Coddington v0.2 Mockups</h1>
-    <p class="lede"><strong>v0.2 additions</strong> — companion to the Coddington Workspace mockups (M1–M7) and <code>ui-spec-v0.2.md</code>. <strong>Sections A–L and mockups M8–M13 are SIGNED OFF</strong> (2026-08-26); <strong>§M, §N, §O, §P, §Q, and mockups M14–M21, are draft, awaiting their own approval.</strong> Fourteen mockups in all: the trace status bar moving to the top of the screen (M8), secondary-mirror irradiance with FEA-oriented CSV exports (M9), the optical-error glossary tooltips plus pointing error and measured error-map import (M10), a fidelity picker that explains itself in plain language (M11), the polar (sector) field with a tilted vertical receiver window (M12), rigid-body/deformation perturbations on the secondary mirror (M13), the native desktop window shell (M14), plan-view power coloring with a per-heliostat sweep drill-down (M15), irradiance draped on the 3D receiver (M16), a draggable analysis aperture with an encircled-power curve (M17), and — drawn as three screens — the FINAL Design/3D View/Heliostat Shape/Analysis tab restructure, opening on 3D View (M18), a numeric circumsolar-ratio sunshape control (M19), four built-in reconstructed reference fields with binding provenance labeling (M20), and a "Measure performance" calibration action for machine-specific duration estimates (M21).</p>
+    <p class="lede"><strong>v0.2 additions</strong> — companion to the Coddington Workspace mockups (M1–M7) and <code>ui-spec-v0.2.md</code>. <strong>Sections A–L and mockups M8–M13 are SIGNED OFF</strong> (2026-08-26); <strong>§M, §N, §O, §P, §Q, §R, §C2, and mockups M14–M23, are draft, awaiting their own approval.</strong> Sixteen mockups in all: the trace status bar moving to the top of the screen (M8), secondary-mirror irradiance with FEA-oriented CSV exports (M9), the optical-error glossary tooltips plus pointing error and measured error-map import (M10), a fidelity picker that explains itself in plain language (M11), the polar (sector) field with a tilted vertical receiver window (M12), rigid-body/deformation perturbations on the secondary mirror (M13), the native desktop window shell (M14), plan-view power coloring with a per-heliostat sweep drill-down (M15), irradiance draped on the 3D receiver (M16), a draggable analysis aperture with an encircled-power curve (M17), and — drawn as three screens — the FINAL Design/3D View/Heliostat Shape/Analysis tab restructure, opening on 3D View (M18), a numeric circumsolar-ratio sunshape control (M19), four built-in reconstructed reference fields with binding provenance labeling (M20), a "Measure performance" calibration action for machine-specific duration estimates (M21), a traced instant as a first-class Analysis result (M22), and the secondary irradiance map redrawn in plan projection (M23).</p>
     <p class="lede">M12's polar-field research (spec §I) finished on 2026-08-25 — the screen below reflects the final control names and defaults (Field span, Center azimuth, Half-span, Window facing, Tilt from vertical), not a preliminary sketch.</p>
     <p class="lede">M14 mockups §L (desktop shell) already carries Ryker's own sign-off on the spec section — the screen is here for a final look at the drawing itself. M15–M17 illustrate §M, which arrived after the main sign-off and has not been reviewed yet — nothing in that group is approved.</p>
     <p class="lede">M18 illustrates §N's tab restructure, evolved through a second round today: <strong>FINAL — decided 2026-08-26.</strong> The morning's Ray Trace tab is superseded — the top bar becomes <strong>Design · 3D View · Heliostat Shape · Analysis</strong>, the app <strong>opens on 3D View</strong>, and every instrument's home (Design's sidebar + 2D canvas, 3D View's scene + trace bar + results dock, Analysis unchanged) is decided, not proposed. The three screens (18a/18b/18c) are drawn for a final look before build, and the old "Workspace declutter" question is dissolved — the Workspace name itself ceases to exist.</p>
     <p class="lede">M19 and M20 are riders (2026-08-29), <code>ui-spec-v0.2.md</code> §O and §P: a circumsolar ratio (CSR) control replacing the earlier Aureole/Buie toggle idea, and four built-in reconstructed reference fields (Gemasolar, PS10, Crescent Dunes, Stellio-based). Both are draft — neither is approved, and §P's reference-field parameters are placeholders pending a separate research pass.</p>
     <p class="lede">M21 is a new rider (2026-08-29), <code>ui-spec-v0.2.md</code> §Q, answering the owner's question "Could we add a 'measure performance' button somewhere so we get better estimates on timing for traces?" — an on-demand, bounded benchmark that replaces the day-sweep/year-estimate duration guess with numbers measured on the user's own machine. Draft, not approved.</p>
-    <p class="lede">The companion spec is <code>docs/ui-spec-v0.2.md</code> in the repo. Nothing gets built from the §M/§N/§O/§P/§Q screens until you approve both this document's M14–M21 and that spec's §M/§N/§O/§P/§Q.</p>
+    <p class="lede">M22 and M23 are two more riders (2026-08-29). M22 is <code>ui-spec-v0.2.md</code> §R, answering "why can't I trace a single time step of a field and see the results on the Analysis tab?" — a traced instant becomes a third result source in Analysis, peer to Day sweep and Year estimate, reusing the same map/aperture/drill-down instruments rather than new ones. M23 is §C2, a rider on §C: the secondary irradiance map now defaults to a plan-projection circle instead of an unrolled rectangle, with the unrolled view kept as a secondary toggle, a fixed on-screen note that the projection is not equal-area, and cardinal/seam labeling matching the rest of the app. Both draft, not approved.</p>
+    <p class="lede">The companion spec is <code>docs/ui-spec-v0.2.md</code> in the repo. Nothing gets built from the §M/§N/§O/§P/§Q/§R/§C2 screens until you approve both this document's M14–M23 and that spec's §M/§N/§O/§P/§Q/§R/§C2.</p>
   </header>
 
   <h2><span class="num">8</span>Trace status bar, top of screen</h2>
@@ -2265,10 +2266,280 @@
   <div class="checknote">Calibration data is stored in localStorage beside today's per-mode trace-cost keys, browser-local like that existing mechanism, and takes precedence over both the built-in constant and the passively-recorded last-run average. It invalidates — flagged, not silently dropped — when the effective worker count or the app version (<code>/api/health</code>) no longer matches what was measured.</div>
   <div class="checknote">Out of scope: no physics changes anywhere in this rider — it measures wall-clock cost of existing code paths, never their output.</div>
 
+  <h2><span class="num">22</span>Analysis — a traced instant <span class="tagpill draft">DRAFT §R — awaiting approval</span></h2>
+  <p class="screennote">Answering "why can't I trace a single time step of a field and see the results on the Analysis tab?" (§R): <strong>Traced instant</strong> joins Day sweep and Year estimate as a third, selectable result source. Selecting it redirects the same irradiance map, aperture, and drill-down instruments the Timesteps table already feeds — it never appears as a row in that table, and the energy/day/year totals it has no time axis for simply aren't shown while it's active.</p>
+  <div class="stage"><div class="mock"><template shadowrootmode="open"><style>
+    :host { display: block; margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 14px; color: #1f2933; background: #f7f8fa; }
+    a { color: #45739e; } a:hover { color: #345a80; }
+    .topbar { display: flex; align-items: center; gap: 10px; padding: 0 20px; height: 52px; background: #ffffff; border-bottom: 1px solid #d8dee5; }
+    .topbar h1 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: 0.02em; }
+    .tag { color: #64748b; font-size: 12px; }
+    .apptabs { display: flex; gap: 6px; margin-left: 28px; }
+    .apptabs .tab { padding: 7px 14px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; }
+    .apptabs .tab.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .topbar .right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+    .btn { padding: 7px 12px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; }
+    .btn.primary { background: #45739e; border-color: #345a80; color: #ffffff; font-weight: 600; }
+    .subject { display: flex; align-items: center; gap: 8px; padding: 10px 20px; background: #ffffff; border-bottom: 1px solid #d8dee5; color: #64748b; font-size: 12.5px; }
+    .subject strong { color: #1f2933; font-weight: 600; }
+    .content { display: flex; gap: 18px; padding: 18px 20px; height: 706px; }
+    .panel { background: #ffffff; border: 1px solid #d8dee5; border-radius: 10px; padding: 16px 18px; }
+    .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: #64748b; margin: 0; font-weight: 600; }
+    .left { flex: 1 1 auto; display: flex; flex-direction: column; gap: 18px; }
+    .right { flex: 0 0 320px; display: flex; flex-direction: column; gap: 14px; }
+    .maphead { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+    .surfaceseg { display: flex; gap: 6px; margin-left: auto; }
+    .surfaceseg button { padding: 6px 12px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12px; }
+    .surfaceseg button.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .mapbody { display: flex; gap: 18px; }
+    .frame { flex: 1 1 auto; border: 1px solid #d8dee5; border-radius: 8px; background: #ffffff; overflow: hidden; position: relative; }
+    .readout { flex: 0 0 220px; border: 1px solid #d8dee5; border-radius: 8px; padding: 14px; background: #fbfcfd; }
+    .readout h3 { margin: 0 0 10px 0; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; font-weight: 600; }
+    .rmetric { display: flex; justify-content: space-between; align-items: baseline; padding: 7px 0; border-bottom: 1px solid #eef1f4; }
+    .rmetric:last-of-type { border-bottom: none; }
+    .rmetric .rnum { font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; }
+    .rmetric .rlbl { font-size: 11.5px; color: #64748b; text-align: right; }
+    .exportrow { display: flex; align-items: center; gap: 12px; margin-top: 14px; }
+    .exporthint { color: #64748b; font-size: 11.5px; }
+    .srcrow { display: flex; align-items: center; gap: 10px; padding: 10px 11px; border: 1px solid #d8dee5; border-radius: 8px; margin-bottom: 8px; }
+    .srcrow:last-child { margin-bottom: 0; }
+    .srcrow.active { border-color: #45739e; background: #f2f7fd; box-shadow: 0 0 0 2px rgba(69,115,158,0.12); }
+    .srcrow .radio { width: 11px; height: 11px; border-radius: 50%; border: 1.5px solid #9db3c4; flex: 0 0 auto; }
+    .srcrow.active .radio { border-color: #45739e; background: #45739e; box-shadow: inset 0 0 0 2px #ffffff; }
+    .srcname { font-weight: 650; font-size: 12.5px; }
+    .srcsub { color: #64748b; font-size: 11px; margin-top: 2px; }
+    .unavail { color: #94a3b8; font-size: 11.5px; padding: 6px 0; border-bottom: 1px dashed #eef1f4; }
+    .unavail:last-child { border-bottom: none; }
+    .unavail strong { color: #64748b; font-weight: 600; }
+  </style><div style="width: 1440px; height: 900px; display: flex; flex-direction: column; background: #f7f8fa; overflow: hidden">
+
+  <div class="topbar">
+    <div style="width: 26px; height: 26px; border: 1.5px dashed #45739e; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: #45739e; font-size: 11px; font-weight: 700">C</div>
+    <h1>Coddington</h1>
+    <span class="tag">Manuscript baseline — axicon</span>
+    <div class="apptabs"><div class="tab">Design</div><div class="tab">3D View</div><div class="tab">Heliostat Shape</div><div class="tab active">Analysis</div></div>
+    <div class="right"><div class="btn">Library</div><span class="tag">Saved</span></div>
+  </div>
+
+  <div class="subject">
+    Analyzing the current project:
+    <strong>Axicon 27 m / 20° / 14 m</strong> · <strong>643 heliostats</strong> (radial staggered 30–90 m) · <strong>Manuscript 5 × 3 m, twisting</strong>
+    <a style="margin-left: auto; font-size: 12px">change in Design →</a>
+  </div>
+
+  <div class="content">
+    <div class="left">
+      <div class="panel" style="flex: 1 1 auto; display: flex; flex-direction: column">
+        <div class="maphead">
+          <h2 style="margin: 0">Irradiance map — traced instant</h2>
+          <div class="surfaceseg"><button class="active">Receiver</button><button>Secondary</button></div>
+        </div>
+        <div class="mapbody" style="flex: 1 1 auto">
+          <div class="frame">
+            <svg viewBox="0 0 460 320" width="100%" height="100%">
+              <defs>
+                <radialGradient id="magma22" cx="0.5" cy="0.48" r="0.75">
+                  <stop offset="0" stop-color="#fcfdbf"></stop>
+                  <stop offset="0.28" stop-color="#fe9f6d"></stop>
+                  <stop offset="0.52" stop-color="#de4968"></stop>
+                  <stop offset="0.74" stop-color="#8c2981"></stop>
+                  <stop offset="0.9" stop-color="#3b0f70"></stop>
+                  <stop offset="1" stop-color="#000004"></stop>
+                </radialGradient>
+              </defs>
+              <rect x="34" y="24" width="380" height="272" fill="url(#magma22)"></rect>
+              <rect x="34" y="24" width="380" height="272" fill="none" stroke="#33455c" stroke-width="1"></rect>
+              <circle cx="224" cy="160" r="58" fill="none" stroke="#ffffff" stroke-width="1.6" stroke-dasharray="6 4"></circle>
+              <circle cx="224" cy="160" r="58" fill="none" stroke="#0b5fd0" stroke-width="0.9" stroke-dasharray="6 4"></circle>
+              <rect x="418" y="24" width="14" height="272" fill="url(#magma22)" stroke="#33455c" stroke-width="0.8"></rect>
+              <text x="435" y="32" font-size="9.5" fill="#64748b">612</text>
+              <text x="435" y="300" font-size="9.5" fill="#64748b">0</text>
+              <g font-size="9.5" font-weight="700" fill="#1f2933">
+                <rect x="213" y="28" width="22" height="14" rx="3" fill="rgba(255,255,255,0.82)"></rect><text x="224" y="38" text-anchor="middle">N</text>
+                <rect x="213" y="282" width="22" height="14" rx="3" fill="rgba(255,255,255,0.82)"></rect><text x="224" y="292" text-anchor="middle">S</text>
+                <rect x="386" y="153" width="22" height="14" rx="3" fill="rgba(255,255,255,0.82)"></rect><text x="397" y="163" text-anchor="middle">E</text>
+                <rect x="42" y="153" width="22" height="14" rx="3" fill="rgba(255,255,255,0.82)"></rect><text x="53" y="163" text-anchor="middle">W</text>
+              </g>
+              <text x="224" y="313" text-anchor="middle" font-size="10.5" fill="#64748b">peak 612 kW/m² · compass edges · dashed circle: §M.4 aperture</text>
+            </svg>
+          </div>
+          <div class="readout">
+            <h3>Aperture readout</h3>
+            <div class="rmetric"><div class="rlbl">power within</div><div class="rnum">9.8 MW</div></div>
+            <div class="rmetric"><div class="rlbl">% of collected</div><div class="rnum">84.5 %</div></div>
+            <div class="rmetric"><div class="rlbl">avg flux</div><div class="rnum">371 kW/m²</div></div>
+            <div class="rmetric"><div class="rlbl">avg concentration</div><div class="rnum">404 ×</div></div>
+          </div>
+        </div>
+        <div class="exportrow">
+          <div class="btn primary">Export CSV for FEA</div>
+          <span class="exporthint">x, y, flux · meters / W·m⁻² · new <code>/api/field/trace/flux_fea.csv</code> endpoint (§R)</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="right">
+      <div class="panel">
+        <h2 style="margin-bottom: 10px">Viewing</h2>
+        <div class="srcrow"><span class="radio"></span><div><div class="srcname">Day sweep</div><div class="srcsub">2026-03-21 · 25 timesteps, finished</div></div></div>
+        <div class="srcrow"><span class="radio"></span><div><div class="srcname">Year estimate</div><div class="srcsub">27 640 MWh/yr · 12 sample days</div></div></div>
+        <div class="srcrow active"><span class="radio"></span><div><div class="srcname">Traced instant <span class="newtag" style="color: #0b5fd0; font-size: 9px; text-transform: uppercase; font-weight: 700">new</span></div><div class="srcsub">12:30 solar · Az 165.2° El 61.4° · fast accurate</div></div></div>
+      </div>
+      <div class="panel" style="flex: 1 1 auto">
+        <h2 style="margin-bottom: 10px">Traced instant</h2>
+        <div style="color: #64748b; font-size: 12px; line-height: 1.5">Same live result 3D View's results dock is showing — not a second trace. <a>Trace this instant →</a> jumps to 3D View's Run control when nothing has been traced yet.</div>
+        <div style="display: flex; gap: 8px; margin: 10px 0 12px 0"><div class="btn primary" style="font-size: 11.5px; padding: 6px 10px">Save this run</div></div>
+        <div style="font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8; font-weight: 600; margin: 10px 0 6px 0">Not available for one instant</div>
+        <div class="unavail"><strong>Energy through the day</strong> — needs a day's worth of timesteps</div>
+        <div class="unavail"><strong>Day / year totals (MWh)</strong> — a time integral</div>
+        <div class="unavail"><strong>Measure performance (§Q)</strong> — unrelated to a single trace</div>
+      </div>
+    </div>
+  </div>
+
+</div></template></div></div>
+  <div class="checknote"><strong>New (§R):</strong> a live field-trace response already carries full per-heliostat rows, the flux PNG, and (opt-in) the raw grid and secondary block — richer than a stored sweep step, which stores no per-heliostat data at all and keeps blobs for only a budget-capped subset of timesteps. This screen's map, aperture, and export read that live payload directly.</div>
+  <div class="checknote">Traced instant is a peer of Day sweep and Year estimate in the "Viewing" selector, never a row in a Timesteps table — selecting it redirects the same map/aperture/drill-down instruments the table already feeds, exactly as picking a traced day from a year estimate (§M.5) already redirects them to that day.</div>
+  <div class="checknote">Transient unless saved: "Save this run" persists a new <code>SavedRunDocument</code> <code>kind: "instant"</code>, alongside today's <code>"day"</code>/<code>"year"</code>, with the same <code>request</code>/<code>result</code>/<code>flux_pngs</code>/<code>aperture</code> shape (scene dropped — 3D View regenerates it cheaply, Analysis never reads it).</div>
+  <div class="checknote">The drill-down row below the fold (mini plan → field map → one heliostat's footprint) works identically here — same on-demand single-heliostat trace the sweep drill-down already uses, keyed to this instant's own sun position instead of a stored step's.</div>
+
+  <h2><span class="num">23</span>Secondary irradiance in plan projection <span class="tagpill draft">DRAFT §C2 — awaiting approval</span></h2>
+  <p class="screennote">The owner's preference (§C2): "I would prefer to see it as a circle, not as something unrolled... it's ok to have some anamorphic distortion in the view... as long as the FEA export is in 3D coordinates." Plan projection is now the default secondary view — the same (u, v) bins as M9, remapped to angle-around/radius-out instead of an unrolled rectangle. "Unrolled (technical)" stays one click away for bin-level diagnostic reading.</p>
+  <div class="stage"><div class="mock"><template shadowrootmode="open"><style>
+    :host { display: block; margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 14px; color: #1f2933; background: #f7f8fa; }
+    a { color: #45739e; }
+    .topbar { display: flex; align-items: center; gap: 10px; padding: 0 20px; height: 52px; background: #ffffff; border-bottom: 1px solid #d8dee5; }
+    .topbar h1 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: 0.02em; }
+    .tag { color: #64748b; font-size: 12px; }
+    .apptabs { display: flex; gap: 6px; margin-left: 28px; }
+    .apptabs .tab { padding: 7px 14px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; }
+    .apptabs .tab.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .topbar .right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+    .btn { padding: 7px 12px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12.5px; }
+    .btn.primary { background: #45739e; border-color: #345a80; color: #ffffff; font-weight: 600; }
+    .subject { display: flex; align-items: center; gap: 8px; padding: 10px 20px; background: #ffffff; border-bottom: 1px solid #d8dee5; color: #64748b; font-size: 12.5px; }
+    .subject strong { color: #1f2933; font-weight: 600; }
+    .content { display: flex; gap: 18px; padding: 18px 20px; height: 706px; }
+    .panel { background: #ffffff; border: 1px solid #d8dee5; border-radius: 10px; padding: 16px 18px; }
+    .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: #64748b; margin: 0; font-weight: 600; }
+    .left { flex: 1 1 auto; display: flex; flex-direction: column; gap: 18px; }
+    .right { flex: 0 0 320px; display: flex; flex-direction: column; gap: 18px; }
+    .maphead { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+    .surfaceseg { display: flex; gap: 6px; }
+    .surfaceseg.proj { margin-left: auto; }
+    .surfaceseg button { padding: 6px 12px; border: 1px solid #d8dee5; background: #ffffff; color: #1f2933; border-radius: 6px; font-size: 12px; }
+    .surfaceseg button.active { background: #45739e; border-color: #345a80; color: #ffffff; }
+    .newtag { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: #0b5fd0; font-weight: 700; }
+    .mapbody { display: flex; gap: 18px; }
+    .frame { flex: 1 1 auto; border: 1px solid #d8dee5; border-radius: 8px; background: #ffffff; overflow: hidden; position: relative; }
+    .readout { flex: 0 0 250px; border: 1px solid #d8dee5; border-radius: 8px; padding: 14px; background: #fbfcfd; }
+    .readout h3 { margin: 0 0 10px 0; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; font-weight: 600; }
+    .rmetric { display: flex; justify-content: space-between; align-items: baseline; padding: 7px 0; border-bottom: 1px solid #eef1f4; }
+    .rmetric:last-of-type { border-bottom: none; }
+    .rmetric .rnum { font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; }
+    .rmetric .rlbl { font-size: 11.5px; color: #64748b; text-align: right; }
+    .rformula { margin-top: 10px; padding-top: 10px; border-top: 1px dashed #d8dee5; font-size: 11px; color: #64748b; font-family: ui-monospace, Consolas, monospace; }
+    .projnote { color: #64748b; font-size: 11px; line-height: 1.5; padding: 9px 10px; border: 1px solid #d8dee5; border-radius: 7px; background: #ffffff; margin-top: 12px; }
+    .projnote strong { color: #1f2933; font-weight: 600; }
+    .exportrow { display: flex; align-items: center; gap: 12px; margin-top: 14px; }
+    .exporthint { color: #64748b; font-size: 11.5px; }
+  </style><div style="width: 1440px; height: 900px; display: flex; flex-direction: column; background: #f7f8fa; overflow: hidden">
+
+  <div class="topbar">
+    <div style="width: 26px; height: 26px; border: 1.5px dashed #45739e; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: #45739e; font-size: 11px; font-weight: 700">C</div>
+    <h1>Coddington</h1>
+    <span class="tag">Manuscript baseline — axicon</span>
+    <div class="apptabs"><div class="tab">Design</div><div class="tab">3D View</div><div class="tab">Heliostat Shape</div><div class="tab active">Analysis</div></div>
+    <div class="right"><div class="btn">Library</div><span class="tag">Saved</span></div>
+  </div>
+
+  <div class="subject">
+    Analyzing the current project:
+    <strong>Axicon 27 m / 20° / 14 m, secondary reflectance 90 %</strong> · <strong>643 heliostats</strong>
+    <a style="margin-left: auto; font-size: 12px">change in Design →</a>
+  </div>
+
+  <div class="content">
+    <div class="left">
+      <div class="panel" style="flex: 1 1 auto; display: flex; flex-direction: column">
+        <div class="maphead">
+          <h2 style="margin: 0">Irradiance map — 12:30 solar</h2>
+          <div class="surfaceseg"><button>Receiver</button><button class="active">Secondary</button></div>
+          <div class="surfaceseg proj"><button class="active">Plan <span class="newtag">new</span></button><button>Unrolled</button></div>
+        </div>
+        <div class="mapbody" style="flex: 1 1 auto">
+          <div class="frame">
+            <svg viewBox="0 0 460 320" width="100%" height="100%">
+              <defs>
+                <radialGradient id="secplan23" cx="0.5" cy="0.5" r="0.5">
+                  <stop offset="0" stop-color="#3b0f70"></stop>
+                  <stop offset="0.45" stop-color="#8c2981"></stop>
+                  <stop offset="0.62" stop-color="#de4968"></stop>
+                  <stop offset="0.78" stop-color="#fe9f6d"></stop>
+                  <stop offset="0.92" stop-color="#fcfdbf"></stop>
+                  <stop offset="1" stop-color="#fcfdbf"></stop>
+                </radialGradient>
+              </defs>
+              <rect x="34" y="14" width="380" height="292" fill="#f7f8fa"></rect>
+              <circle cx="224" cy="160" r="128" fill="url(#secplan23)" stroke="#33455c" stroke-width="1"></circle>
+              <circle cx="224" cy="160" r="128" fill="none" stroke="#000004" stroke-width="14" opacity="0.55"></circle>
+              <circle cx="224" cy="160" r="121" fill="none" stroke="#33455c" stroke-width="1"></circle>
+              <line x1="224" y1="32" x2="224" y2="160" stroke="#ffffff" stroke-width="1.2" stroke-dasharray="4 4" opacity="0.85"></line>
+              <text x="230" y="46" font-size="8.5" fill="#64748b">seam</text>
+              <rect x="413" y="32" width="14" height="256" fill="url(#secplan23)" stroke="#33455c" stroke-width="0.8"></rect>
+              <text x="431" y="40" font-size="9.5" fill="#64748b">38</text>
+              <text x="431" y="292" font-size="9.5" fill="#64748b">0</text>
+              <g font-size="9.5" font-weight="700" fill="#1f2933">
+                <rect x="213" y="18" width="22" height="14" rx="3" fill="rgba(255,255,255,0.82)"></rect><text x="224" y="28" text-anchor="middle">N</text>
+                <rect x="213" y="288" width="22" height="14" rx="3" fill="rgba(255,255,255,0.82)"></rect><text x="224" y="298" text-anchor="middle">S</text>
+                <rect x="342" y="153" width="22" height="14" rx="3" fill="rgba(255,255,255,0.82)"></rect><text x="353" y="163" text-anchor="middle">E</text>
+                <rect x="94" y="153" width="22" height="14" rx="3" fill="rgba(255,255,255,0.82)"></rect><text x="105" y="163" text-anchor="middle">W</text>
+              </g>
+            </svg>
+            <div class="projnote"><strong>Plan projection — not equal-area.</strong> Flux values are true W/m² on the tilted surface; screen area is not proportional to surface area.</div>
+          </div>
+          <div class="readout">
+            <h3>Secondary readout</h3>
+            <div class="rmetric"><div class="rlbl">incident</div><div class="rnum">21.4 MW</div></div>
+            <div class="rmetric"><div class="rlbl">absorbed (R = 90.0 %)</div><div class="rnum">2.14 MW</div></div>
+            <div class="rmetric"><div class="rlbl">peak absorbed</div><div class="rnum">3.8 kW/m²</div></div>
+            <div class="rformula">absorbed = (1 − R) × incident</div>
+          </div>
+        </div>
+        <div class="exportrow">
+          <div class="btn primary">Export CSV for FEA</div>
+          <span class="exporthint">x_m, y_m, z_m, flux, absorbed · true 3-D surface coordinates (§C2 dependency) · targets ANSYS External Data</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="right">
+      <div class="panel">
+        <h2 style="margin-bottom: 8px">Why a circle</h2>
+        <div style="font-size: 12px; color: #64748b; line-height: 1.55">Same (u, v) bins as M9 — u = azimuthal arc length, v = radial distance — now drawn as angle-around / radius-out instead of unrolled. No new data, no re-trace: a display transform on the identical grid.</div>
+      </div>
+      <div class="panel">
+        <h2 style="margin-bottom: 8px">Cardinal &amp; seam convention</h2>
+        <div style="font-size: 12px; color: #64748b; line-height: 1.55">North sits at the existing seam (the atan2(x, −y) discontinuity <code>geometry/receiver.py</code> already fixes at north). Angle increases clockwise through East, looking down the optical axis — the same sense the flat/curved receiver maps already use.</div>
+      </div>
+      <div class="panel" style="flex: 1 1 auto">
+        <h2 style="margin-bottom: 8px">Unrolled stays available</h2>
+        <div style="font-size: 12px; color: #64748b; line-height: 1.55">The Plan/Unrolled toggle keeps M9's rectangle one click away — same grid, same colormap, useful for bin-structure and Cassegrain-slant reading where the plan view's distortion makes precise comparison harder.</div>
+      </div>
+    </div>
+  </div>
+
+</div></template></div></div>
+  <div class="checknote"><strong>New (§C2):</strong> plan projection is the DEFAULT secondary view; "Unrolled (technical)" is retained as a one-click toggle beside the Receiver/Secondary selector, not dropped — it costs nothing extra since it draws the identical grid.</div>
+  <div class="checknote">Values are unchanged true W/m² on the tilted surface. The on-screen note is fixed and visible by default — <strong>not</strong> a hover tooltip — because equal screen area in this projection is explicitly not equal surface area, and the owner's acceptance of that distortion is in the picture, not the numbers.</div>
+  <div class="checknote">North sits at the existing atan2(x, −y) seam (no new convention invented); N/E/S/W sit at their own compass positions on the circle, consistent with the §M compass-marking rider on flat/curved receiver maps.</div>
+  <div class="checknote">FEA export in true 3-D coordinates (<code>x_m, y_m, z_m, flux_w_m2, absorbed_w_m2</code>) is a <strong>dependency</strong> on the concurrent §D/§C implementation (<code>secondary_uv_to_world</code>), referenced here, not respecified.</div>
+  <div class="checknote"><strong>Open question for the owner (not decided here):</strong> should the 3D scene's own secondary rendering also carry the flux, the way §M.3 already drapes it onto the receiver? A true 3-D drape would show the same information with zero projection distortion, but it's a materially bigger addition (a second live-updating drape target on a curved/conical surface) this rider does not scope.</div>
+
 
   <section class="text">
     <h2>Decisions these mockups encode</h2>
-    <p class="lede" style="margin: 0 0 14px 0"><strong>Sections A–L, and mockups M8–M13, were signed off by Ryker on 2026-08-26.</strong> §M/§N and mockups M14–M18 below are new since that sign-off: M14 mockups a spec section (§L) Ryker already signed off, drawn here for a final look at the screen itself; M15–M17 illustrate §M, which has not been reviewed and carries no approval yet; M18 illustrates §N's tab restructure — <strong>FINAL, decided 2026-08-26</strong> — drawn as three screens for a final look before build.</p>
+    <p class="lede" style="margin: 0 0 14px 0"><strong>Sections A–L, and mockups M8–M13, were signed off by Ryker on 2026-08-26.</strong> §M/§N and mockups M14–M23 below are new since that sign-off: M14 mockups a spec section (§L) Ryker already signed off, drawn here for a final look at the screen itself; M15–M17 illustrate §M, which has not been reviewed and carries no approval yet; M18 illustrates §N's tab restructure — <strong>FINAL, decided 2026-08-26</strong> — drawn as three screens for a final look before build; M19–M23 are later draft riders (§O, §P, §Q, §R, §C2, all 2026-08-29) with no approval yet.</p>
     <ul>
       <li><strong>Fidelity in plain language</strong> — the picker states intent (§A), not algorithm; each mode's tooltip discloses its honest trade-off.</li>
       <li><strong>Ultra fast day sweeps interpolate</strong> shading/blocking between exact anchor timesteps (~1–2 % budget at low sun); single-instant traces stay exact (§B).</li>
@@ -2289,6 +2560,8 @@
       <li><strong>Sunshape circumsolar ratio</strong> (M19, §O, draft) — a numeric CSR field (0–1, default 0) on the Sun stage replaces the Aureole/Buie toggle idea; CSR 0 is bit-identical to today's hard-cutoff Buie disk, both backends (MC sampler, cone kernel) take the same CSR and move together at every fidelity, and the Sun panel's disclosure line now states the CSR in effect.</li>
       <li><strong>Pre-built reference fields</strong> (M20, §P, draft) — Gemasolar, PS10, Crescent Dunes, and a Stellio-based field ship as built-in Projects (Library, first use of that collection's built-in slot), each an ideal build (zero slope error, specularity, pointing error) and each labeled RECONSTRUCTION with a citation wherever it's named or loaded — never presented as an operator's real layout. PS10 needs §I (not yet built); the Stellio tracking caveat is conditional pending research.</li>
       <li><strong>Measure performance</strong> (M21, §Q, draft) — an on-demand, bounded calibration benchmark (a handful of heliostats, never the full field) measures the cold worker-pool startup constant, per-heliostat cost per fidelity, and the actual parallel speedup on the user's machine, replacing the guessed duration estimate beside the sweep/year-estimate controls with measured numbers, their timestamp, and worker count; re-measurable any time, invalidated (flagged, not silently dropped) by a worker-count or app-version change, and never run automatically.</li>
+      <li><strong>A traced instant in Analysis</strong> (M22, §R, draft) — Traced instant joins Day sweep and Year estimate as a third, selectable result source that redirects the existing irradiance map, §M.4 aperture, and drill-down instruments rather than duplicating them; it is never a Timesteps-table row, and the time-integrated instruments (energy plot, day/year totals) simply don't apply while it's active. Transient unless explicitly saved as a new <code>SavedRunDocument</code> <code>kind: "instant"</code>; requires two new field-level FEA CSV endpoints the day-sweep path already has an equivalent of internally.</li>
+      <li><strong>Secondary irradiance in plan projection</strong> (M23, §C2, draft) — the secondary map's default view becomes a plan-projection circle (angle around, radius out) instead of §C's unrolled rectangle, which stays available as a one-click "Unrolled" toggle; the underlying flux values and (u, v) bins are unchanged, and a fixed, always-visible on-screen note states the projection is not equal-area. North sits at the existing atan2 seam, no new convention. Whether the 3D scene's own secondary should also carry the flux (as §M.3 already does for the receiver) is raised as an open question, not decided.</li>
     </ul>
     <h2>Open questions — all resolved 2026-08-25</h2>
     <ul class="qs">
@@ -2317,7 +2590,10 @@
       <li>The Analysis tab's inline timestep map with compass edges and its "Open in 3D View" link, and the M15 drill-down staying put (18c), are right</li>
       <li>The CSR control's range/step/default, the bit-identical-at-0 requirement, the guidance text, and the tooltip/disclosure wording (M19) are right</li>
       <li>Reference-field placement (built-in Projects), the RECONSTRUCTION badge and citation wording, the ideal-build note, the §I flag on PS10, and the conditional Stellio tracking caveat (M20) are right</li>
-      <li>Spec <code>docs/ui-spec-v0.2.md</code> read and approved, including §M, §N, §O, and §P</li>
+      <li>The "Measure performance" benchmark scope, the before/after calibration display, and the invalidation rules (M21) match what you'd want from a machine-specific estimate</li>
+      <li>Traced instant as a third result source in Analysis — its place beside Day sweep/Year estimate, that it reuses rather than duplicates the map/aperture/drill-down instruments, and that it's transient unless saved (M22) — is the shape you want</li>
+      <li>Secondary map in plan projection as the default, the retained Unrolled toggle, the fixed not-equal-area note, and the cardinal/seam labeling (M23) are right, and the open question about draping flux onto the 3D secondary is one you want raised now rather than decided for you</li>
+      <li>Spec <code>docs/ui-spec-v0.2.md</code> read and approved, including §M, §N, §O, §P, §Q, §R, and §C2</li>
     </ul>
   </section>
 
