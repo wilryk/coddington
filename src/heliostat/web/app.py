@@ -2719,6 +2719,23 @@ def _acquire_field_pool(min_size: int) -> ProcessPoolExecutor:
         return _field_pool
 
 
+def _field_pool_cold_start_expected(min_size: int) -> bool:
+    """Whether the next :func:`_acquire_field_pool` call will (re)create the
+    pool rather than reuse a live one.
+
+    Read-only mirror of :func:`_acquire_field_pool`'s own condition -- never
+    mutates pool state, so calling this has no effect on the pool that call
+    would itself create. Exists purely so a caller can narrate a first-trace
+    warmup honestly: on this machine, spawning ~7 worker processes and
+    having each reimport this module (numpy/scipy/matplotlib, the
+    manuscript-field CSV, the sunshape kernel table) costs several seconds
+    of genuine wall time with nothing else to show for it -- see
+    field_trace_start's own use of this.
+    """
+    with _field_pool_lock:
+        return _field_pool is None or (_field_pool_size < min_size and _field_pool_inflight == 0)
+
+
 def _release_field_pool() -> None:
     global _field_pool_inflight
     with _field_pool_lock:
@@ -6117,7 +6134,19 @@ def create_app():
                 job.weight_done = weight_done
                 job.detail = f"{done} / {n} heliostats"
 
-            job.detail = f"0 / {n} heliostats"
+            # A cold pool (first field trace since the server started, or
+            # the first one asking for more workers than it currently has)
+            # spends several seconds spawning worker processes before any
+            # of them can report progress -- see _field_pool_cold_start_expected.
+            # Left at "0 / n heliostats", that whole stall looks identical
+            # to a hung trace: the count never advances, because nothing
+            # has run yet to advance it. Narrating it honestly here costs
+            # nothing on a warm pool -- on_progress's first callback
+            # overwrites this within milliseconds, same as before.
+            if _field_pool_cold_start_expected(min(workers, n)):
+                job.detail = "starting worker processes"
+            else:
+                job.detail = f"0 / {n} heliostats"
             # Spec §M.7 -- see /api/field/trace's identical comment.
             _dni_scale, dni_w_m2 = _resolve_dni(body.dni, body.solar_el_deg)
             try:
