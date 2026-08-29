@@ -80,10 +80,48 @@ RING_PROBES = 12  # boundary directions probed per sample for the rim check
 
 # deposit_method="bspline" (see trace_heliostat_cone's docstring):
 # control_grid=None derives a coarse accumulation grid this many times
-# smaller than flux_grid, per axis (scripts/coeff_prototype/REPORT.md's own
-# 32x32-vs-128x128 benchmark is a 4x coarsening), clamped to a minimum so a
-# very small flux_grid still gets a usable control grid.
-CONTROL_GRID_COARSEN = 4
+# smaller than flux_grid, per axis, clamped to CONTROL_GRID_MIN so a very
+# small flux_grid still gets a usable control grid.
+#
+# Two constants, not one, because the two axes tolerate coarsening very
+# differently -- measured directly (matched Buie sunshape on both the cone
+# kernel and the MC reference; single ULTRA_FAST heliostat, bearing 60 deg,
+# flux_grid from the app's own _receiver_flux_grid sizing -- (128,128) flat,
+# (448,128) cylinder/frustum; peak flux vs the BINNED deposit at the same
+# kernel, which isolates the deposit-method error from MC shot noise, cross-
+# checked against a matched 2-seed/300,000-ray MC reference):
+#
+#   axis coarsened alone (other axis held at 1x), peak-flux error vs binned:
+#   cylinder u (periodic, wraps)   2x  -1.8%   4x   -5.6%   8x  -40.0%
+#   cylinder v (non-periodic)      2x  +3.6%   4x  -10.3%   8x  -20.9%
+#   frustum  u (periodic, wraps)   2x  +0.7%   4x   -3.7%   8x  -43.9%
+#   frustum  v (non-periodic)      2x  -3.1%   4x   +4.7%   8x  -26.5%
+#
+# and, both axes coarsened together (the shape this module actually uses):
+#
+#   coarsen   flat (u,v both non-periodic)   cylinder (u periodic)   frustum (u periodic)
+#      1              -0.1%                        -0.4%                    -0.4%
+#      2              -0.6%                        +2.0%                    +0.4%
+#      4              +0.1%                       -14.6%                    -9.5%
+#      8             -28.9%                       -70.4%                   -68.9%
+#
+# (script: see this task's session -- scratchpad/peak_accuracy_sweep.py and
+# per_axis_sweep.py; re-run to reproduce). The old default, 4x on both axes,
+# is fine on a flat window but badly under-resolves peak flux on either
+# curved receiver once its periodic u axis is folded in at that coarsening
+# -- consistent with the periodic axis being the more fragile one, though at
+# 4x BOTH axes are already past a "few percent" peak-flux target, not just
+# the periodic one. 2x on both axes is the coarsest setting that holds every
+# tested shape within a few percent (worst case here: cylinder +2.0%) while
+# still cutting the control grid to 1/4 the fine grid's cell count per axis
+# pair (1/16 the cells) -- a real accumulate-phase win over binned deposit,
+# now affordable at field scale because _cached_upsample_matrix removes the
+# evaluate-phase matrix-rebuild cost the old 4x default was partly chosen to
+# amortize. Kept as two named constants (not one shared value) because nothing
+# says the two axes must coarsen equally going forward -- only that, at the
+# accuracy target this rule was picked to hit, they currently do.
+CONTROL_GRID_COARSEN_PERIODIC = 2  # the wrapping u axis of a cylinder/frustum receiver
+CONTROL_GRID_COARSEN_NONPERIODIC = 2  # v always; u too on a flat (non-wrapping) receiver
 CONTROL_GRID_MIN = 8
 
 #: Test-only escape hatch: forces every sample through the full node raster,
@@ -390,15 +428,18 @@ def trace_heliostat_cone(
     interpolation matrix onto the requested ``flux_grid``; see
     :mod:`heliostat.trace.bspline_deposit` for the accumulate/evaluate math
     and the cylinder-seam periodicity note. ``control_grid=None`` (default)
-    derives it as ``flux_grid`` coarsened ``CONTROL_GRID_COARSEN`` (4x) per
-    axis rather than a fixed tuple: a curved receiver's adaptive
-    ``flux_grid`` (``_receiver_flux_grid`` in the web layer scales ``n_u``
-    up to 448 for a wide cylinder) needs a proportionally wider control grid
-    too, or the fixed 32x32 the prototype benchmarked at flat 128x128 becomes
-    a far coarser-than-intended ~14x coarsening instead of 4x, badly
-    under-resolving peak flux. This is how the ``ultra_fast`` mode
-    (:mod:`heliostat.trace.modes`) deposits; ``fast_accurate`` and Monte
-    Carlo keep exact binned deposit.
+    derives it as ``flux_grid`` coarsened per axis rather than a fixed
+    tuple -- a curved receiver's adaptive ``flux_grid`` (``_receiver_flux_grid``
+    in the web layer scales ``n_u`` up to 448 for a wide cylinder) needs a
+    proportionally wider control grid too, or a fixed square control grid
+    sized for a flat window becomes a far coarser-than-intended coarsening
+    on ``u``, badly under-resolving peak flux -- using
+    ``CONTROL_GRID_COARSEN_PERIODIC`` on ``u`` when the receiver wraps
+    (``wrap_u``) and ``CONTROL_GRID_COARSEN_NONPERIODIC`` otherwise, and
+    always on ``v`` (never periodic): see the constants' own comment for the
+    matched-sunshape measurements this split and its current values come
+    from. This is how the ``ultra_fast`` mode (:mod:`heliostat.trace.modes`)
+    deposits; ``fast_accurate`` and Monte Carlo keep exact binned deposit.
 
     ``delta_rad`` is the finite-difference probe angle; it must be small
     against the optics' scale of nonlinearity but large enough that
@@ -819,9 +860,13 @@ def trace_heliostat_cone(
             # Proportional to flux_grid, not a fixed tuple -- see docstring:
             # a curved receiver's adaptive (wide) flux_grid needs a
             # proportionally wider control grid to keep the same
-            # coarsening factor the prototype benchmarked.
-            n_cu = max(CONTROL_GRID_MIN, round(n_u / CONTROL_GRID_COARSEN))
-            n_cv = max(CONTROL_GRID_MIN, round(n_v / CONTROL_GRID_COARSEN))
+            # coarsening factor. Per-axis coarsening factor: the periodic
+            # (wrapping) u axis of a cylinder/frustum receiver measurably
+            # tolerates coarsening worse than a non-periodic axis -- see
+            # CONTROL_GRID_COARSEN_PERIODIC's own comment for the numbers.
+            u_coarsen = CONTROL_GRID_COARSEN_PERIODIC if wrap_u else CONTROL_GRID_COARSEN_NONPERIODIC
+            n_cu = max(CONTROL_GRID_MIN, round(n_u / u_coarsen))
+            n_cv = max(CONTROL_GRID_MIN, round(n_v / CONTROL_GRID_COARSEN_NONPERIODIC))
             control_grid = (n_cu, n_cv)
         accum_u_edges, accum_v_edges = control_grid_edges(u_edges, v_edges, control_grid)
     else:

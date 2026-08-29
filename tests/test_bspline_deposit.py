@@ -15,8 +15,12 @@ the coordinate-seam bug this same geometry can trigger):
 1. ``TestControlGridDerivation`` -- the coarse accumulation grid scales
    proportionally with ``flux_grid`` (a fixed 32x32 control grid, correct
    for the flat 128x128 case, badly under-resolves peak flux on a curved
-   receiver's adaptive up-to-448-wide grid -- see cone.py's
-   ``CONTROL_GRID_COARSEN``).
+   receiver's adaptive up-to-448-wide grid), coarsened per axis by
+   ``CONTROL_GRID_COARSEN_PERIODIC`` (the wrapping ``u`` axis of a
+   cylinder/frustum) or ``CONTROL_GRID_COARSEN_NONPERIODIC`` (``v`` always,
+   and ``u`` on a flat/non-wrapping receiver) -- see cone.py's own comment
+   on those constants for the matched-sunshape measurements behind the
+   split and the current values.
 2. ``TestPowerConservation`` -- per-trace power_w stays within 0.3% of the
    binned path's, same sampling grid/order, several receiver geometries.
 3. ``TestAzimuthalRotationInvariance`` / ``TestMonteCarloRefereesTheCavitySeam``
@@ -48,7 +52,13 @@ from heliostat.geometry.aiming import solve_prime_focus_to_receiver
 from heliostat.geometry.receiver import ApertureClippedReceiver, CylinderReceiver, FlatWindowReceiver, FrustumReceiver
 from heliostat.geometry.secondary import NoSecondary
 from heliostat.trace.bspline_deposit import control_grid_edges, evaluate_bspline
-from heliostat.trace.cone import CONTROL_GRID_COARSEN, CONTROL_GRID_MIN, sunshape_kernel, trace_heliostat_cone
+from heliostat.trace.cone import (
+    CONTROL_GRID_COARSEN_NONPERIODIC,
+    CONTROL_GRID_COARSEN_PERIODIC,
+    CONTROL_GRID_MIN,
+    sunshape_kernel,
+    trace_heliostat_cone,
+)
 from heliostat.trace.mc import trace_heliostat
 from heliostat.trace.modes import ULTRA_FAST
 from test_mc_parity import _geometry_for, _load_fixture
@@ -94,25 +104,38 @@ def _trace(receiver, x_mm, y_mm, solar_az_deg, deposit_method="bspline", **overr
 
 class TestControlGridDerivation:
     """``control_grid=None`` derives the coarse accumulation grid as
-    ``flux_grid`` coarsened ``CONTROL_GRID_COARSEN`` (4x) per axis, clamped
-    to ``CONTROL_GRID_MIN`` -- not the prototype's fixed 32x32, which is
-    only correct at the prototype's own flat 128x128 benchmark grid."""
+    ``flux_grid`` coarsened per axis, clamped to ``CONTROL_GRID_MIN`` -- not
+    a fixed 32x32, which is only correct at one particular flat 128x128
+    grid, and not a single coarsening factor either, since the periodic
+    (wrapping) ``u`` axis of a curved receiver measurably tolerates
+    coarsening worse than a non-periodic axis (see cone.py's own comment on
+    ``CONTROL_GRID_COARSEN_PERIODIC``/``CONTROL_GRID_COARSEN_NONPERIODIC``
+    for the measurements)."""
 
-    def test_flat_128_grid_matches_prototype_32x32(self):
-        assert (128 // CONTROL_GRID_COARSEN, 128 // CONTROL_GRID_COARSEN) == (32, 32)
+    def test_flat_128_grid_uses_the_nonperiodic_factor_on_both_axes(self):
+        """A flat window has no periodic axis -- u and v both use
+        CONTROL_GRID_COARSEN_NONPERIODIC."""
+        n = 128 // CONTROL_GRID_COARSEN_NONPERIODIC
+        assert (n, n) == (128 // CONTROL_GRID_COARSEN_NONPERIODIC, 128 // CONTROL_GRID_COARSEN_NONPERIODIC)
+        receiver = FlatWindowReceiver(z_mm=20000.0, half_u_mm=2000.0, half_v_mm=2000.0, facing="down")
+        x, y, solar_az = _rotated_case(0.0)
+        out = _trace(receiver, x, y, solar_az, flux_grid=(128, 128))
+        assert out["flux"].shape == (128, 128)
 
     def test_derivation_scales_with_a_wide_curved_receiver_grid(self):
         """A curved receiver's adaptive flux_grid can be much wider than
         tall (e.g. (448, 128) -- see app.py's _receiver_flux_grid); the
-        control grid must track that aspect, not stay square."""
+        control grid must track that aspect, not stay square, and must
+        coarsen its periodic u axis by CONTROL_GRID_COARSEN_PERIODIC while
+        v (never periodic) always uses CONTROL_GRID_COARSEN_NONPERIODIC."""
         receiver = CylinderReceiver(center_z_mm=20000.0, radius_mm=3000.0, height_mm=6000.0)
         x, y, solar_az = _rotated_case(60.0)
         flux_grid = (448, 128)
         out = _trace(receiver, x, y, solar_az, flux_grid=flux_grid)
         assert out["flux"].shape == (flux_grid[1], flux_grid[0])
-        expected_n_cu = max(CONTROL_GRID_MIN, round(448 / CONTROL_GRID_COARSEN))
-        expected_n_cv = max(CONTROL_GRID_MIN, round(128 / CONTROL_GRID_COARSEN))
-        assert (expected_n_cu, expected_n_cv) == (112, 32)
+        expected_n_cu = max(CONTROL_GRID_MIN, round(448 / CONTROL_GRID_COARSEN_PERIODIC))
+        expected_n_cv = max(CONTROL_GRID_MIN, round(128 / CONTROL_GRID_COARSEN_NONPERIODIC))
+        assert (expected_n_cu, expected_n_cv) == (224, 64)
 
     def test_explicit_control_grid_override_is_honoured(self):
         """A caller-supplied control_grid bypasses the flux_grid-derived
